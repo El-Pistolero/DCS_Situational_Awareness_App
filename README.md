@@ -74,6 +74,13 @@ Every air-to-ground weapon in a recording (JSOW, JDAM, laser-guided and dumb bom
 * **Mark my path inside SAM rings** colours the flown path red where you were inside a hostile SAM envelope ("in SA-11 WEZ 38 s").
 * In **3D**: release posts, weapon paths, bomblets as a cloud, the pattern draped on the terrain, and a **weapon cam** (W) that rides the JSOW or bomb down to impact.
 
+**Live, on the second screen** (A-G mode, or turn the layers on in **Display**):
+
+* **My weapons:** each weapon you release gets a dashed line to its predicted impact and an estimated time to impact ("AGM-154A → SA-11 SR · ~0:38"), and a *My weapons* panel counts them down. Afterwards the tag shows KILL or HIT when DCS reports one.
+* **JSOW range:** with a JSOW selected on your stores page, rings around your jet show DCS's max and min range for your altitude and speed. With a target marked, the strip reads **IN RNG**, or how far and how long until you are.
+* **Target:** mark any ground unit or map point as your target (right-click it): a diamond on the map and bearing/range in the strip. **Wrecks** and **DCS hits** show where they happened.
+* SAMs are listed by how far you are from their engagement zone ("WEZ in 4.1 nm", "IN WEZ").
+
 The demo `samples/sample_strike.acmi` has a full JSOW strike: two JSOW-As on a moving column and SA-11 launchers, a JSOW-C on the SA-11 radar, a GBU-12 and a dive-bombing Mk-82 that misses.
 
 ## Dogfight (A-A) and Ground attack (A-G) modes
@@ -116,7 +123,8 @@ A Tacview recording only has positions, so some things in a debrief have to be w
 Press **?** in either window for the full list.
 
 * **Debrief:** Space play/pause · ← → ±5 s (Shift ±30 s) · **N / P** next/previous event · **I / O / L** loop in/out/on (or Shift-drag the timeline) · **, .** step half a second · **V** 2D/3D · **C** camera (orbit → chase → padlock) · **T** padlock target · **W** weapon cam · **M** measuring tape (or Shift-drag on the map) · **J / K** next/previous aircraft · **E** actions for the selection · **X** isolate · **Shift+N / Shift+P** the selection's next/previous event · **Ctrl+C** copy its position · **Shift+A / Shift+G** A-A / A-G mode · **D** Display · **R** SAM rings · **B** bullseye · **Z** declutter · **1–8** tabs · **Ctrl+O** recordings
-* **Live:** **G** Glance layout · **V** 2D/3D · **C** camera · **T** padlock the next threat · **H** heading-up/north-up · **+ / −** range · **N** re-centre · **S** sound · **Ctrl+,** connect
+* **Live:** **G** Glance layout · **V** 2D/3D · **C** camera · **T** padlock the next threat · **H** heading-up/north-up · **+ / −** range · **N** re-centre · **Shift+A / Shift+G** A-A / A-G mode · **D** Display · **E** actions for the selection · **B** back to my jet · **Ctrl+C** copy position · **S** sound · **Ctrl+,** connect
+* **Live clicks:** a click selects a contact and shows its card; a double-click on an aircraft views the picture from it (**Back to my jet** returns).
 
 When Tacview writes a new recording after a mission, a banner offers to open the debrief (tick *Auto-open* to skip the click).
 
