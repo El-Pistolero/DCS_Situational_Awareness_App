@@ -214,6 +214,7 @@ class RecordingStore:
             if lon is None or lat is None or not len(tr):
                 continue
             alt, yaw = tr.channel("Altitude"), tr.channel("Yaw")
+            pitch, roll = tr.channel("Pitch"), tr.channel("Roll")
             if tr.category in ("fixedwing", "rotorcraft", "air"):
                 step = air_step
             elif tr.category in ("weapon", "countermeasure"):
@@ -237,6 +238,11 @@ class RecordingStore:
                 "yaw": [r(yaw[i], 1) for i in idx] if yaw is not None else None,
                 "end": tr.ends_at,
             }
+            if tr.category in ("fixedwing", "rotorcraft", "air", "weapon"):
+                if pitch is not None:
+                    out[tr.id]["pitch"] = [r(pitch[i], 1) for i in idx]
+                if roll is not None:
+                    out[tr.id]["roll"] = [r(roll[i], 1) for i in idx]
             eng = tr.channel("EngagementRange")
             if eng is not None:
                 vals = [v for v in eng if v == v and v > 0]

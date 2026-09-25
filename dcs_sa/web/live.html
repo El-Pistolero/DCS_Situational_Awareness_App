@@ -14,12 +14,14 @@
     <div class="brand"><span class="rec" id="recDot"></span> DCS SA · LIVE</div>
     <div class="lv-status" id="status">Not connected</div>
     <div class="spacer"></div>
-    <select id="rangeSel" title="Map range">
+    <div class="seg"><button id="btn2d" class="active">2D</button><button id="btn3d">3D</button></div>
+    <div class="seg only3d"><button id="btnOrbit" class="active">Orbit</button><button id="btnChase">Chase</button></div>
+    <select id="rangeSel" class="only2d" title="Map range">
       <option value="5">5 nm</option><option value="10">10 nm</option><option value="20">20 nm</option>
       <option value="40" selected>40 nm</option><option value="80">80 nm</option><option value="160">160 nm</option>
     </select>
-    <button id="btnOrient" title="Heading-up / north-up">Heading up</button>
-    <select id="layerSel" title="Ground"></select>
+    <button id="btnOrient" class="only2d" title="Heading-up / north-up">Heading up</button>
+    <select id="layerSel" class="only2d" title="Ground"></select>
     <button id="btnSound" title="Audible missile warning">🔇 Sound</button>
     <button id="btnSetup" title="Connection settings">⚙ Connect</button>
   </header>
@@ -67,6 +69,7 @@
     </div>
   </form>
 </dialog>
+<script type="importmap">{"imports": {"three": "/static/vendor/three.module.min.js"}}</script>
 <script type="module" src="/static/js/live.js"></script>
 </body>
 </html>

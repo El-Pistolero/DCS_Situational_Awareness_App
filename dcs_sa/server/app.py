@@ -27,6 +27,7 @@ from ..telemetry.live_world import LiveWorld
 from ..telemetry.realtime import RealtimeTelemetryClient
 from ..telemetry.replay import ReplaySource
 from .store import RecordingStore
+from .tiles import TileCache
 
 log = logging.getLogger(__name__)
 
@@ -109,6 +110,7 @@ class App:
         self.desktop = False
         self.open_live_window = None  # set by the desktop shell
         self.profile = read_profile()
+        self.tiles = TileCache(str(Path(cfg.upload_dir).parent / "tilecache"))
         # No name configured: use the active DCS logbook pilot.
         if not cfg.player_names and self.profile.get("player"):
             cfg.player_names = [str(self.profile["player"])]
@@ -149,8 +151,9 @@ def make_handler(app: App):
             self.send_response(status)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            for k, v in (extra or {}).items():
+            extra = dict(extra or {})
+            self.send_header("Cache-Control", extra.pop("Cache-Control", "no-store"))
+            for k, v in extra.items():
                 self.send_header(k, v)
             self.end_headers()
             if self.command != "HEAD":
@@ -187,6 +190,8 @@ def make_handler(app: App):
                     return self._static("live.html")
                 if path.startswith("/static/"):
                     return self._static(path[len("/static/"):])
+                if path.startswith("/tiles/"):
+                    return self._tile(path.split("/")[2:])
                 if path == "/api/status":
                     return self._json(app.status())
                 if path == "/api/recordings":
@@ -265,6 +270,17 @@ def make_handler(app: App):
             if target.suffix == ".js":
                 ctype = "text/javascript; charset=utf-8"
             self._send(200, target.read_bytes(), ctype)
+
+        def _tile(self, parts) -> None:
+            try:
+                src, z, x, y = parts[0], int(parts[1]), int(parts[2]), int(parts[3].split(".")[0])
+            except (IndexError, ValueError):
+                return self._error(400, "bad tile path")
+            got = app.tiles.get(src, z, x, y)
+            if got is None:
+                return self._error(404, "tile unavailable")
+            data, ctype = got
+            self._send(200, data, ctype, {"Cache-Control": "max-age=86400"})
 
         # -- recordings --------------------------------------------------------------
 

@@ -191,5 +191,5 @@ export function sampleTrack(tr, t) {
     const a = tr.yaw[i], b = isNum(tr.yaw[j]) ? tr.yaw[j] : a;
     hdg = (a + wrap180(b - a) * f + 360) % 360;
   }
-  return { lon: lerp(tr.lon), lat: lerp(tr.lat), alt: lerp(tr.alt), hdg, i };
+  return { lon: lerp(tr.lon), lat: lerp(tr.lat), alt: lerp(tr.alt), hdg, pitch: lerp(tr.pitch), roll: lerp(tr.roll), i };
 }

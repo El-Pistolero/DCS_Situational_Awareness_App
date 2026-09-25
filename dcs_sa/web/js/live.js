@@ -3,6 +3,7 @@
 import { api, el, fmtAlt, fmtDist, fmtHdg, fmtNum, fmtSpeed, fmtVs, isNum, sideColor, units, M_TO_FT } from "./util.js";
 import { LAYERS, TacticalMap } from "./map.js";
 import { drawScene } from "./symbols.js";
+import { Scene3D } from "./scene3d.js";
 
 const $ = (id) => document.getElementById(id);
 const pref = (k, d) => { try { return localStorage.getItem(`dcs-sa.live.${k}`) ?? d; } catch { return d; } };
@@ -13,6 +14,35 @@ const S = {
   snap: null, trails: new Map(), rangeNm: +pref("range", 40), headingUp: pref("hdgUp", "1") === "1",
   sound: false, lastMissiles: new Set(), events: [], userPanned: false, panTimer: null,
 };
+
+let scene3d = null;
+S.view = "2d";
+function setView(view) {
+  S.view = view;
+  if (view === "3d" && !scene3d) {
+    try {
+      scene3d = new Scene3D(document.querySelector(".lv-map"));
+      scene3d.onPick = (id) => api("/api/live/focus", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
+    } catch (err) { alert(`3D view unavailable: ${err.message}`); S.view = "2d"; return; }
+  }
+  const is3d = S.view === "3d";
+  document.body.classList.toggle("is3d", is3d);
+  $("map").style.display = is3d ? "none" : "block";
+  scene3d?.setVisible(is3d);
+  $("btn2d").classList.toggle("active", !is3d);
+  $("btn3d").classList.toggle("active", is3d);
+  setPref("view", S.view);
+}
+function setCam(mode) {
+  scene3d?.setMode(mode);
+  $("btnOrbit").classList.toggle("active", mode === "orbit");
+  $("btnChase").classList.toggle("active", mode === "chase");
+  setPref("cam", mode);
+}
+$("btn2d").onclick = () => setView("2d");
+$("btn3d").onclick = () => { setView("3d"); setCam(pref("cam", "chase")); };
+$("btnOrbit").onclick = () => setCam("orbit");
+$("btnChase").onclick = () => setCam("chase");
 
 // -- controls ---------------------------------------------------------------
 
@@ -138,6 +168,11 @@ function onSnapshot(snap) {
   renderStores(snap.ownship);
   renderRWR(snap.ownship, me);
   map.invalidate();
+  if (S.view === "3d" && scene3d) {
+    scene3d.update(snap.objects.map((o) => ({
+      ...o, pitch: o.v?.Pitch, roll: o.v?.Roll, ias: o.v?.IAS, tas: o.v?.TAS ?? o.d?.gs, trail: S.trails.get(o.id),
+    })), { focusId: snap.focus });
+  }
 }
 
 // -- map ------------------------------------------------------------------------
@@ -324,3 +359,4 @@ function renderRWR(own, me) {
 }
 
 connect();
+if (pref("view", "2d") === "3d") { setView("3d"); setCam(pref("cam", "chase")); }

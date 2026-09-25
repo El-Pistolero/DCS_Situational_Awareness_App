@@ -9,6 +9,7 @@ import { LAYERS, TacticalMap } from "./map.js";
 import { drawScene } from "./symbols.js";
 import { LineChart } from "./charts.js";
 import { bar, drawADI, drawStick } from "./instruments.js";
+import { Scene3D } from "./scene3d.js";
 
 const $ = (id) => document.getElementById(id);
 const pref = (k, d) => { try { return localStorage.getItem(`dcs-sa.${k}`) ?? d; } catch { return d; } };
@@ -23,6 +24,33 @@ const S = {
 };
 
 const map = new TacticalMap($("map"), { layer: pref("layer", "satellite") });
+let scene3d = null;
+S.view = "2d";
+
+function setView(view) {
+  S.view = view;
+  if (view === "3d" && !scene3d) {
+    try {
+      scene3d = new Scene3D(document.querySelector(".mapwrap"));
+      scene3d.onPick = (id) => select(id);
+    } catch (err) { toast(`3D view unavailable: ${err.message}`); S.view = "2d"; return; }
+  }
+  const is3d = S.view === "3d";
+  document.body.classList.toggle("is3d", is3d);
+  $("map").style.display = is3d ? "none" : "block";
+  scene3d?.setVisible(is3d);
+  $("btn2d").classList.toggle("active", !is3d);
+  $("btn3d").classList.toggle("active", is3d);
+  setPref("view", S.view);
+  onTimeChange(true);
+}
+
+function setCam(mode) {
+  scene3d?.setMode(mode);
+  setTimeout(() => onTimeChange(true), 0);
+  $("btnOrbit").classList.toggle("active", mode === "orbit");
+  $("btnChase").classList.toggle("active", mode === "chase");
+}
 
 // ---------------------------------------------------------------------------
 // Boot
@@ -38,6 +66,11 @@ async function init() {
   $("trailSel").onchange = (e) => { S.trailSec = +e.target.value; map.invalidate(); };
   $("radarSel").onchange = (e) => { S.radar = e.target.value; map.invalidate(); };
   $("btnFollow").onclick = () => setFollow(!S.follow);
+  $("btn2d").onclick = () => setView("2d");
+  $("btn3d").onclick = () => setView("3d");
+  $("btnOrbit").onclick = () => setCam("orbit");
+  $("btnChase").onclick = () => setCam("chase");
+  $("exagSel").onchange = (e) => { scene3d?.setExaggeration(+e.target.value); onTimeChange(true); };
   $("btnFit").onclick = fitAll;
   $("btnLibrary").onclick = showLibrary;
   $("btnPlay").onclick = togglePlay;
@@ -169,6 +202,7 @@ function setupRecording(key, analysis, playback) {
   fitAll();
   select(S.me || analysis.aircraft[0]?.id || null);
   renderAllPanels();
+  if (pref("view", "2d") === "3d") setView("3d");
 }
 
 function fitAll() {
@@ -211,6 +245,10 @@ function onTimeChange(force = false) {
     if (p && isNum(p.lon)) map.setView(p.lon, p.lat);
   }
   map.invalidate();
+  if (S.view === "3d" && scene3d && S.analysis) {
+    scene3d.follow = true;
+    scene3d.update(sceneObjects(), { focusId: S.selected || S.me, selectedId: S.selected });
+  }
   updateScrubber();
   const now = performance.now();
   if (force || now - S.lastPanel > 100) {
@@ -304,7 +342,7 @@ function sceneObjects() {
     const death = S.deaths.get(o.id);
     const dead = isNum(death) && t >= death;
     if (dead && ["fixedwing", "rotorcraft", "air"].includes(o.category) && t > death + 2) continue;
-    const row = { ...o, lon: p.lon, lat: p.lat, alt: p.alt, hdg: p.hdg, dead, v: {} };
+    const row = { ...o, lon: p.lon, lat: p.lat, alt: p.alt, hdg: p.hdg, pitch: p.pitch, roll: p.roll, dead, v: {} };
     // Ground speed from the playback track, for labels.
     const i = p.i, pb = o.pb;
     if (i > 0 && pb.t[i] > pb.t[i - 1]) {
@@ -372,6 +410,7 @@ function onMapHover(ev) {
 
 async function select(id) {
   S.selected = id;
+  if (S.view === "3d") onTimeChange(true);
   renderObjectList();
   map.invalidate();
   const o = id && S.objects.get(id);

@@ -4,13 +4,15 @@ A desktop app for **DCS World** that shows you everything about a sortie. It wor
 
 It reads **Tacview** data. Tacview is the program; **ACMI** (`.acmi`) is its file format. You were half-right about both!
 
+![3D chase view](docs/3d-approach.png)
+
 ![Live view](docs/live.png)
 
 ## What you get
 
 | | Live (second screen) | Debrief (after the flight) |
 |---|---|---|
-| **Map** | Heading-up tactical map on satellite / relief ground, range rings, trails | Full replay with play/pause/scrub at 0.5× to 64×, satellite / relief / topo ground |
+| **Map** | **3D** (terrain + satellite imagery, chase or orbit camera) or heading-up 2D tactical map with range rings | Full replay in **3D** or 2D, play/pause/scrub at 0.5× to 64× |
 | **Your aircraft** | IAS, altitude, heading, Mach, AOA, G, V/S, fuel, gear/flaps | Attitude indicator, all flight data at any moment, charts over the whole flight |
 | **Your inputs** | Stick / rudder deflection (via the DCS bridge) | Stick & rudder display, throttle/afterburner, brakes, hook, trigger |
 | **Radar** | Your radar cone, lock lines, **RWR scope** | Lock episodes (who, range, how long, how it ended), who locked *you* |
@@ -41,6 +43,16 @@ On a multiplayer server the server decides what may be exported. The bridge only
 
 **Your profile:** the app reads the active pilot from your DCS logbook (`Saved Games\DCS\MissionEditor\logbook.lua`) and uses that name to pick *your* jet in recordings and live. You can override it in `dcs-sa.toml` (see `dcs-sa.example.toml`) or click **This is me** on any aircraft.
 
+## The 3D view
+
+Click **3D** in the top-right of either view.
+
+* **Terrain** is real elevation data (AWS open terrain tiles) draped with Esri satellite imagery: about 60 m/pixel out to ~100 km, and about 14 m/pixel within ~30 km of the selected aircraft. It streams in as you move. Tiles are cached in `Documents\DCS-SA\tilecache`, so areas you've flown before load instantly and work offline.
+* **Aircraft** are drawn as 3D models posed with their recorded heading, pitch and bank. At long range they're scaled up so you can still see them.
+* **Weapons** leave smoke trails. Lock lines are dashed yellow. SAM envelopes are domes.
+* **Orbit** camera: drag to rotate, scroll to zoom, right-drag to pan; it follows the selected aircraft. **Chase** puts you behind the aircraft. Click any aircraft to select it.
+* **Terrain 2× / 3×** exaggerates relief when you want low-level terrain masking to stand out.
+
 ## Try it without DCS
 
 The app ships with a generated demo sortie (`samples/sample_sortie.acmi`): takeoff from Batumi, an AIM-120 kill, a notched R-27, a strafing pass and a landing. Open it from the recordings list. To see the live view in action without DCS, go to *⚙ Connect → Replay a recording*.
@@ -67,10 +79,10 @@ DCS World ─ Tacview exporter ─┬─ .acmi file ─────────�
 * `dcs_sa/acmi/`: streaming ACMI 2.x parser (zip / plain / BOM, escaping, all transform variants, reference offsets).
 * `dcs_sa/analysis/`: kinematics (G, turn rate, energy), weapons & kill attribution, takeoff/landing grading, radar locks, timeline.
 * `dcs_sa/telemetry/`: Tacview real-time client (handshake + CRC-64 password), DCS bridge receiver, live threat picture.
-* `dcs_sa/web/`: the UI (plain JavaScript, no build step). Map tiles are © Esri / OpenStreetMap / CARTO; offline it falls back to a grid.
+* `dcs_sa/web/`: the UI (plain JavaScript, no build step; 3D via the bundled three.js). Map tiles are © Esri / OpenStreetMap / CARTO, and terrain comes from AWS Terrain Tiles. Offline, the map falls back to a grid.
 * `dcs-scripts/DCS-SA-Export.lua`: the in-game bridge.
 
-The app is Python standard library only. Nothing is sent anywhere except map-tile requests.
+The app is Python standard library only. Nothing is sent anywhere except map and terrain tile requests.
 
 ## Known limits
 

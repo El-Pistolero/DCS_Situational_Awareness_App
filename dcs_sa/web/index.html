@@ -37,12 +37,21 @@
     <div class="map-hud tl hidden" id="hudSel"></div>
     <div class="map-hud bl hidden" id="hudHover"></div>
     <div class="map-tools">
-      <div class="row"><select id="layerSel" title="Base map"></select></div>
+      <div class="row">
+        <div class="seg"><button id="btn2d" class="active">2D</button><button id="btn3d">3D</button></div>
+      </div>
+      <div class="row only3d">
+        <div class="seg"><button id="btnOrbit" class="active" title="Drag to orbit, scroll to zoom">Orbit</button><button id="btnChase" title="Camera behind the selected aircraft">Chase</button></div>
+      </div>
+      <div class="row only3d">
+        <select id="exagSel" title="Terrain height"><option value="1">Terrain 1×</option><option value="2">Terrain 2×</option><option value="3">Terrain 3×</option></select>
+      </div>
+      <div class="row only2d"><select id="layerSel" title="Base map"></select></div>
       <div class="row">
         <button id="btnFollow" title="Keep the selected aircraft centred (F)">Follow</button>
         <button id="btnFit" title="Zoom to fit everything">Fit</button>
       </div>
-      <div class="row">
+      <div class="row only2d">
         <select id="labelSel" title="Labels">
           <option value="aircraft">Labels: aircraft</option>
           <option value="all">Labels: all</option>
@@ -59,7 +68,7 @@
           <option value="0">Trails off</option>
         </select>
       </div>
-      <div class="row">
+      <div class="row only2d">
         <select id="radarSel" title="Radar cones">
           <option value="focus">Radar: selected</option>
           <option value="all">Radar: all</option>
@@ -96,6 +105,7 @@
     </div>
   </footer>
 </div>
+<script type="importmap">{"imports": {"three": "/static/vendor/three.module.min.js"}}</script>
 <script type="module" src="/static/js/review.js"></script>
 </body>
 </html>

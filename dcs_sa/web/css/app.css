@@ -367,3 +367,18 @@ table.grid tr.current td { background: #1f2c1f; }
   .playback { grid-template-columns: auto 1fr; }
   .playback .clock { grid-column: 1 / -1; }
 }
+
+/* ---------- 3D view ---------- */
+canvas.scene3d { position: absolute; inset: 0; display: none; touch-action: none; }
+.labels3d { position: absolute; inset: 0; pointer-events: none; overflow: hidden; display: none; }
+.lbl3d {
+  position: absolute; left: 0; top: 0; white-space: pre; font: 11px/1.25 var(--mono);
+  text-shadow: 0 0 3px #000, 0 0 2px #000, 0 1px 2px #000; will-change: transform;
+}
+.lbl3d.focus { font-weight: 700; }
+.seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 6px; overflow: hidden; }
+.seg button { border: none; border-radius: 0; background: rgba(17,24,32,0.9); }
+.seg button.active { background: #2a4d74; color: #fff; }
+.only3d { display: none !important; }
+.is3d .only3d { display: inline-flex !important; }
+.is3d .only2d { display: none !important; }
