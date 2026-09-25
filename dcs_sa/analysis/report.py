@@ -254,6 +254,24 @@ def to_markdown(report: Dict, focus: Optional[str] = None) -> str:
             )
         lines.append("")
 
+    if report.get("strikes"):
+        lines.append("## Air-to-ground")
+        lines.append("")
+        lines.append("| Release | Weapon | Alt | Speed | Dive | Range | Time of fall | Target | Miss | Result |")
+        lines.append("|---|---|---|---|---|---|---|---|---|---|")
+        for st in report["strikes"]:
+            rel = st.get("release") or {}
+            alt = f"{rel['altitude'] * 3.28084:,.0f} ft" if rel.get("altitude") is not None else "?"
+            spd = f"{rel['tas'] * 1.943844:.0f} kt" if rel.get("tas") is not None else "?"
+            dive = f"{rel['dive']:.0f} deg" if rel.get("dive") is not None else "?"
+            rng = f"{st['groundRange'] / 1852:.1f} nm" if st.get("groundRange") is not None else "?"
+            miss = f"{st['missDistance']:.0f} m" if st.get("missDistance") is not None else "-"
+            res = st["result"] + (f" ({', '.join(d['name'] for d in st['damage'])})" if st.get("damage") else "")
+            name = st["weaponName"] + (f" x{st['submunitions']} bomblets" if st.get("submunitions") else "")
+            lines.append(f"| {_clock(st['releaseTime'])} | {name} | {alt} | {spd} | {dive} | {rng} | "
+                         f"{st['timeOfFall']:.0f} s | {st.get('targetName') or '-'} | {miss} | {res} |")
+        lines.append("")
+
     if w["kills"]:
         lines.append("## Kills and losses")
         lines.append("")

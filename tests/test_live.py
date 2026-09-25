@@ -141,7 +141,7 @@ class ServerTests(unittest.TestCase):
         try:
             get = lambda p: json.loads(urllib.request.urlopen(url.rstrip("/") + p, timeout=10).read())
             recs = get("/api/recordings")["recordings"]
-            key = next(r["key"] for r in recs if r["sample"])
+            key = next(r["key"] for r in recs if r["sample"] and r["name"] == "sample_sortie.acmi")
             deadline = time.time() + 20
             while get(f"/api/recording/{key}/load")["state"] != "ready" and time.time() < deadline:
                 time.sleep(0.1)

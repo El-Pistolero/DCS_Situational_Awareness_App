@@ -549,15 +549,20 @@ def _find_submunitions(rec: Recording, weapons: List[Track], platforms: List[Tra
             continue
         lo = bisect.bisect_left(times, w.first_seen + DISPENSE_WINDOW[0])
         hi = bisect.bisect_right(times, w.first_seen - DISPENSE_WINDOW[0] + DISPENSE_WINDOW[1])
-        best, best_d = None, DISPENSE_RADIUS
+        best, best_score = None, math.inf
         for end_t, d, pos in ends[lo:hi]:
             if d is w or d.first_seen >= w.first_seen - 0.5 or d.id in out:
                 continue
             if not (end_t + DISPENSE_WINDOW[0] <= w.first_seen <= end_t + DISPENSE_WINDOW[1]):
                 continue
             dist = geo.slant_range(first[0], first[1], first[2], pos[0], pos[1], pos[2])
-            if dist < best_d:
-                best, best_d = d, dist
+            if dist > DISPENSE_RADIUS:
+                continue
+            # Two dispensers opening close together: the one that ended when
+            # the bomblet appeared wins (a quarter second ~ 50 m of travel).
+            score = abs(end_t - w.first_seen) * 200.0 + dist
+            if score < best_score:
+                best, best_score = d, score
         if best is None:
             continue
         named = bool(SUBMUNITION_RE.search(w.name or ""))

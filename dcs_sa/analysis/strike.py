@@ -25,6 +25,7 @@ from typing import Dict, List, Optional, Tuple
 
 from ..acmi.model import Recording, Track
 from . import geo
+from .lar import jsow_envelope
 from .weapons import Destruction, Shot, WeaponReport, _clean, _hostile, _weapon_samples
 
 #: Weapon families, by DCS type name.  Order matters (first match wins).
@@ -80,6 +81,7 @@ class Strike:
     damage: List[Dict[str, object]] = field(default_factory=list)
     dcs_hits: Optional[int] = None
     result: str = "unknown"                    # "destroyed" | "damaged" | "miss" | "in flight"
+    envelope: Dict[str, object] = field(default_factory=dict)  # JSOW: Rmax/Rmin/TOF at release (DCS table)
 
     def to_dict(self) -> Dict:
         return _clean(asdict(self))
@@ -151,6 +153,38 @@ def _footprint(points: List[Tuple[float, float]]) -> Dict[str, object]:
     }
 
 
+def _ground_alt_near(rec: Recording, lon: float, lat: float, radius: float = 4000.0) -> Optional[float]:
+    """Ground elevation near a point, from the ground units standing there."""
+    alts = []
+    for tr in rec.tracks.values():
+        if tr.category != "ground":
+            continue
+        p = tr.position_at(tr.first_seen)
+        if p is not None and p[2] == p[2] and geo.ground_distance(lon, lat, p[0], p[1]) <= radius:
+            alts.append(p[2])
+    if not alts:
+        return None
+    alts.sort()
+    return alts[len(alts) // 2]
+
+
+def _to_ground(samples: List[Tuple[float, float, float, float]], ground: Optional[float]) -> Tuple[float, float, float, float]:
+    """Where the (extended) path reaches the ground.
+
+    The extension to the removal time can carry the path up to a frame past
+    the impact; with the local ground elevation known, the impact is where
+    the last segments cross it.
+    """
+    end = samples[-1]
+    if ground is None or len(samples) < 2 or end[3] > ground + 30.0:
+        return end
+    for (t0, lo0, la0, a0), (t1, lo1, la1, a1) in zip(reversed(samples[:-1]), reversed(samples[1:])):
+        if a0 >= ground >= a1 and a0 > a1:
+            f = (a0 - ground) / (a0 - a1)
+            return (t0 + (t1 - t0) * f, lo0 + (lo1 - lo0) * f, la0 + (la1 - la0) * f, ground)
+    return end
+
+
 def _nearest_target(rec: Recording, launcher: Optional[Track], lon: float, lat: float, t: float,
                     radius: float = TARGET_SEARCH) -> Tuple[Optional[Track], float]:
     best, best_d = None, radius
@@ -185,7 +219,8 @@ def analyze_strikes(rec: Recording, weapons: WeaponReport,
             continue
         launcher = rec.tracks.get(shot.launcher_id or "")
         fam = family(shot.weapon_name, shot.kind)
-        end_t, elon, elat, ealt = samples[-1]
+        gnd = _ground_alt_near(rec, samples[-1][1], samples[-1][2])
+        end_t, elon, elat, ealt = _to_ground(samples, gnd)
         flying = w.removed_at is None and w.last_seen >= rec.end_time - 0.5
         st = Strike(
             weapon_id=w.id, weapon_name=shot.weapon_name, family=fam,
@@ -210,9 +245,10 @@ def analyze_strikes(rec: Recording, weapons: WeaponReport,
             for sub in subs:
                 ss = _weapon_samples(sub)
                 if ss:
-                    pts.append((ss[-1][1], ss[-1][2]))
-                    sub_alts.append(ss[-1][3])
-                    last_t = max(last_t, ss[-1][0])
+                    hit = _to_ground(ss, gnd)
+                    pts.append((hit[1], hit[2]))
+                    sub_alts.append(hit[3])
+                    last_t = max(last_t, hit[0])
             st.submunitions = len(subs)
             st.footprint = _footprint(pts)
             st.impact_time = last_t
@@ -227,10 +263,18 @@ def analyze_strikes(rec: Recording, weapons: WeaponReport,
         drop = first[3] - st.impact["altitude"]
         if drop > 50.0:
             st.glide_ratio = st.ground_range / drop
+        if fam == "jsow":
+            env = jsow_envelope(drop, st.release.get("tas", float("nan")))
+            if env:
+                env["rangeFraction"] = st.ground_range / env["rmax"] if env.get("rmax") else None
+                env["inRange"] = bool(env.get("rmin", 0.0) <= st.ground_range <= env["rmax"])
+                st.envelope = env
 
         # Target: what the launcher had locked / what the weapon flew at,
         # else the nearest hostile ground unit to the impact.
         tgt = rec.tracks.get(shot.target_id or "")
+        if cluster and shot.target_source != "lock":
+            tgt = None  # an area weapon: the unit nearest the pattern's centre
         if tgt is not None and tgt.category in ("ground", "sea"):
             st.target_source = shot.target_source
         else:
@@ -246,8 +290,11 @@ def analyze_strikes(rec: Recording, weapons: WeaponReport,
         radius = DAMAGE_RADIUS["rocket" if fam == "rocket" else "cluster" if cluster else "unitary"]
         if cluster and st.footprint:
             radius += float(st.footprint.get("extent") or 0.0)
+        # From the moment it could first hurt anything: the dispense for a
+        # cluster weapon (bomblets land over a few seconds), else the impact.
+        t_from = (st.dispense["time"] if st.dispense else st.impact_time) + DAMAGE_WINDOW[0]
         for d, vt in deaths:
-            if not (st.impact_time + DAMAGE_WINDOW[0] <= d.time <= st.impact_time + DAMAGE_WINDOW[1]):
+            if not (t_from <= d.time <= st.impact_time + DAMAGE_WINDOW[1]):
                 continue
             if launcher is not None and not _hostile(launcher, vt):
                 continue
@@ -292,6 +339,8 @@ def credit_kills(rec: Recording, weapons: WeaponReport, strikes: List[Strike]) -
     for st in strikes:
         for d in st.damage:
             k = by_victim.get(str(d["id"]))
+            if k is not None and k.weapon_id == st.weapon_id:
+                k.miss_distance = float(d["distance"])  # measured at the ground, not the last sample
             if k is None or k.killer_id:
                 continue
             k.killer_id, k.killer_name, k.killer_pilot = st.launcher_id, st.launcher_name, st.launcher_pilot

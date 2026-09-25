@@ -54,7 +54,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     sub.add_parser("install-shortcut", help="put a DCS SA icon on the desktop and in the Start menu")
 
-    ps = sub.add_parser("sample", help="write the synthetic demo recording")
+    ps = sub.add_parser("sample", help="write the synthetic demo recordings (air-to-air sortie + JSOW strike)")
     ps.add_argument("--out", default=str(Path(__file__).resolve().parent.parent / "samples" / "sample_sortie.acmi"))
 
     # Bare `python -m dcs_sa --replay x` should still work.
@@ -82,8 +82,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
     if args.command == "sample":
         from .samplegen import write_sample
+        from .samplestrike import write_strike_sample
 
         print(f"wrote {write_sample(args.out)}")
+        print(f"wrote {write_strike_sample(str(Path(args.out).with_name('sample_strike.acmi')))}")
         return 0
     return _serve(args)
 
