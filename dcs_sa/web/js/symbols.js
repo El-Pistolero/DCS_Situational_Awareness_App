@@ -15,7 +15,29 @@ function altTag(alt) {
   return units.metric ? `${Math.round(alt / 100)}` : `${Math.round((alt * M_TO_FT) / 100)}`;
 }
 
-function drawAircraft(ctx, x, y, ang, color, size, rotor) {
+// F-16 top view, nose at -1, normalised to half-length 1.
+const F16_OUTLINE = [
+  [0, -1], [0.05, -0.9], [0.09, -0.72], [0.11, -0.55], [0.17, -0.12], [0.63, 0.32], [0.65, 0.3],
+  [0.65, 0.47], [0.13, 0.48], [0.12, 0.62], [0.39, 0.86], [0.39, 0.95], [0.08, 0.94], [0.07, 1],
+  [-0.07, 1], [-0.08, 0.94], [-0.39, 0.95], [-0.39, 0.86], [-0.12, 0.62], [-0.13, 0.48], [-0.65, 0.47],
+  [-0.65, 0.3], [-0.63, 0.32], [-0.17, -0.12], [-0.11, -0.55], [-0.09, -0.72], [-0.05, -0.9],
+];
+
+function drawAircraft(ctx, x, y, ang, color, size, rotor, f16 = false) {
+  if (f16 && !rotor) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(ang + Math.PI / 2);
+    ctx.fillStyle = color;
+    ctx.strokeStyle = "rgba(0,0,0,0.65)";
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    F16_OUTLINE.forEach(([px, py], i) => (i ? ctx.lineTo(px * size * 1.25, py * size * 1.25) : ctx.moveTo(px * size * 1.25, py * size * 1.25)));
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    ctx.restore();
+    return;
+  }
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(ang + Math.PI / 2);
@@ -251,7 +273,7 @@ export function drawScene(ctx, map, objects, opts = {}) {
           ctx.beginPath(); ctx.arc(x, y, 15, 0, TAU); ctx.stroke();
           ctx.restore();
         }
-        drawAircraft(ctx, x, y, ang, o.dead ? "#777" : color, focus ? 11 : 9, o.category === "rotorcraft");
+        drawAircraft(ctx, x, y, ang, o.dead ? "#777" : color, focus ? 11 : 9, o.category === "rotorcraft", /\bF-?16/i.test(o.name || ""));
         hits.push({ id: o.id, x, y, r: 14 });
         break;
       case "weapon":

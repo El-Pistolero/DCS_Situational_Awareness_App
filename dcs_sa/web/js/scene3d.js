@@ -4,6 +4,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "/static/vendor/OrbitControls.js";
 import { isNum, sideColor, units, M_TO_FT, MPS_TO_KT } from "./util.js";
+import { buildF16, isF16 } from "./f16.js";
 
 const R_LAT = 111320;
 const D2R = Math.PI / 180;
@@ -476,14 +477,20 @@ export class Scene3D {
     else if (type.includes("AircraftCarrier")) geom = GEOM.carrier;
     else if (o.category === "sea") geom = GEOM.ship;
     else if (type.includes("AntiAircraft")) geom = GEOM.sam;
-    const mat = new THREE.MeshLambertMaterial({
-      color: o.category === "weapon" ? 0xf2f2f2 : color, emissive: color, emissiveIntensity: 0.35, side: THREE.DoubleSide,
-    });
-    const model = new THREE.Mesh(geom, mat);
-    model.userData.id = o.id;
+    let model, mat;
+    if (["fixedwing", "air"].includes(o.category) && isF16(o.name)) {
+      model = buildF16(color);
+      mat = model.userData.bodyMaterial;
+      e = { f16: true };
+    } else {
+      mat = new THREE.MeshLambertMaterial({
+        color: o.category === "weapon" ? 0xf2f2f2 : color, emissive: color, emissiveIntensity: 0.35, side: THREE.DoubleSide,
+      });
+      model = new THREE.Mesh(geom, mat);
+    }
+    model.traverse((m) => { if (m.isMesh) { m.userData.id = o.id; this._pickables.push(m); } });
     group.add(model);
     this.scene.add(group);
-    this._pickables.push(model);
 
     const trailGeo = new THREE.BufferGeometry();
     trailGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(3 * 1200), 3));
@@ -515,7 +522,8 @@ export class Scene3D {
     const label = document.createElement("div");
     label.className = "lbl3d";
     this.labelLayer.append(label);
-    e = { group, model, trail, dome, label, color: sideColor(o) };
+    e = { ...(e || {}), group, model, mat, trail, dome, label, color: sideColor(o),
+      baseColor: mat.color.clone(), baseEmissive: mat.emissiveIntensity };
     this.objects.set(o.id, e);
     return e;
   }
@@ -526,9 +534,13 @@ export class Scene3D {
     this.scene.remove(e.group, e.trail);
     if (e.dome) this.scene.remove(e.dome);
     e.trail.geometry.dispose();
-    e.model.material.dispose();
+    e.model.traverse((m) => {
+      if (!m.isMesh) return;
+      if (m.geometry && !Object.values(GEOM).includes(m.geometry)) m.geometry.dispose();
+      m.material.dispose();
+    });
     e.label.remove();
-    this._pickables = this._pickables.filter((m) => m !== e.model);
+    this._pickables = this._pickables.filter((m) => m.userData.id !== id);
     this.objects.delete(id);
   }
 
@@ -558,8 +570,9 @@ export class Scene3D {
         -(isNum(o.roll) ? o.roll : 0) * D2R,
         "YXZ",
       );
-      e.model.material.color.set(o.dead ? 0x555555 : o.category === "weapon" ? 0xf2f2f2 : e.color);
-      e.model.material.emissiveIntensity = o.id === focus.id || o.id === selectedId ? 0.8 : 0.35;
+      if (o.dead) e.mat.color.set(0x555555); else e.mat.color.copy(e.baseColor);
+      const hi = o.id === focus.id || o.id === selectedId;
+      e.mat.emissiveIntensity = e.f16 ? (hi ? 0.4 : e.baseEmissive) : (hi ? 0.8 : 0.35);
       e.pos = p;
       e.obj = o;
       if (e.dome) {
@@ -611,12 +624,12 @@ export class Scene3D {
       }
       if (this.mode === "chase") {
         const hdg = (focus.hdg || 0) * D2R;
-        const back = 90, up = 22;
+        const back = 42, up = 11; // close enough to see the jet's shape
         const want = fp.clone().add(new THREE.Vector3(Math.sin(hdg) * -back, up, Math.cos(hdg) * back));
         // Smooth while flying; snap after a seek or when first entering chase.
         const snap = !this.lastFocusPos || this.camera.position.distanceTo(want) > 600;
         this.camera.position.lerp(want, snap ? 1 : 0.25);
-        this.camera.lookAt(fp.clone().add(new THREE.Vector3(Math.sin(hdg) * 60, 4, -Math.cos(hdg) * 60)));
+        this.camera.lookAt(fp.clone().add(new THREE.Vector3(Math.sin(hdg) * 40, 3, -Math.cos(hdg) * 40)));
       }
       this.lastFocusPos = fp.clone();
     }
