@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DCS SA Debrief</title>
+<meta name="description" content="Tacview / ACMI flight recording debrief for DCS World">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='none' stroke='%23ffd166' stroke-width='2'/%3E%3Cpath d='M16 5 L19 17 L27 20 L27 22 L18 20 L17 26 L20 28 L20 29 L16 28 L12 29 L12 28 L15 26 L14 20 L5 22 L5 20 L13 17 Z' fill='%234ea8ff'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+<div class="app" id="app">
+  <header class="topbar">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="none" stroke="#ffd166" stroke-width="2"/><path d="M16 5 L19 17 L27 20 L27 22 L18 20 L17 26 L20 28 L20 29 L16 28 L12 29 L12 28 L15 26 L14 20 L5 22 L5 20 L13 17 Z" fill="#4ea8ff"/></svg>
+      DCS SA
+    </div>
+    <button id="btnLibrary" title="Open another recording">Recordings</button>
+    <div class="title" id="recTitle">No recording loaded</div>
+    <div class="group">
+      <select id="unitSel" title="Units">
+        <option value="imperial">kt · ft · nm</option>
+        <option value="metric">km/h · m · km</option>
+      </select>
+      <button id="btnDebrief" title="Download a text debrief" disabled>Debrief .md</button>
+      <a href="/live" target="_blank" rel="noopener"><button title="Open the live second-screen view">Live view ↗</button></a>
+    </div>
+  </header>
+
+  <aside class="left" aria-label="Objects">
+    <div class="search"><input id="objFilter" type="text" placeholder="Filter objects…" autocomplete="off"></div>
+    <div class="objlist" id="objList"></div>
+  </aside>
+
+  <main class="mapwrap">
+    <canvas class="map" id="map" aria-label="Tactical map"></canvas>
+    <div class="map-hud tl hidden" id="hudSel"></div>
+    <div class="map-hud bl hidden" id="hudHover"></div>
+    <div class="map-tools">
+      <div class="row"><select id="layerSel" title="Base map"></select></div>
+      <div class="row">
+        <button id="btnFollow" title="Keep the selected aircraft centred (F)">Follow</button>
+        <button id="btnFit" title="Zoom to fit everything">Fit</button>
+      </div>
+      <div class="row">
+        <select id="labelSel" title="Labels">
+          <option value="aircraft">Labels: aircraft</option>
+          <option value="all">Labels: all</option>
+          <option value="minimal">Labels: minimal</option>
+          <option value="none">Labels: off</option>
+        </select>
+      </div>
+      <div class="row">
+        <select id="trailSel" title="Trail length">
+          <option value="30">Trails 30 s</option>
+          <option value="90" selected>Trails 90 s</option>
+          <option value="300">Trails 5 min</option>
+          <option value="1000000">Trails full</option>
+          <option value="0">Trails off</option>
+        </select>
+      </div>
+      <div class="row">
+        <select id="radarSel" title="Radar cones">
+          <option value="focus">Radar: selected</option>
+          <option value="all">Radar: all</option>
+          <option value="none">Radar: off</option>
+        </select>
+      </div>
+    </div>
+    <div class="welcome" id="welcome"></div>
+  </main>
+
+  <aside class="right" aria-label="Analysis">
+    <nav class="tabs" id="tabs" role="tablist"></nav>
+    <div class="tabpanel" id="tabpanel"></div>
+  </aside>
+
+  <footer class="bottom">
+    <div class="playback">
+      <div class="btns">
+        <button class="play" id="btnPlay" title="Play / pause (Space)">▶</button>
+        <select id="speedSel" title="Playback speed">
+          <option value="0.5">0.5×</option><option value="1">1×</option><option value="2">2×</option>
+          <option value="4" selected>4×</option><option value="8">8×</option><option value="16">16×</option>
+          <option value="32">32×</option><option value="64">64×</option>
+        </select>
+      </div>
+      <div class="btns">
+        <button class="ghost" id="btnBack" title="Back 10 s (←)">−10s</button>
+        <button class="ghost" id="btnFwd" title="Forward 10 s (→)">+10s</button>
+      </div>
+      <div class="scrub" id="scrub" aria-label="Timeline">
+        <div class="track"></div><div class="progress"></div><div class="head"></div>
+      </div>
+      <div class="clock" id="clock">--:-- / --:--</div>
+    </div>
+  </footer>
+</div>
+<script type="module" src="/static/js/review.js"></script>
+</body>
+</html>
