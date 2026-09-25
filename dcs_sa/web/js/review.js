@@ -661,7 +661,8 @@ function setupRecording(key, analysis, playback) {
   for (const k of analysis.weapons.kills) S.deaths.set(k.victimId, k.time);
   S.strikes = prepareStrikes(analysis.strikes || [], S.objects, analysis.weapons.submunitions || {});
   S.strikeIds = new Set((analysis.strikes || []).map((x) => x.weaponId));
-  S.subCount = new Map(Object.entries(analysis.weapons.submunitions || {}).map(([k, v]) => [k, v.length]));
+  // Bomblets per dispenser: DCS's count for the load (it records one object for all of them).
+  S.subCount = new Map((analysis.strikes || []).filter((x) => x.submunitions).map((x) => [x.weaponId, x.submunitions]));
   modeSw?.refresh?.();
   S.rounds = playback.rounds || [];
   S.roundLife = Math.max(1, ...S.rounds.map((r) => (r.end ?? r.t[r.t.length - 1]) - r.t[0]));

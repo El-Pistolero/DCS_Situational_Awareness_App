@@ -51,6 +51,8 @@ export function prepareStrikes(strikes, objects, submunitions = {}) {
     const launcher = objects.get(s.launcherId);
     return {
       s, path: weaponPath(s, objects), ticks: tofTicks(s, objects), bomblets,
+      // DCS records a dispenser's whole load as one object: the cloud's centre.
+      cloud: s.footprint?.estimated ? (submunitions[s.weaponId] || []).map((id) => objects.get(id)).filter(Boolean) : [],
       geom: strikeGeometry(s, objects), color: launcher ? sideColor(launcher) : "#e8ecf2",
       // Bomblets start landing well before the pattern's last one (= impactTime).
       firstLanding: bomblets.length ? bomblets[0].t : s.impactTime,
@@ -244,7 +246,25 @@ export function drawStrikes(ctx, map, prepared, t, opts = {}) {
       ctx.stroke();
       if (detail && isNum(geom.hof)) tag(`opened ${fmtShort(geom.hof)} above target`, x + 10, y + 10, "#ffc478");
     }
-    if (L.footprints && p.bomblets.length && t >= p.firstLanding) {
+    // The falling cloud (DCS's single object for all the bomblets): a disc
+    // that spreads from the opening point to the typical pattern size.
+    if (L.footprints && p.cloud.length && disp && t >= disp.time && t < s.impactTime) {
+      const f = Math.max(0, Math.min(1, (t - disp.time) / Math.max(1, s.impactTime - disp.time)));
+      for (const c of p.cloud) {
+        const q = posAt(c, t);
+        if (!q) continue;
+        const [x, y] = P(q.lon, q.lat);
+        const r = Math.max(4, ((10 + f * ((s.footprint.minor || 50) - 10)) / mpp));
+        ctx.save();
+        ctx.fillStyle = "rgba(255,196,120,0.18)";
+        ctx.strokeStyle = "rgba(255,196,120,0.7)";
+        ctx.setLineDash([2, 3]);
+        ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill(); ctx.stroke();
+        ctx.restore();
+        if (tags) tag(`${s.submunitions}× ${s.submunitionName || "bomblets"} falling`, x + r + 6, y, "#ffc478");
+      }
+    }
+    if (L.footprints && p.bomblets.length && t >= p.firstLanding && !p.cloud.length) {
       ctx.fillStyle = BOMBLET;
       for (const b of p.bomblets) {
         if (b.t > t) break;
@@ -257,9 +277,10 @@ export function drawStrikes(ctx, map, prepared, t, opts = {}) {
       const [x, y] = P(fp.lon, fp.lat);
       const col = RESULT_COLOR[s.result] || RESULT_COLOR.unknown;
       ctx.save();
-      ctx.setLineDash([5, 4]);
-      ctx.strokeStyle = col;
-      ctx.fillStyle = `${col}1a`;
+      // Measured patterns: short dashes; a typical (estimated) pattern: long faint dashes.
+      ctx.setLineDash(fp.estimated ? [9, 6] : [5, 4]);
+      ctx.strokeStyle = fp.estimated ? `${col}aa` : col;
+      ctx.fillStyle = `${col}${fp.estimated ? "10" : "1a"}`;
       ctx.lineWidth = 1.3;
       ctx.beginPath();
       // The major axis lies along fp.bearing; screenAngle gives that direction on the canvas.
@@ -267,7 +288,7 @@ export function drawStrikes(ctx, map, prepared, t, opts = {}) {
       ctx.fill(); ctx.stroke();
       ctx.restore();
       if (detail) {
-        tag(`${s.submunitions}×${subName(s)} · ${fmtShort(2 * fp.major)} × ${fmtShort(2 * fp.minor)}`,
+        tag(`${s.submunitions}× ${s.submunitionName || subName(s).trim()} · ${fp.estimated ? "typical pattern " : ""}${fmtShort(2 * fp.major)} × ${fmtShort(2 * fp.minor)}${fp.estimated ? " (est.)" : ""}`,
           x, y + Math.max(fp.major, fp.minor) / mpp + 12, col, "center");
       }
     }

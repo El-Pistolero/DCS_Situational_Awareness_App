@@ -6,9 +6,10 @@ vehicle column from high altitude, cranks away while the JSOWs glide in, then
 comes back for a GBU-12 on an armoured vehicle and a Mk-82 dive pass on a
 truck.  An SA-11 launcher takes a shot at it on the way in.
 
-Written the way DCS's Tacview exporter writes weapons: one object per weapon
-and per bomblet, no Parent, weapons deleted on impact without an impact
-sample, Event=Destroyed for the units that die.
+Written the way DCS's Tacview exporter writes weapons: one object per weapon,
+and ONE object for a JSOW-A's whole load of 145 bomblets (a "BLU-97/B" that
+falls as the centre of the cloud, created in the frame the JSOW is removed),
+no Parent, weapons deleted on impact without an impact sample.
 """
 
 from __future__ import annotations
@@ -88,6 +89,31 @@ class Glider:
         self.n += math.cos(math.radians(self.hdg)) * step * math.cos(gamma)
         self.alt -= step * math.sin(gamma)
         self.pitch = -math.degrees(gamma)
+
+
+class Cloud:
+    """DCS's single object for a dispenser's bomblets: the cloud's centre.
+
+    Real recordings show it starting ~9 m from the dispenser's last point,
+    falling fast at first and ~12 m/s near the ground (drogues), carrying
+    ~0.8 km forward, and living ~13-15 s from a ~500 m opening height.
+    """
+
+    def __init__(self, obj_id: str, e: float, n: float, alt: float, hdg: float, v: float, born: float) -> None:
+        h = math.radians(hdg)
+        self.obj_id, self.kind, self.born, self.hdg = obj_id, "blu97", born, hdg
+        self.e, self.n, self.alt = e + math.sin(h) * 8.6, n + math.cos(h) * 8.6, alt
+        self.ve, self.vn = math.sin(h) * v, math.cos(h) * v
+        self.age = 0.0
+
+    def step(self, dt: float) -> None:
+        self.e += self.ve * dt
+        self.n += self.vn * dt
+        decay = math.exp(-dt / 3.5)  # drogues: forward speed bleeds off in a few seconds
+        self.ve *= decay
+        self.vn *= decay
+        self.age += dt
+        self.alt -= (15.0 + 65.0 * math.exp(-self.age / 4.5)) * dt
 
 
 @dataclass
@@ -184,6 +210,7 @@ def build_strike_sample(duration: float = 540.0) -> List[str]:
 
     gliders: List[Glider] = []
     bombs: List[Ballistic] = []
+    clouds: List[Cloud] = []
     sam: Optional[Dict] = None
     kills_pending: List[Tuple[float, str]] = []   # (time, unit id)
     state, state_t = "INBOUND", 0.0
@@ -362,22 +389,15 @@ def build_strike_sample(duration: float = 540.0) -> List[str]:
                 # carry forward onto it over ~15 s in a ~150 x 80 m pattern.
                 em.remove(g.obj_id)
                 gliders.remove(g)
-                h = math.radians(g.hdg)
-                for k in range(145):
-                    ang = (k * 137.508) % 360.0
-                    rad = 4.0 + 18.0 * math.sqrt((k + 0.5) / 145.0)
-                    along = math.cos(math.radians(ang)) * rad * 1.3
-                    across = math.sin(math.radians(ang)) * rad * 0.8
-                    ve = math.sin(h) * (g.v + along) + math.cos(h) * across
-                    vn = math.cos(h) * (g.v + along) - math.sin(h) * across
-                    b = Ballistic(new_id(), "blu97", g.e, g.n, g.alt, ve, vn, -10.0, drag=0.29, born=t, sample_every=0.5)
-                    bombs.append(b)
-                    emit_weapon(b.obj_id, "blu97", b.e, b.n, b.alt, g.hdg, -60.0, first=True)
-                # Everything under the pattern dies as the bomblets land.
+                c = Cloud(new_id(), g.e, g.n, g.alt, g.hdg, g.v, born=t)
+                clouds.append(c)
+                emit_weapon(c.obj_id, "blu97", c.e, c.n, c.alt, g.hdg, 0.0, first=True)
+                # Everything under the pattern dies as the bomblets land, a few
+                # seconds before the cloud's centre reaches the ground (as in DCS).
                 for oid in list(ground):
                     ue, un = unit_pos(oid)
                     if ground[oid]["alive"] and math.hypot(ue - g.aim[0], un - g.aim[1]) < 85.0:
-                        kills_pending.append((t + 15.0 + 0.4 * len(kills_pending), oid))
+                        kills_pending.append((t + 10.5 + 0.4 * len(kills_pending), oid))
                 continue
             if g.alt <= GROUND + 0.5:
                 em.remove(g.obj_id)  # deleted on impact, no impact sample
@@ -388,7 +408,17 @@ def build_strike_sample(duration: float = 540.0) -> List[str]:
             if int(round((t - g.born) / DT)) % 2 == 0:  # recorded at ~2 Hz
                 emit_weapon(g.obj_id, g.kind, g.e, g.n, g.alt, g.hdg, g.pitch)
 
-        # --- bombs and bomblets ------------------------------------------------------------
+        # --- bomblet clouds (2 Hz, like DCS bombs) -----------------------------------------------
+        for c in list(clouds):
+            c.step(DT)
+            if c.alt <= GROUND:
+                em.remove(c.obj_id)
+                clouds.remove(c)
+                continue
+            if int(round((t - c.born) / DT)) % 2 == 0:
+                emit_weapon(c.obj_id, "blu97", c.e, c.n, c.alt, c.hdg, 0.0)
+
+        # --- bombs ---------------------------------------------------------------------------
         for b in list(bombs):
             b.step(DT)
             if b.alt <= GROUND:

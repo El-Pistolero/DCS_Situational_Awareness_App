@@ -518,7 +518,9 @@ def _speed_profile(samples: List[Tuple[float, float, float, float]]) -> Optional
 
 #: Names of bomblets / submunitions (DCS type names, any separator).
 SUBMUNITION_RE = re.compile(r"BLU[-_ ]?(97|108|61|63|26|77|91|92)|PTAB|\bAO[-_ ]?(1|2[._]?5)|MK[-_ ]?118|BL[-_ ]?755|"
-                            r"bomblet|submun|SD[-_ ]?10|HB[-_ ]?876|SKEET|KB[-_ ]?1|BKF", re.I)
+                            r"bomblet|submun|SD[-_ ]?10|HB[-_ ]?876|SKEET|KB[-_ ]?1|BKF|"
+                            # Older DCS versions name the child after the Lua table path.
+                            r"launcher\.cluster$", re.I)
 DISPENSE_RADIUS = 800.0   # m: submunitions appear around where the dispenser opened
 DISPENSE_WINDOW = (-2.0, 0.6)  # s: relative to the dispenser's end
 

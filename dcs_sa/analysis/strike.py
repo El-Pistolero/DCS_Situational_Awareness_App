@@ -9,7 +9,11 @@ works out
   DCS deletes a weapon a frame after its last sample), the nearest target
   and the miss distance;
 * for cluster weapons (AGM-154A with BLU-97s, CBUs) where it **opened** and
-  the **footprint** its submunitions covered;
+  the **footprint** its submunitions covered.  DCS's Tacview exporter writes
+  ONE object for a dispenser's whole load (e.g. a single "BLU-97/B" that
+  falls as the centre of the 145-bomblet cloud), so the pattern's size then
+  comes from :data:`DISPENSERS` and is marked as an estimate; when every
+  bomblet is recorded, the pattern is measured from them;
 * the **damage**: which ground units died near the impact shortly after.
 
 Everything is measured from the recording; when a DCS flight log is merged,
@@ -26,7 +30,7 @@ from typing import Dict, List, Optional, Tuple
 from ..acmi.model import Recording, Track
 from . import geo
 from .lar import jsow_envelope
-from .weapons import Destruction, Shot, WeaponReport, _clean, _hostile, _weapon_samples
+from .weapons import Destruction, Shot, WeaponReport, _clean, _hostile, _weapon_samples, ammo_name
 
 #: Weapon families, by DCS type name.  Order matters (first match wins).
 FAMILIES: List[Tuple[str, "re.Pattern[str]"]] = [
@@ -41,6 +45,24 @@ FAMILIES: List[Tuple[str, "re.Pattern[str]"]] = [
     ("gp-bomb", re.compile(r"MK[-_ ]?8[1234]|FAB[-_ ]?\d+|OFAB|BETAB|SAB|M117|GBU|KAB|BDU|BOMB", re.I)),
 ]
 
+#: Cluster dispensers: (submunition name, count, typical pattern semi-axes
+#: along / across the attack heading in m).  Counts are from DCS's weapon
+#: definitions (e.g. AGM_154A: cluster "BLU-97/B", count 145); the pattern
+#: size is a typical value, only used when the bomblets are not recorded.
+DISPENSERS: List[Tuple["re.Pattern[str]", str, int, float, float]] = [
+    (re.compile(r"^AGM[-_ ]?154A$", re.I), "BLU-97/B", 145, 100.0, 60.0),
+    (re.compile(r"^AGM[-_ ]?154B$", re.I), "BLU-108", 6, 80.0, 50.0),
+    (re.compile(r"^CBU[-_ ]?(87|103)", re.I), "BLU-97B", 202, 110.0, 60.0),
+    (re.compile(r"^CBU[-_ ]?(97|105)", re.I), "BLU-108", 10, 80.0, 50.0),
+    (re.compile(r"^(ROCKEYE|MK[-_ ]?20|CBU[-_ ]?(99|100))", re.I), "Mk 118", 247, 90.0, 55.0),
+    (re.compile(r"^BL[-_ ]?755", re.I), "BL755 bomblets", 147, 90.0, 55.0),
+]
+#: A load recorded as at most this many objects is DCS's single aggregate child.
+AGGREGATE_MAX = 3
+#: m around the falling cloud's centre at the moment a unit died (the
+#: centre is a representative point: kills at 70-95 m from it were observed).
+CLOUD_KILL_RADIUS = 150.0
+
 #: How close to an impact a ground unit must be to count as damaged by it.
 DAMAGE_RADIUS = {"unitary": 120.0, "cluster": 80.0, "rocket": 60.0}
 DAMAGE_WINDOW = (-1.0, 15.0)   # s around the impact
@@ -48,11 +70,28 @@ TARGET_SEARCH = 2500.0         # m: nearest target to an impact within this
 MAX_FOOTPRINT_POINTS = 300
 
 
+def clean_name(name: Optional[str]) -> str:
+    """DCS type name without the resource path: "weapons.missiles.AGM_154A" -> "AGM_154A",
+    "weapons.bombs.CBU_97.client.launcher.cluster" -> "CBU_97" (older DCS versions)."""
+    n = ammo_name(name)
+    return re.sub(r"\.(client|server)\.launcher\.cluster$", "", n)
+
+
 def family(name: str, kind: str) -> str:
+    n = clean_name(name)
     for fam, rx in FAMILIES:
-        if rx.search(name or ""):
+        if rx.search(n):
             return fam
     return {"bomb": "gp-bomb", "rocket": "rocket"}.get(kind, "agm")
+
+
+def dispenser(name: str) -> Optional[Tuple[str, int, float, float]]:
+    """(submunition, count, semi-major, semi-minor) for a cluster weapon, or None."""
+    n = clean_name(name)
+    for rx, sub, count, major, minor in DISPENSERS:
+        if rx.search(n):
+            return sub, count, major, minor
+    return None
 
 
 @dataclass
@@ -76,8 +115,10 @@ class Strike:
     target_source: Optional[str] = None        # "lock" | "closest-approach" | "nearest"
     miss_distance: Optional[float] = None      # ground distance impact (or footprint centre) -> target
     dispense: Dict[str, float] = field(default_factory=dict)   # where a cluster weapon opened
-    submunitions: int = 0
-    footprint: Dict[str, object] = field(default_factory=dict)  # centre, axes, angle, points
+    submunitions: int = 0                      # bomblets in the load (DCS's count when not all recorded)
+    submunitions_recorded: int = 0             # objects the recording holds for them
+    submunition_name: Optional[str] = None     # e.g. "BLU-97/B"
+    footprint: Dict[str, object] = field(default_factory=dict)  # centre, axes, angle, points; "estimated" when typical
     damage: List[Dict[str, object]] = field(default_factory=list)
     dcs_hits: Optional[int] = None
     result: str = "unknown"                    # "destroyed" | "damaged" | "miss" | "in flight"
@@ -238,6 +279,8 @@ def analyze_strikes(rec: Recording, weapons: WeaponReport,
         # own end is where it landed.
         subs = [rec.tracks[i] for i in weapons.submunitions.get(w.id, []) if i in rec.tracks]
         cluster = bool(subs) or fam == "cluster"
+        spec = dispenser(shot.weapon_name)
+        cloud: List[Tuple[float, float, float, float]] = []  # the aggregate child's path, for damage
         if subs:
             st.dispense = {"time": end_t, "longitude": elon, "latitude": elat, "altitude": ealt}
             pts, sub_alts = [], []
@@ -249,8 +292,25 @@ def analyze_strikes(rec: Recording, weapons: WeaponReport,
                     pts.append((hit[1], hit[2]))
                     sub_alts.append(hit[3])
                     last_t = max(last_t, hit[0])
-            st.submunitions = len(subs)
-            st.footprint = _footprint(pts)
+                    if len(subs) <= AGGREGATE_MAX:
+                        cloud.extend(ss)
+            st.submunitions_recorded = len(subs)
+            st.submunition_name = spec[0] if spec is not None else clean_name(subs[0].name)
+            if len(subs) <= AGGREGATE_MAX and spec is not None:
+                # DCS's single child: the centre of the falling cloud.  The
+                # pattern's size is typical for the weapon, laid along the
+                # dispenser's final heading.
+                st.submunitions = spec[1]
+                clon = sum(p[0] for p in pts) / len(pts) if pts else elon
+                clat = sum(p[1] for p in pts) / len(pts) if pts else elat
+                heading = _final_heading(samples)
+                st.footprint = {"lon": clon, "lat": clat, "major": spec[2], "minor": spec[3],
+                                "bearing": heading % 180.0 if heading is not None else 0.0,
+                                "extent": spec[2], "estimated": True,
+                                "points": [[round(p[0], 6), round(p[1], 6)] for p in pts]}
+            else:
+                st.submunitions = len(subs)
+                st.footprint = _footprint(pts)
             st.impact_time = last_t
             st.time_of_fall = last_t - shot.launch_time
             ilon, ilat = st.footprint.get("lon", elon), st.footprint.get("lat", elat)
@@ -302,7 +362,10 @@ def analyze_strikes(rec: Recording, weapons: WeaponReport,
             if vp is None:
                 continue
             dist = geo.ground_distance(ilon, ilat, vp[0], vp[1])
-            if dist <= radius:
+            # A unit can die before the cloud's centre lands: measure from
+            # where the centre was at that moment too.
+            near_cloud = cloud and _cloud_distance(cloud, d.time, vp) <= CLOUD_KILL_RADIUS
+            if dist <= radius or near_cloud:
                 st.damage.append({"id": vt.id, "name": vt.name, "time": d.time, "distance": dist, "cause": d.cause})
         st.damage.sort(key=lambda x: x["time"])
         if flying:
@@ -316,6 +379,27 @@ def analyze_strikes(rec: Recording, weapons: WeaponReport,
         out.append(st)
     _share_damage(out)
     return out
+
+
+def _final_heading(samples: List[Tuple[float, float, float, float]]) -> Optional[float]:
+    """Ground track over the weapon's last few seconds, degrees true."""
+    end = samples[-1]
+    for s in reversed(samples[:-1]):
+        if end[0] - s[0] >= 2.0 and geo.ground_distance(s[1], s[2], end[1], end[2]) > 20.0:
+            return geo.bearing(s[1], s[2], end[1], end[2])
+    return None
+
+
+def _cloud_distance(cloud: List[Tuple[float, float, float, float]], t: float, p: Tuple[float, ...]) -> float:
+    """Ground distance from p to the cloud centre at time t (held at its ends)."""
+    pts = sorted(cloud)
+    if t <= pts[0][0]:
+        q = pts[0]
+    elif t >= pts[-1][0]:
+        q = pts[-1]
+    else:
+        q = next(b for a, b in zip(pts, pts[1:]) if a[0] <= t <= b[0])
+    return geo.ground_distance(q[1], q[2], p[0], p[1])
 
 
 def _share_damage(strikes: List[Strike]) -> None:

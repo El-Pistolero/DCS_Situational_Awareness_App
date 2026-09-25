@@ -40,15 +40,24 @@ class StrikeSample(unittest.TestCase):
         shots = self.report["weapons"]["shots"]
         self.assertFalse(any(s["weaponName"] == "BLU-97/B" for s in shots))
         for s in self.by_name("AGM_154A"):
-            self.assertEqual(s["submunitions"], 145)
+            # DCS records one object for the whole load; the count is DCS's own.
+            self.assertEqual((s["submunitions"], s["submunitionsRecorded"]), (145, 1))
             fp = s["footprint"]
-            self.assertTrue(60 < fp["major"] < 250 and 30 < fp["minor"] < 150, fp)
-            self.assertGreater(len(fp["points"]), 100)
+            self.assertTrue(fp["estimated"])
+            self.assertEqual((fp["major"], fp["minor"]), (100.0, 60.0))
+            self.assertLess(abs(fp["bearing"] - s["release"]["heading"] % 180.0), 10.0)
             # Opened short of and above the target, as DCS does.
             self.assertGreater(s["dispense"]["altitude"] - s["impact"]["altitude"], 300)
         subs = [o for o in self.report["objects"] if o["name"] == "BLU-97/B"]
-        self.assertEqual(len(subs), 290)
+        self.assertEqual(len(subs), 2)
         self.assertTrue(all(o.get("dispenser") for o in subs))
+
+    def test_kills_while_the_cloud_falls(self):
+        # Units die before the cloud's centre lands, some well away from where
+        # it lands: they are credited from where the cloud was at that moment.
+        col = next(s for s in self.by_name("AGM_154A") if s["releaseTime"] < 90)
+        self.assertTrue(all(d["time"] < col["impactTime"] for d in col["damage"]))
+        self.assertTrue(any(d["distance"] > 150.0 for d in col["damage"]))
 
     def test_cluster_damage_and_kill_credit(self):
         col = next(s for s in self.by_name("AGM_154A") if s["releaseTime"] < 90)
@@ -103,6 +112,7 @@ class JsowTaggedAsMissile(unittest.TestCase):
         jsows = [s for s in strikes if s.family == "jsow"]
         self.assertEqual(len(jsows), 3)
         self.assertEqual(sorted(s.submunitions for s in jsows), [0, 145, 145])
+        self.assertEqual(sorted(s.submunitions_recorded for s in jsows), [0, 1, 1])
 
 
 class Envelope(unittest.TestCase):
@@ -112,6 +122,17 @@ class Envelope(unittest.TestCase):
         self.assertTrue(6 * 1852 < e["rmin"] < 8 * 1852)
         low = jsow_envelope(300.0, 200.0)
         self.assertLess(low["rmax"], e["rmax"] / 4)
+
+    def test_old_dcs_names(self):
+        from dcs_sa.analysis.strike import clean_name, dispenser
+        from dcs_sa.analysis.weapons import SUBMUNITION_RE
+        self.assertEqual(clean_name("weapons.missiles.AGM_154A"), "AGM_154A")
+        self.assertEqual(clean_name("weapons.bombs.CBU_97.client.launcher.cluster"), "CBU_97")
+        self.assertEqual(family("weapons.bombs.GBU_12", "bomb"), "lgb")
+        self.assertTrue(SUBMUNITION_RE.search("weapons.bombs.ROCKEYE.server.launcher.cluster"))
+        self.assertEqual(dispenser("AGM_154A")[:2], ("BLU-97/B", 145))
+        self.assertEqual(dispenser("CBU_105")[:2], ("BLU-108", 10))
+        self.assertIsNone(dispenser("AGM_154"))
 
     def test_families(self):
         self.assertEqual(family("AGM_154A", "bomb"), "jsow")
