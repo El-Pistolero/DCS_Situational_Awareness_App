@@ -11,13 +11,15 @@
 <body class="live">
 <div class="lv">
   <header class="lv-top">
-    <div class="brand"><img class="logo" src="/static/icon.png" alt=""><span class="rec" id="recDot"></span> DCS SA · LIVE</div>
+    <div class="brand"><img class="logo" src="/static/icon.png" alt=""><span class="rec" id="recDot"></span> <span class="long">DCS SA · </span>LIVE</div>
     <div class="lv-status" id="status">Not connected</div>
     <button id="btnGlance" title="Big-number layout (G)">Glance</button>
+    <div id="modeSw"></div>
     <div class="spacer"></div>
     <div class="seg"><button id="btn2d" class="active" title="2D map (V)">2D</button><button id="btn3d" title="3D view (V)">3D</button></div>
     <div class="seg only3d"><button id="btnOrbit" class="active" title="C cycles">Orbit</button><button id="btnChase" title="C cycles">Chase</button><button id="btnPadlock" title="Keep the target in view (C cycles, T changes target)">Padlock</button></div>
     <select id="radarSel" title="Radar cones"><option value="all">Radars: all</option><option value="known">Radars: known</option><option value="focus">Radar: mine</option><option value="none">Radar: off</option></select>
+    <button id="btnDisplay" title="Display options: rings, ground units, radar, labels, my weapons, JSOW zone (D)">Display ▾</button>
     <select id="bulletSel" title="Gun rounds"><option value="paths">Bullets: on</option><option value="off">Bullets: off</option></select>
     <select id="rangeSel" class="only2d" title="Map range">
       <option value="5">5 nm</option><option value="10">10 nm</option><option value="20">20 nm</option>
@@ -27,7 +29,7 @@
     <select id="layerSel" class="only2d" title="Ground"></select>
     <button id="btnSound" title="Audible missile warning (S)">🔇 Sound</button>
     <button id="btnKeys" title="Keyboard shortcuts (?)">⌨</button>
-    <button id="btnSetup" title="Connection settings (Ctrl+,)">⚙ Connect</button>
+    <button id="btnSetup" title="Connection settings (Ctrl+,)">⚙<span class="long"> Connect</span></button>
   </header>
   <main class="lv-map">
     <canvas class="map" id="map"></canvas>
@@ -35,6 +37,8 @@
     <div class="lv-warn hidden" id="warn"></div>
     <div class="lv-warn bingo hidden" id="bingo"></div>
     <div class="lv-warn hit hidden" id="hitWarn"></div>
+    <div class="lv-hudcol" id="selCol"><div class="mapchips" id="mapChips"></div></div>
+    <div class="modechip hidden" id="modeChip"></div>
     <div class="lv-empty" id="empty">
       <h2>Waiting for telemetry</h2>
       <p>Start DCS with the <b>DCS-SA bridge</b> installed, or connect to <b>Tacview real-time telemetry</b>.</p>
@@ -43,6 +47,7 @@
   </main>
   <aside class="lv-side">
     <section><h3>Threats</h3><div id="threats" class="threats"></div></section>
+    <section id="wpnSec" class="hidden"><h3>My weapons <small id="wpnCount"></small></h3><div id="wpns" class="lv-wpns"></div></section>
     <section id="rwrSec" class="hidden"><h3>RWR</h3><canvas id="rwr" class="rwr"></canvas></section>
     <section id="storesSec" class="hidden"><h3>Stores</h3><div id="stores" class="stores"></div></section>
     <section id="eventsSec"><h3>Events</h3><div id="events" class="lv-events"></div></section>

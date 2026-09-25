@@ -76,7 +76,7 @@ canvas.rwr { width: 100%; aspect-ratio: 1; max-width: 260px; display: block; mar
 .lv-dialog .row-end { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
 
 @media (max-width: 900px) {
-  .lv { grid-template-columns: 1fr; grid-template-rows: auto 60vh auto; height: auto; }
+  .lv { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 60vh auto; height: auto; }
   body.live { overflow: auto; }
   .lv-top { flex-wrap: wrap; padding: 6px 10px; height: auto; }
   .lv-own { grid-template-columns: repeat(3, auto); }
@@ -98,7 +98,7 @@ canvas.rwr { width: 100%; aspect-ratio: 1; max-width: 260px; display: block; mar
 
 /* ---------- Glance mode ---------- */
 body.glance .lv { grid-template-columns: 1fr 300px; }
-body.glance .lv-top > :not(.brand):not(.lv-status):not(#btnGlance):not(#btnSound) { display: none !important; }
+body.glance .lv-top > :not(.brand):not(.lv-status):not(#btnGlance):not(#btnSound):not(#modeSw) { display: none !important; }
 body.glance .lv-own { grid-template-columns: repeat(2, auto); gap: 6px 22px; padding: 10px 16px; }
 body.glance .lv-own .k { font-size: 12px; }
 body.glance .lv-own .v { font-size: 48px; line-height: 1.05; }
@@ -113,3 +113,60 @@ body.glance #eventsSec, body.glance #storesSec { display: none; }
 body.glance .lv-warn { left: auto; right: 14px; transform: none; max-width: calc(100% - 460px); }
 body.glance .lv-warn.bingo { top: 70px; }
 body.glance .lv-warn.hit { top: 126px; }
+
+/* ---------- Modes, Display panel, selection (shared classes in app.css) ---------- */
+.lv { position: relative; } /* the Display panel opens under its button */
+#modeSw { display: inline-flex; }
+/* The mode accent sits over the canvas (an inset shadow on .lv-map would be under it). */
+body.mode-a2a .lv-map::after, body.mode-a2g .lv-map::after { content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+body.mode-a2a .lv-map::after { box-shadow: inset 0 0 0 2px var(--cyan); }
+body.mode-a2g .lv-map::after { box-shadow: inset 0 0 0 2px var(--orange); }
+/* Warnings always above the transient mode chip and the card. */
+.lv-warn { z-index: 7; }
+.lv-map .modechip { top: auto; bottom: 10px; }
+
+/* Selection card and map chips: bottom-left, clear of the ownship strip and the scale bar;
+   lifted above a "new recording" banner when one shows. */
+.lv-hudcol { position: absolute; left: 10px; bottom: 40px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start;
+  max-width: min(360px, calc(100% - 20px)); pointer-events: none; z-index: 3; }
+.lv-map:has(> .banner.bottom) .lv-hudcol { bottom: 78px; }
+.is3d .lv-hudcol { bottom: 62px; } /* above the 3D view's terrain note */
+.is3d .lv-map:has(> .banner.bottom) .lv-hudcol { bottom: 84px; }
+.mapchip.back { color: var(--cyan); border-color: #2d6e78; }
+.threat.sel { border-color: #c8cdd6; }
+.threat.l0 .tag { background: #2a3440; color: var(--muted); }
+
+/* Ownship strip: A-A bandit cell, A-G line */
+.lv-own .v.sm { font-size: 15px; line-height: 24px; white-space: nowrap; }
+.lv-own .agline { grid-column: 1 / -1; font-size: 12px; color: var(--text); display: flex; flex-wrap: wrap; gap: 2px 0; }
+.lv-own .agline span + span::before { content: "·"; color: var(--faint); margin: 0 6px; }
+.lv-own .agline .in { color: var(--green); font-weight: 700; }
+.lv-own .agline .out { color: var(--warn); font-weight: 700; }
+.lv-own .agline .bad { color: var(--danger); font-weight: 700; }
+.lv-own .agline .tgt { color: var(--accent); }
+.lv-own .agline .tti { color: var(--cyan); }
+.lv-own .agline .hint { color: var(--muted); }
+.lv-own .v.in { color: var(--green); }
+.lv-own .v.out { color: var(--warn); }
+
+/* My weapons (row layout from .wif-row in app.css) */
+.lv-side h3 small { font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--cyan); margin-left: 6px; }
+.lv-wpns { display: grid; gap: 4px; font: 12px var(--mono); }
+.lv-wpns .wif-row { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px 5px; }
+.lv-wpns .wif-row.sel { border-color: #c8cdd6; }
+.lv-wpns .wif-row.done { opacity: 0.75; }
+.lv-wpns .wif-row.done .prog i { background: var(--faint); }
+.lv-wpns .tti.r-kill { color: var(--red); }
+.lv-wpns .tti.r-hit { color: var(--orange); }
+.lv-wpns .tti.r-impact { color: var(--muted); }
+body.glance .lv-wpns { font-size: 16px; }
+
+/* A crowded header at 1280 px: gun rounds live in the Display panel too; shorter labels. */
+@media (max-width: 1500px) and (min-width: 901px) { #bulletSel { display: none; } }
+@media (max-width: 1400px) and (min-width: 901px) { .lv-top .long { display: none; } }
+/* A narrower map: the warnings go right of the ownship strip instead of over it (as in glance). */
+@media (max-width: 1500px) {
+  .lv-warn { left: auto; right: 12px; transform: none; font-size: 18px; padding: 6px 14px; max-width: calc(100% - 24px); }
+  .lv-warn.bingo { top: 58px; }
+  .lv-warn.hit { top: 102px; }
+}

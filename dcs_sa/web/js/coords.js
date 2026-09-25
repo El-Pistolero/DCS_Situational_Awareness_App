@@ -1,126 +1,144 @@
 // Coordinate formats pilots type into DCS jets: decimal degrees, deg-min
 // (F-16 DED / A-10 style), deg-min-sec and MGRS; plus a clipboard helper.
+// Dependency-free so it also runs under node for tests.
 
 const isNum = (v) => typeof v === "number" && Number.isFinite(v);
+const pad = (n, w) => String(n).padStart(w, "0");
 
 export const COORD_FORMATS = [["dd", "Decimal °"], ["ddm", "Deg-min (DED)"], ["dms", "Deg-min-sec"], ["mgrs", "MGRS"]];
 
-/** Degrees and minutes with `digits` decimals, carrying 60' into the next degree. */
-function degMin(v, digits) {
-  const a = Math.abs(v);
-  let d = Math.floor(a);
-  let m = Number(((a - d) * 60).toFixed(digits));
-  if (m >= 60) { d += 1; m = 0; }
-  return [d, m];
-}
-
-function degMinSec(v, digits) {
-  const a = Math.abs(v);
-  let d = Math.floor(a);
-  let m = Math.floor((a - d) * 60);
-  let s = Number(((a - d - m / 60) * 3600).toFixed(digits));
-  if (s >= 60) { s = 0; m += 1; }
-  if (m >= 60) { m = 0; d += 1; }
-  return [d, m, s];
-}
-
-const pad = (n, w, digits = 0) => {
-  const txt = n.toFixed(digits);
-  const [i, f] = txt.split(".");
-  return `${i.padStart(w, "0")}${f !== undefined ? `.${f}` : ""}`;
+// Each format rounds once, to integer ticks of its last printed digit, and
+// splits those: 41.99999° carries to 42°00.000', never 41°60.000'.
+const FIELDS = {
+  dd: [1e4, (t, w) => `${pad(Math.floor(t / 1e4), w)}.${pad(t % 1e4, 4)}°`],
+  ddm: [6e4, (t, w) => `${pad(Math.floor(t / 6e4), w)}°${pad(Math.floor((t % 6e4) / 1e3), 2)}.${pad(t % 1e3, 3)}'`],
+  dms: [36e3, (t, w) => `${pad(Math.floor(t / 36e3), w)}°${pad(Math.floor((t % 36e3) / 600), 2)}'${pad(Math.floor((t % 600) / 10), 2)}.${t % 10}"`],
 };
 
-export function fmtCoord(lon, lat, fmt = "dd") {
-  if (!isNum(lon) || !isNum(lat)) return "—";
-  const ns = lat >= 0 ? "N" : "S", ew = lon >= 0 ? "E" : "W";
-  if (fmt === "ddm") {
-    const [ad, am] = degMin(lat, 3), [od, om] = degMin(lon, 3);
-    return `${ns} ${pad(ad, 2)}°${pad(am, 2, 3)}' ${ew} ${pad(od, 3)}°${pad(om, 2, 3)}'`;
-  }
-  if (fmt === "dms") {
-    const [ad, am, as] = degMinSec(lat, 1), [od, om, os] = degMinSec(lon, 1);
-    return `${ns} ${pad(ad, 2)}°${pad(am, 2)}'${pad(as, 2, 1)}" ${ew} ${pad(od, 3)}°${pad(om, 2)}'${pad(os, 2, 1)}"`;
-  }
-  if (fmt === "mgrs") return toMGRS(lon, lat) || fmtCoord(lon, lat, "ddm");
-  return `${Math.abs(lat).toFixed(4)}°${ns} ${pad(Math.abs(lon), 3, 4)}°${ew}`;
+/** [text, hemisphere letter]; a value that rounds to zero is N / E, never "S 00°00.000'". */
+function axis(v, w, fmt, pos, neg) {
+  const [perDeg, render] = FIELDS[fmt];
+  const t = Math.round(Math.abs(v) * perDeg);
+  return [render(t, w), t && v < 0 ? neg : pos];
 }
 
-// --- UTM / MGRS (WGS84) -------------------------------------------------------
+const wrapLon = (lon) => (lon < -180 || lon > 180 ? ((((lon + 180) % 360) + 360) % 360) - 180 : lon);
+
+/**
+ * dd   41.6421°N 041.7171°E
+ * ddm  N 41°38.526' E 041°43.028'
+ * dms  N 41°38'31.6" E 041°43'01.7"
+ * mgrs 37T GG 09863 10345 ("" outside 80°S-84°N, where MGRS uses UPS instead)
+ */
+export function fmtCoord(lon, lat, fmt = "dd") {
+  if (!isNum(lon) || !isNum(lat) || Math.abs(lat) > 90) return "—";
+  lon = wrapLon(lon);
+  if (fmt === "mgrs") return toMGRS(lon, lat);
+  const f = FIELDS[fmt] ? fmt : "dd";
+  const [la, ns] = axis(lat, 2, f, "N", "S"), [lo, ew] = axis(lon, 3, f, "E", "W");
+  return f === "dd" ? `${la}${ns} ${lo}${ew}` : `${ns} ${la} ${ew} ${lo}`;
+}
+
+// --- UTM (WGS84 transverse Mercator) ----------------------------------------
 
 const A = 6378137, F = 1 / 298.257223563, K0 = 0.9996;
-const E2 = F * (2 - F), EP2 = E2 / (1 - E2);
-const BANDS = "CDEFGHJKLMNPQRSTUVWXX"; // 8° bands from 80°S; X is 12° (72-84°N)
+const E = Math.sqrt(F * (2 - F));
+// Krüger series to n^6 (Karney 2011): nanometre-accurate across the widened
+// Norway / Svalbard zones, where the classic Snyder series drifts.
+const N1 = F / (2 - F), N2 = N1 * N1, N3 = N2 * N1, N4 = N3 * N1, N5 = N4 * N1, N6 = N5 * N1;
+const RECT = (A / (1 + N1)) * (1 + N2 / 4 + N4 / 64 + N6 / 256);
+const ALPHA = [
+  N1 / 2 - (2 / 3) * N2 + (5 / 16) * N3 + (41 / 180) * N4 - (127 / 288) * N5 + (7891 / 37800) * N6,
+  (13 / 48) * N2 - (3 / 5) * N3 + (557 / 1440) * N4 + (281 / 630) * N5 - (1983433 / 1935360) * N6,
+  (61 / 240) * N3 - (103 / 140) * N4 + (15061 / 26880) * N5 + (167603 / 181440) * N6,
+  (49561 / 161280) * N4 - (179 / 168) * N5 + (6601661 / 7257600) * N6,
+  (34729 / 80640) * N5 - (3418889 / 1995840) * N6,
+  (212378941 / 319334400) * N6,
+];
+
+// 8° bands from 80°S; X is stretched to 12° (72-84°N).
+const BANDS = "CDEFGHJKLMNPQRSTUVWX";
+const bandFor = (lat) => BANDS[Math.min(19, Math.floor((lat + 80) / 8))];
 
 function zoneFor(lon, lat) {
-  let zone = Math.floor((lon + 180) / 6) + 1;
-  if (zone > 60) zone = 60;
-  // Norway and Svalbard exceptions.
-  if (lat >= 56 && lat < 64 && lon >= 3 && lon < 12) zone = 32;
-  if (lat >= 72 && lat < 84) {
-    if (lon >= 0 && lon < 9) zone = 31;
-    else if (lon >= 9 && lon < 21) zone = 33;
-    else if (lon >= 21 && lon < 33) zone = 35;
-    else if (lon >= 33 && lon < 42) zone = 37;
-  }
+  const zone = Math.min(60, Math.floor((lon + 180) / 6) + 1);
+  // Norway: 32V widened west to 3°E. Svalbard: 31X/33X/35X/37X, no 32/34/36X.
+  if (lat >= 56 && lat < 64 && lon >= 3 && lon < 12) return 32;
+  if (lat >= 72 && lon >= 0 && lon < 42) return lon < 9 ? 31 : lon < 21 ? 33 : lon < 33 ? 35 : 37;
   return zone;
 }
 
+/** {zone, band, easting, northing, hemisphere} in metres; null outside 80°S-84°N. */
 export function toUTM(lon, lat) {
   if (!isNum(lon) || !isNum(lat) || lat < -80 || lat > 84) return null;
+  lon = wrapLon(lon);
   const zone = zoneFor(lon, lat);
-  const lon0 = ((zone - 1) * 6 - 180 + 3) * (Math.PI / 180);
-  const phi = lat * (Math.PI / 180), lam = lon * (Math.PI / 180);
-  const sin = Math.sin(phi), cos = Math.cos(phi), tan = Math.tan(phi);
-  const N = A / Math.sqrt(1 - E2 * sin * sin);
-  const T = tan * tan, C = EP2 * cos * cos, Aa = cos * (lam - lon0);
-  const e4 = E2 * E2, e6 = e4 * E2;
-  const M = A * ((1 - E2 / 4 - (3 * e4) / 64 - (5 * e6) / 256) * phi
-    - ((3 * E2) / 8 + (3 * e4) / 32 + (45 * e6) / 1024) * Math.sin(2 * phi)
-    + ((15 * e4) / 256 + (45 * e6) / 1024) * Math.sin(4 * phi)
-    - ((35 * e6) / 3072) * Math.sin(6 * phi));
-  const easting = K0 * N * (Aa + ((1 - T + C) * Aa ** 3) / 6 + ((5 - 18 * T + T * T + 72 * C - 58 * EP2) * Aa ** 5) / 120) + 500000;
-  let northing = K0 * (M + N * tan * ((Aa * Aa) / 2 + ((5 - T + 9 * C + 4 * C * C) * Aa ** 4) / 24
-    + ((61 - 58 * T + T * T + 600 * C - 330 * EP2) * Aa ** 6) / 720));
-  const hemisphere = lat >= 0 ? "N" : "S";
-  if (lat < 0) northing += 10000000;
-  const band = BANDS[Math.min(20, Math.floor((lat + 80) / 8))];
-  return { zone, band, easting, northing, hemisphere };
+  const lam = (lon - (zone * 6 - 183)) * (Math.PI / 180);
+  const tau = Math.tan(lat * (Math.PI / 180));
+  const sigma = Math.sinh(E * Math.atanh((E * tau) / Math.sqrt(1 + tau * tau)));
+  const tauP = tau * Math.sqrt(1 + sigma * sigma) - sigma * Math.sqrt(1 + tau * tau);
+  const xiP = Math.atan2(tauP, Math.cos(lam));
+  const etaP = Math.asinh(Math.sin(lam) / Math.sqrt(tauP * tauP + Math.cos(lam) ** 2));
+  let xi = xiP, eta = etaP;
+  ALPHA.forEach((a, i) => {
+    const j = 2 * (i + 1);
+    xi += a * Math.sin(j * xiP) * Math.cosh(j * etaP);
+    eta += a * Math.cos(j * xiP) * Math.sinh(j * etaP);
+  });
+  return {
+    zone,
+    band: bandFor(lat),
+    easting: K0 * RECT * eta + 500000,
+    northing: K0 * RECT * xi + (lat < 0 ? 10000000 : 0),
+    hemisphere: lat < 0 ? "S" : "N",
+  };
 }
 
-const COLS = ["ABCDEFGH", "JKLMNPQR", "STUVWXYZ"];
+// --- MGRS -------------------------------------------------------------------
+
+// 100 km column letters by set (zone % 3: 1, 2, 0); row letters cycle every
+// 2,000 km, even zones starting at F.
+const COLS = ["STUVWXYZ", "ABCDEFGH", "JKLMNPQR"];
 const ROWS = "ABCDEFGHJKLMNPQRSTUV";
 
-/** MGRS with `digits` (1-5) digits per axis; "" where MGRS does not apply (poles). */
+/** "37T GG 09863 10345" with `digits` (1-5) per axis; "" where MGRS does not apply (poles). */
 export function toMGRS(lon, lat, digits = 5) {
   const u = toUTM(lon, lat);
   if (!u) return "";
-  const n = Math.max(1, Math.min(5, Math.round(digits)));
-  const set = (u.zone - 1) % 3;
-  const col = COLS[set][Math.floor(u.easting / 100000) - 1];
-  // Row letters repeat every 2,000 km; even zones start 5 letters (F) later.
-  const row = ROWS[(Math.floor(u.northing / 100000) + (u.zone % 2 === 0 ? 5 : 0)) % 20];
-  if (!col) return "";
-  // MGRS truncates, it does not round.
-  const e = Math.floor(u.easting % 100000), no = Math.floor(u.northing % 100000);
-  const cut = (v) => String(Math.floor(v / 10 ** (5 - n))).padStart(n, "0");
-  return `${u.zone}${u.band} ${col}${row} ${cut(e)} ${cut(no)}`;
+  const col = COLS[u.zone % 3][Math.floor(u.easting / 1e5) - 1];
+  const row = ROWS[(Math.floor(u.northing / 1e5) + (u.zone % 2 ? 0 : 5)) % 20];
+  if (!col || !row) return "";
+  const n = isNum(digits) ? Math.min(5, Math.max(1, Math.floor(digits))) : 5;
+  // MGRS truncates, it does not round: the grid square must contain the point.
+  const cut = (v) => pad(Math.floor((Math.floor(v) % 1e5) / 10 ** (5 - n)), n);
+  return `${u.zone}${u.band} ${col}${row} ${cut(u.easting)} ${cut(u.northing)}`;
 }
 
-/** Copy text to the clipboard; never throws. */
+// --- Clipboard ----------------------------------------------------------------
+
+/** Copy text to the clipboard; true on success, never throws. */
 export async function copyText(text) {
+  const s = String(text ?? "");
   try {
-    if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return true; }
-  } catch { /* fall back below (no permission, not a secure context) */ }
+    if (globalThis.navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(s);
+      return true;
+    }
+  } catch { /* not a secure context or no permission: fall back below */ }
+  let ta = null, prev = null;
   try {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.setAttribute("readonly", "");
-    ta.style.position = "fixed";
-    ta.style.opacity = "0";
+    prev = document.activeElement;
+    ta = document.createElement("textarea");
+    ta.value = s;
+    ta.setAttribute("readonly", ""); // no on-screen keyboard on touch devices
+    ta.style.cssText = "position:fixed;top:0;left:0;opacity:0;pointer-events:none";
     document.body.append(ta);
+    ta.focus({ preventScroll: true });
     ta.select();
-    const ok = document.execCommand("copy");
-    ta.remove();
-    return ok;
-  } catch { return false; }
+    return document.execCommand("copy") === true;
+  } catch {
+    return false;
+  } finally {
+    try { ta?.remove(); prev?.focus?.({ preventScroll: true }); } catch { /* detached */ }
+  }
 }

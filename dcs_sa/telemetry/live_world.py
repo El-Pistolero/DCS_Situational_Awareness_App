@@ -9,6 +9,7 @@ recent events - and computes a threat picture for the focus aircraft.
 from __future__ import annotations
 
 import math
+import re
 import threading
 import time
 from collections import deque
@@ -18,6 +19,8 @@ from .. import threatdb
 from ..acmi import types as T
 from ..acmi.model import Event
 from ..analysis import geo
+from ..analysis.strike import family
+from ..analysis.weapons import LAUNCHER_RADIUS, SUBMUNITION_RE, weapon_kind
 
 TRAIL_SECONDS = 90.0
 TRAIL_POINTS = 240
@@ -26,11 +29,37 @@ MAX_EVENTS = 300
 THREAT_RANGE_AIR = 150_000.0
 THREAT_RANGE_MISSILE = 80_000.0
 MAX_LIVE_ROUNDS = 400
+#: Bomblet rows per snapshot: one JSOW-A alone releases 145.
+MAX_LIVE_BOMBLETS = 150
+#: Aircraft position history, to tell which jet a new weapon came off.
+HIST_SECONDS = 20.0
+HIST_STEP = 0.2
+#: A released weapon stays in myWeapons this long after it disappears.
+IMPACT_KEEP = 5.0
+#: Aim altitude: the nearest ground unit to the first-guess impact, within this.
+AIM_SEARCH = 5000.0
+#: Target: the nearest hostile ground unit to the predicted impact, within this.
+AIM_TARGET_RADIUS = 1500.0
+#: Glide weapons never come down shallower than this.
+MIN_GLIDE_DEG = 3.0
+#: A dispenser that vanishes this far above the ground opened in the air.
+DISPENSE_HEIGHT = 100.0
+G = 9.80665
+_AIR = ("fixedwing", "rotorcraft", "air")
+_GLIDE_FAMILIES = ("jsow", "jdam")
+_POWERED_FAMILIES = ("agm", "maverick", "harm")
+#: Air-to-air missiles have no ground impact to predict; family() calls them "agm".
+_AIR_TO_AIR_RE = re.compile(
+    r"\bAIM[-_ ]?\d|\b[RP][-_ ]?(3|13|23|24|27|33|37|40|60|73|77|550)(?!\d)|\bPL[-_ ]?\d|\bSD[-_ ]?10|"
+    r"MICA|MAGIC|METEOR|PYTHON|DERBY|IRIS[-_ ]?T|SUPER[-_ ]?530|ASRAAM|SKYFLASH|"
+    r"MISTRAL|STINGER|FIM[-_ ]?92|IGLA|9M39", re.I)
+#: JSOWs that open in the air (A: BLU-97, B: BLU-108); plain AGM_154 is the unitary C.
+_JSOW_DISPENSER_RE = re.compile(r"AGM[-_ ]?154[AB](?![A-Z0-9])", re.I)
 
 
 class LiveObject:
     __slots__ = ("id", "props", "values", "tags", "category", "first_seen", "last_update",
-                 "trail", "prev", "derived", "source")
+                 "trail", "prev", "derived", "source", "hist", "sub")
 
     def __init__(self, obj_id: str, t: float, source: str = "acmi") -> None:
         self.id = obj_id
@@ -44,6 +73,9 @@ class LiveObject:
         self.prev: Optional[Tuple[float, float, float, float]] = None
         self.derived: Dict[str, float] = {}
         self.source = source
+        # Aircraft only: positions over the last HIST_SECONDS, every HIST_STEP.
+        self.hist: Deque[Tuple[float, float, float, float]] = deque()
+        self.sub = False  # a bomblet / submunition (by name)
 
     def position(self) -> Optional[Tuple[float, float, float]]:
         v = self.values
@@ -71,6 +103,26 @@ def _hostile(a: LiveObject, b: LiveObject) -> bool:
     if ca in ("", "Unknown", "Neutral") or cb in ("", "Unknown", "Neutral"):
         return ca != cb or ca in ("", "Unknown")
     return ca != cb
+
+
+def _is_submunition(obj: LiveObject) -> bool:
+    """A bomblet, by name.  Weapons only, and not the SD-10 air-to-air missile
+    (which shares a name with a bomblet): it must stay a threat."""
+    name = obj.props.get("Name") or ""
+    if obj.category != "weapon" or not SUBMUNITION_RE.search(name):
+        return False
+    return not ("Missile" in obj.tags and _AIR_TO_AIR_RE.search(name))
+
+
+def _same_side(weapon: LiveObject, ac: LiveObject) -> bool:
+    """Weapons carry their shooter's Country/Coalition (as in the offline analysis)."""
+    wc, ac_c = weapon.props.get("Country"), ac.props.get("Country")
+    if wc and ac_c:
+        return wc == ac_c
+    wco, aco = weapon.props.get("Coalition"), ac.props.get("Coalition")
+    if wco and aco and wco not in ("Neutral", "Unknown"):
+        return wco == aco
+    return True
 
 
 def _clock(rel_bearing: float) -> int:
@@ -107,6 +159,10 @@ class LiveWorld:
             self.scan_values: Dict[str, float] = {}
             self.world_radar: List[Tuple[str, float, float, bool]] = []
             self.recently_destroyed: Deque[Dict[str, Any]] = deque(maxlen=50)
+            # Weapon id -> the aircraft that released it, decided when first seen.
+            self.launchers: Dict[str, Optional[str]] = {}
+            # Weapon id -> (removal time, launcher id, final myWeapons entry).
+            self.impacted: Dict[str, Tuple[float, str, Dict[str, Any]]] = {}
 
     def set_status(self, source: str, state: str, detail: str = "") -> None:
         with self._lock:
@@ -138,10 +194,13 @@ class LiveWorld:
                 if "Type" in text:
                     obj.tags = T.parse_tags(text["Type"])
                     obj.category = T.category(obj.tags)
+                if "Name" in text or "Type" in text:
+                    obj.sub = _is_submunition(obj)
             obj.values.update(numeric)
             obj.last_update = t
             if "Longitude" in numeric or "Latitude" in numeric or "Altitude" in numeric:
                 self._track_motion(obj, t)
+            self._note_weapon(obj, t)
             if self.focus_id is None or (not self.focus_locked and self._better_focus(obj)):
                 if T.is_aircraft(obj.tags):
                     self.focus_id = obj.id
@@ -154,7 +213,10 @@ class LiveWorld:
                 self.recently_destroyed.append({
                     "id": obj_id, "name": obj.name, "pilot": obj.props.get("Pilot"),
                     "time": t, "lon": pos[0] if pos else None, "lat": pos[1] if pos else None,
+                    "coalition": obj.coalition, "category": obj.category,
                 })
+            elif obj is not None and obj.category == "weapon":
+                self._retire_weapon(obj, t)
             if obj_id == self.focus_id and not self.focus_locked:
                 self.focus_id = None
 
@@ -180,6 +242,8 @@ class LiveWorld:
                 weapon = ev.get("weapon") or ""
                 last = self.events[-1] if self.events else None
                 key = (kind, who, whom, weapon)
+                # Where the target was (the hook sends lat/lon when DCS knows it).
+                tpos = _event_lonlat(tgt) if kind in ("hit", "kill") else None
                 if (kind == "hit" and last is not None and last.get("_key") == key
                         and abs((ev.get("t") or 0) - last["time"]) < 3.0):
                     # Same shooter/target/weapon: count it instead of a new row
@@ -188,6 +252,8 @@ class LiveWorld:
                     last["text"] = f"{who} hit {whom} x{last['count']}" + (f" ({weapon})" if weapon else "")
                     self.event_seq += 1
                     last["seq"] = self.event_seq
+                    if tpos and "targetLon" not in last:
+                        last["targetLon"], last["targetLat"] = tpos
                     continue
                 self.event_seq += 1
                 text = {
@@ -199,11 +265,14 @@ class LiveWorld:
                     "takeoff": f"{who} took off", "land": f"{who} landed", "crash": f"{who} crashed",
                     "ejection": f"{who} ejected", "dead": f"{who} destroyed", "pilot_dead": f"{who} pilot killed",
                 }.get(kind, f"{kind} {who} {whom}".strip())
-                self.events.append({
+                row = {
                     "seq": self.event_seq, "id": self.event_seq, "time": ev.get("t") or self.time, "kind": f"DCS {kind}",
                     "objectIds": [], "names": [], "text": text, "source": "dcs", "count": 1, "_key": key,
                     "againstMe": self._is_me(tgt),
-                })
+                }
+                if tpos:
+                    row["targetLon"], row["targetLat"] = tpos
+                self.events.append(row)
 
     def _is_me(self, unit: Dict[str, Any]) -> bool:
         focus = self.objects.get(self.focus_id) if self.focus_id else None
@@ -249,7 +318,9 @@ class LiveWorld:
             seen = {f"w{o.get('id')}" for o in payload.get("world") or []}
             if payload.get("world") is not None:
                 for oid in [k for k, o in self.objects.items() if o.source == "bridge" and oid_is_world(k) and k not in seen]:
-                    self.objects.pop(oid, None)
+                    gone = self.objects.pop(oid)
+                    if gone.category == "weapon":
+                        self._retire_weapon(gone, t)  # keeps its myWeapons row for IMPACT_KEEP
 
     def _bridge_object(self, oid: str, t: float, d: Dict[str, Any], is_self: bool = False) -> None:
         obj = self.objects.get(oid)
@@ -267,6 +338,7 @@ class LiveWorld:
         obj.props.update({k: v for k, v in props.items() if v})
         obj.tags = T.parse_tags(type_str)
         obj.category = T.category(obj.tags)
+        obj.sub = _is_submunition(obj)
         vals = {
             "Longitude": d.get("lon"), "Latitude": d.get("lat"), "Altitude": d.get("alt"),
             "Yaw": d.get("hdg"), "Pitch": d.get("pitch"), "Roll": d.get("bank"),
@@ -278,6 +350,7 @@ class LiveWorld:
             obj.values["RadarActive"] = 1.0 if d.get("radar") else 0.0
         obj.last_update = t
         self._track_motion(obj, t)
+        self._note_weapon(obj, t)
         if is_self and not self.focus_locked:
             self.focus_id = oid
 
@@ -315,6 +388,15 @@ class LiveWorld:
             obj.trail.append(cur)
         while obj.trail and t - obj.trail[0][0] > TRAIL_SECONDS:
             obj.trail.popleft()
+        if obj.category in _AIR:
+            # One point per HIST_STEP, but the newest fix is always the last one.
+            h = obj.hist
+            if len(h) >= 2 and t - h[-2][0] < HIST_STEP:
+                h[-1] = cur
+            else:
+                h.append(cur)
+            while h and t - h[0][0] > HIST_SECONDS:
+                h.popleft()
 
     # -- focus / labels -----------------------------------------------------------
 
@@ -349,8 +431,16 @@ class LiveWorld:
             own_id = self._ownship_id() if bridge_fresh else None
             focus_obj = self.objects.get(self.focus_id) if self.focus_id else None
             fpos = focus_obj.position() if focus_obj else None
+            # Bomblets: a dispenser can put hundreds in the air at once, so
+            # only the newest MAX_LIVE_BOMBLETS are sent (enough to draw the
+            # pattern forming).
+            subs = [o for o in self.objects.values() if o.sub]
+            skip_subs = set()
+            if len(subs) > MAX_LIVE_BOMBLETS:
+                subs.sort(key=lambda o: o.first_seen, reverse=True)
+                skip_subs = {o.id for o in subs[MAX_LIVE_BOMBLETS:]}
             for obj in self.objects.values():
-                if obj.category == "clutter":
+                if obj.category == "clutter" or obj.id in skip_subs:
                     continue
                 if obj.category == "round":
                     pos = obj.position()
@@ -390,6 +480,8 @@ class LiveWorld:
                         if db.get("vrange"):
                             row["v"]["VerticalEngagementRange"] = db["vrange"]
                         row["engSrc"] = db["source"]
+                if obj.sub:
+                    row["sub"] = True
                 lock = obj.props.get("LockedTarget")
                 if lock and v.get("LockedTargetMode", 1.0) > 0:
                     row["lock"] = lock
@@ -402,7 +494,8 @@ class LiveWorld:
                         flag = _radar_flag_for(obj, pos, self.world_radar)
                         if flag is not None:
                             row["v"]["RadarActive"] = 1.0 if flag else 0.0
-                if include_trails and obj.category in ("fixedwing", "rotorcraft", "air", "weapon"):
+                # Bomblets are drawn as dots: 145 trails would be ~300 kB.
+                if include_trails and obj.category in ("fixedwing", "rotorcraft", "air", "weapon") and not obj.sub:
                     step = 1 if obj.category == "weapon" else 2
                     row["trail"] = [[p[1], p[2], p[3]] for p in list(obj.trail)[::step]]
                 objs.append(row)
@@ -428,6 +521,8 @@ class LiveWorld:
                 "ownId": own_id,
                 "ownship": self.ownship if (time.time() - self.ownship_time) < 3.0 else None,
                 "destroyed": list(self.recently_destroyed)[-10:],
+                # A focused SAM site's missiles are not air-to-ground releases.
+                "myWeapons": self._my_weapons(focus) if focus and focus.category in _AIR else [],
             }
 
     def _ownship_id(self) -> Optional[str]:
@@ -456,7 +551,7 @@ class LiveWorld:
         my_hdg = me.heading() or 0.0
         out: List[Dict[str, Any]] = []
         for obj in self.objects.values():
-            if obj.id == me.id or obj.category in ("clutter", "round", "countermeasure", "bullseye", "navaid", "misc"):
+            if obj.id == me.id or obj.sub or obj.category in ("clutter", "round", "countermeasure", "bullseye", "navaid", "misc"):
                 continue
             op = obj.position()
             if op is None:
@@ -519,6 +614,218 @@ class LiveWorld:
         # Anything tracking me by lock, straight from the RWR, if the bridge sent it.
         out.sort(key=lambda d: (-d["level"], d.get("tti") or 1e9, d["range"]))
         return out[:30]
+
+    # -- own weapons in flight ------------------------------------------------------
+
+    def _note_weapon(self, obj: LiveObject, t: float) -> None:
+        """Decide, once, which aircraft a newly seen weapon came off."""
+        if obj.category != "weapon" or obj.sub or obj.id in self.launchers:
+            return
+        pos = obj.position()
+        if pos is None:
+            return
+        parent = obj.props.get("Parent")
+        if parent:
+            self.launchers[obj.id] = parent
+            return
+        # No Parent (the DCS exporter often omits it): the nearest aircraft
+        # where it was at that moment, as the offline analysis does.
+        best, best_d = None, LAUNCHER_RADIUS
+        for ac in self.objects.values():
+            if ac.category not in _AIR or not _same_side(obj, ac):
+                continue
+            p = _position_at(ac, t)
+            if p is None:
+                continue
+            d = geo.slant_range(pos[0], pos[1], pos[2], p[0], p[1], p[2])
+            if d < best_d:
+                best, best_d = ac.id, d
+        self.launchers[obj.id] = best
+
+    def _launcher_of(self, w: LiveObject) -> Optional[str]:
+        return w.props.get("Parent") or self.launchers.get(w.id)
+
+    def _surface_units(self) -> List[Tuple[LiveObject, Tuple[float, float, float]]]:
+        out = []
+        for obj in self.objects.values():
+            if obj.category in ("ground", "sea"):
+                pos = obj.position()
+                if pos is not None:
+                    out.append((obj, pos))
+        return out
+
+    def _ground_under(self, jet: Optional[LiveObject]) -> float:
+        """Ground elevation under a jet from its AGL (Tacview or the bridge), else 0."""
+        if jet is None:
+            return 0.0
+        v = jet.values
+        if "AGL" in v and "Altitude" in v:
+            return v["Altitude"] - v["AGL"]
+        if (time.time() - self.ownship_time) < 3.0 and jet.id == self._ownship_id():
+            me = (self.ownship or {}).get("self") or {}
+            if _num(me.get("alt")) and _num(me.get("agl")):
+                return float(me["alt"]) - float(me["agl"])
+        return 0.0
+
+    def _weapon_entry(self, w: LiveObject, owner: Optional[LiveObject], units, ground: float) -> Optional[Dict[str, Any]]:
+        """A myWeapons row: time to impact and impact point, extrapolated."""
+        kind = weapon_kind(w.tags)
+        if kind == "gun" or (kind == "missile" and _AIR_TO_AIR_RE.search(w.name)):
+            return None
+        fam = family(w.name, kind)
+        d = w.derived
+        entry: Dict[str, Any] = {
+            "id": w.id, "name": w.name, "family": fam, "releasedAt": w.first_seen,
+            "tti": None, "impactLon": None, "impactLat": None, "impactAlt": None,
+            "targetId": None, "targetName": None, "gs": d.get("gs"), "vs": d.get("vs"),
+            "estimated": True, "impacted": False,
+        }
+        pos = w.position()
+        if pos is None or "gs" not in d or "vs" not in d:
+            return entry  # first frame: no motion to extrapolate yet
+        gs, vs = d["gs"], d["vs"]
+        track = d.get("track") if gs > 1.0 else None
+        if track is None:
+            track = w.heading()
+        tti, lon, lat = _predict_impact(fam, pos, gs, vs, track, ground)
+        # The ground there, from the unit standing nearest the first guess.
+        near = _nearest_unit(units, lon, lat, AIM_SEARCH)
+        if near is not None:
+            ground = near[1][2]
+            tti, lon, lat = _predict_impact(fam, pos, gs, vs, track, ground)
+        entry.update(tti=tti, impactLon=lon, impactLat=lat, impactAlt=ground)
+        self._set_target(entry, owner or w, units)
+        return entry
+
+    @staticmethod
+    def _set_target(entry: Dict[str, Any], ref: LiveObject, units) -> None:
+        tgt = _nearest_unit(units, entry["impactLon"], entry["impactLat"], AIM_TARGET_RADIUS,
+                            lambda o: _hostile(ref, o))
+        entry["targetId"], entry["targetName"] = (tgt[0].id, tgt[0].name) if tgt else (None, None)
+
+    def _retire_weapon(self, w: LiveObject, t: float) -> None:
+        """A weapon disappeared: keep its final row for IMPACT_KEEP seconds."""
+        launcher = self._launcher_of(w)
+        self.launchers.pop(w.id, None)
+        if w.sub:
+            return
+        self._prune_impacted(t)
+        owner = self.objects.get(launcher) if launcher else None
+        if owner is None or owner.category not in _AIR:
+            return
+        ground = self._ground_under(owner)
+        units = self._surface_units()
+        entry = self._weapon_entry(w, owner, units, ground)
+        if entry is None:
+            return
+        pos = w.position()
+        if pos is not None:
+            aim = entry["impactAlt"] if entry["impactAlt"] is not None else ground
+            dispenser = entry["family"] == "cluster" or bool(_JSOW_DISPENSER_RE.search(w.name))
+            opened = dispenser and pos[2] - aim > DISPENSE_HEIGHT
+            if opened or entry["tti"] is None:
+                # A dispenser opening in the air (its bomblets show the
+                # pattern), or never seen moving: where it vanished.
+                entry.update(impactLon=pos[0], impactLat=pos[1], impactAlt=aim)
+                self._set_target(entry, owner, units)
+            if opened:
+                entry["dispensed"] = True
+        entry.update(tti=0.0, impacted=True)
+        self.impacted[w.id] = (t, launcher, entry)
+
+    def _prune_impacted(self, now: float) -> None:
+        for wid, (t_gone, _, _) in list(self.impacted.items()):
+            if not (-1.0 <= now - t_gone <= IMPACT_KEEP):  # also a replay jumping back
+                del self.impacted[wid]
+
+    def _my_weapons(self, me: LiveObject) -> List[Dict[str, Any]]:
+        """The focus jet's weapons in flight, plus the ones that just landed."""
+        self._prune_impacted(self.time)
+        mine = [w for w in self.objects.values()
+                if w.category == "weapon" and not w.sub and self._launcher_of(w) == me.id]
+        out: List[Dict[str, Any]] = []
+        if mine:
+            units = self._surface_units()
+            ground = self._ground_under(me)
+            for w in mine:
+                entry = self._weapon_entry(w, me, units, ground)
+                if entry is not None:
+                    out.append(entry)
+        out.extend(dict(e) for wid, (_, launcher, e) in self.impacted.items()
+                   if launcher == me.id and wid not in self.objects)
+        out.sort(key=lambda e: e["releasedAt"])
+        return out
+
+
+def _position_at(obj: LiveObject, t: float) -> Optional[Tuple[float, float, float]]:
+    """Where an aircraft was at time t, from its short position history."""
+    h = obj.hist
+    if not h:
+        return obj.position()
+    last = h[-1]
+    if t >= last[0]:
+        # A weapon's first frame can arrive before its launcher's: dead-reckon.
+        lon, lat, alt = last[1], last[2], last[3]
+        dt, d = min(t - last[0], 2.0), obj.derived
+        if dt > 0 and d.get("gs") and d.get("track") is not None:
+            lon, lat = geo.destination(lon, lat, d["track"], d["gs"] * dt)
+            alt += d.get("vs", 0.0) * dt
+        return lon, lat, alt
+    nxt = last
+    for p in reversed(h):
+        if p[0] <= t:
+            f = (t - p[0]) / (nxt[0] - p[0]) if nxt[0] > p[0] else 0.0
+            return tuple(p[i] + (nxt[i] - p[i]) * f for i in (1, 2, 3))
+        nxt = p
+    return h[0][1], h[0][2], h[0][3]
+
+
+def _predict_impact(fam: str, pos: Tuple[float, float, float], gs: float, vs: float,
+                    track: Optional[float], ground: float) -> Tuple[float, float, float]:
+    """(time to impact, lon, lat) of a weapon reaching altitude *ground*.
+
+    Glide weapons keep their glide slope (at least MIN_GLIDE_DEG down);
+    powered missiles fly a straight line; everything else falls in a vacuum.
+    """
+    h = pos[2] - ground
+    if h <= 0.0:
+        return 0.0, pos[0], pos[1]
+    slope = -vs / gs if gs > 1.0 else None  # descent per metre travelled
+    if fam in _POWERED_FAMILIES and vs < 0.0:
+        t = h / -vs
+    elif (fam in _GLIDE_FAMILIES or fam in _POWERED_FAMILIES) and slope is not None:
+        # A powered missile that is not descending (loft, level cruise) is
+        # assumed to come down like a glider.
+        t = h / max(slope, math.tan(math.radians(MIN_GLIDE_DEG))) / gs
+    else:
+        t = (vs + math.sqrt(vs * vs + 2.0 * G * h)) / G  # vs positive up
+    dist = gs * t
+    if track is None or dist <= 0.0:
+        return t, pos[0], pos[1]
+    lon, lat = geo.destination(pos[0], pos[1], track, dist)
+    return t, lon, lat
+
+
+def _nearest_unit(units, lon: float, lat: float, radius: float, keep=None):
+    best, best_d = None, radius
+    for obj, pos in units:
+        if keep is not None and not keep(obj):
+            continue
+        d = geo.ground_distance(lon, lat, pos[0], pos[1])
+        if d < best_d:
+            best, best_d = (obj, pos), d
+    return best
+
+
+def _num(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def _event_lonlat(unit: Dict[str, Any]) -> Optional[Tuple[float, float]]:
+    lon, lat = unit.get("lon"), unit.get("lat")
+    if _num(lon) and _num(lat) and -180.0 <= lon <= 180.0 and -90.0 <= lat <= 90.0:
+        return float(lon), float(lat)
+    return None
 
 
 def _closure(a: LiveObject, b: LiveObject) -> Optional[float]:

@@ -1,5 +1,6 @@
 // 3D tactical view: satellite-draped terrain, aircraft with full attitude,
-// weapons with smoke trails, SAM envelopes, orbit and chase cameras.
+// weapons with smoke trails, SAM envelopes, orbit / chase / weapon cameras and
+// air-to-ground strike marks (release posts, weapon paths, impacts, footprints).
 
 import * as THREE from "three";
 import { OrbitControls } from "/static/vendor/OrbitControls.js";
@@ -301,7 +302,6 @@ export class Scene3D {
     this._strikes = [];
     this._tmpV = new THREE.Vector3();
     this._want = new THREE.Vector3();
-    this._look = new THREE.Vector3();
     this.loader = new Loader(6);
     this.objects = new Map(); // id -> {group, model, trail, label}
     this.mode = "orbit";
@@ -353,7 +353,7 @@ export class Scene3D {
   setExaggeration(x) {
     this.exaggeration = x;
     for (const t of this.tiles.values()) if (t.mesh) t.mesh.scale.y = x; // tiles still loading pick it up when built
-    this._terrainGen++; // strike marks rebuild on the exaggeration change itself
+    this._terrainGen++; // cached tile heights scale with it (strike marks rebuild on their own)
   }
 
   /** "day" (default) | "dusk" | "night": sky, fog, lights and a little extra glow on the models. */
@@ -734,12 +734,13 @@ export class Scene3D {
     if (!focus) return;
     // Weapon cam hold: given (the impact point once the weapon is gone), or
     // implied when the weapon being ridden leaves the recording early (a JSOW
-    // dispensing its bomblets): stay put and keep looking.
+    // dispensing its bomblets): stay put and keep looking.  Not after a seek
+    // back to before the weapon was last seen.
     const cw = this._camWeapon;
     let hold = null;
     if (this.mode === "chase") {
       if (weaponCamHoldAt && isNum(weaponCamHoldAt.lon) && isNum(weaponCamHoldAt.lat)) hold = weaponCamHoldAt;
-      else if (!wanted && focusId != null && cw?.id === focusId) hold = cw;
+      else if (!wanted && focusId != null && cw?.id === focusId && !(isNum(t) && isNum(cw.t) && t < cw.t)) hold = cw;
     }
     this._ensureOrigin(focus.lon, focus.lat);
     this._updateTerrain(hold ? hold.lon : focus.lon, hold ? hold.lat : focus.lat);
@@ -856,15 +857,15 @@ export class Scene3D {
       this._lastChase = now;
       const snap = !this.lastFocusPos || this._lastFocusId !== focus.id || this.camera.position.distanceTo(want) > 600;
       this.camera.position.lerp(want, snap ? 1 : 1 - Math.exp(-dt / 0.08));
-      return dt;
     };
     if (hold) {
       this._updatePadLine(null);
       this._padTarget = null;
       const target = hold === cw ? cw.look : this.toLocal(hold.lon, hold.lat, isNum(hold.alt) ? hold.alt : 0, this._want);
       // Ease the view from where the weapon cam was looking onto the hold point.
-      const dt = this._lastChase ? Math.min(1, (performance.now() - this._lastChase) / 1000) : 1;
-      this._lastChase = performance.now();
+      const now = performance.now();
+      const dt = this._lastChase ? Math.min(1, (now - this._lastChase) / 1000) : 1;
+      this._lastChase = now;
       if (!this._holdLook) this._holdLook = (cw && this._lastFocusId === cw.id ? cw.look : target).clone();
       else this._holdLook.lerp(target, 1 - Math.exp(-dt / 0.35));
       this.camera.lookAt(this._holdLook);
@@ -907,10 +908,10 @@ export class Scene3D {
         const dir = this._tmpV.set(Math.sin(hdg) * Math.cos(pit), Math.sin(pit) * this.exaggeration, -Math.cos(hdg) * Math.cos(pit)).normalize();
         this._want.copy(fp).addScaledVector(dir, -14).y += 4;
         smooth(this._want);
-        const c = this._camWeapon ||= { id: null, lon: 0, lat: 0, alt: 0, look: new THREE.Vector3() };
+        const c = this._camWeapon ||= { id: null, t: null, lon: 0, lat: 0, alt: 0, look: new THREE.Vector3() };
         c.look.copy(fp).addScaledVector(dir, 30);
         this.camera.lookAt(c.look);
-        c.id = focus.id; c.lon = focus.lon; c.lat = focus.lat; c.alt = focus.alt;
+        c.id = focus.id; c.t = isNum(t) ? t : null; c.lon = focus.lon; c.lat = focus.lat; c.alt = focus.alt;
       } else if (this.mode === "chase" || (this.mode === "padlock" && !this._padTarget)) {
         const hdg = (focus.hdg || 0) * D2R;
         const back = 42, up = 11; // close enough to see the jet's shape
