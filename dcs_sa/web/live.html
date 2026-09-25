@@ -1,1 +1,72 @@
-<html>live</html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DCS SA Live</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='none' stroke='%23ff5c5c' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%23ffd166'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/css/app.css">
+<link rel="stylesheet" href="/static/css/live.css">
+</head>
+<body class="live">
+<div class="lv">
+  <header class="lv-top">
+    <div class="brand"><span class="rec" id="recDot"></span> DCS SA · LIVE</div>
+    <div class="lv-status" id="status">Not connected</div>
+    <div class="spacer"></div>
+    <select id="rangeSel" title="Map range">
+      <option value="5">5 nm</option><option value="10">10 nm</option><option value="20">20 nm</option>
+      <option value="40" selected>40 nm</option><option value="80">80 nm</option><option value="160">160 nm</option>
+    </select>
+    <button id="btnOrient" title="Heading-up / north-up">Heading up</button>
+    <select id="layerSel" title="Ground"></select>
+    <button id="btnSound" title="Audible missile warning">🔇 Sound</button>
+    <button id="btnSetup" title="Connection settings">⚙ Connect</button>
+  </header>
+  <main class="lv-map">
+    <canvas class="map" id="map"></canvas>
+    <div class="lv-own" id="own"></div>
+    <div class="lv-warn hidden" id="warn"></div>
+    <div class="lv-empty" id="empty">
+      <h2>Waiting for telemetry</h2>
+      <p>Start DCS with the <b>DCS-SA bridge</b> installed, or connect to <b>Tacview real-time telemetry</b>.</p>
+      <button class="primary" id="btnSetup2">Connect…</button>
+    </div>
+  </main>
+  <aside class="lv-side">
+    <section><h3>Threats</h3><div id="threats" class="threats"></div></section>
+    <section id="rwrSec" class="hidden"><h3>RWR</h3><canvas id="rwr" class="rwr"></canvas></section>
+    <section id="storesSec" class="hidden"><h3>Stores</h3><div id="stores" class="stores"></div></section>
+    <section><h3>Events</h3><div id="events" class="lv-events"></div></section>
+  </aside>
+</div>
+
+<dialog id="setup" class="lv-dialog">
+  <form method="dialog">
+    <h2>Live source</h2>
+    <p class="muted">The DCS-SA bridge feeds your own jet (inputs, stores, RWR) automatically whenever DCS is running.
+      Tacview real-time telemetry adds every other aircraft and weapon.</p>
+    <fieldset>
+      <legend>Tacview real-time telemetry</legend>
+      <label>Host <input id="tvHost" type="text" value="127.0.0.1"></label>
+      <label>Port <input id="tvPort" type="number" value="42674"></label>
+      <label>Password <input id="tvPass" type="password" placeholder="(none)"></label>
+      <button type="button" class="primary" id="btnTv">Connect</button>
+    </fieldset>
+    <fieldset>
+      <legend>Replay a recording (practice / testing)</legend>
+      <select id="rpFile"></select>
+      <label>Speed <select id="rpSpeed"><option>1</option><option>2</option><option selected>4</option><option>8</option></select></label>
+      <button type="button" id="btnRp">Play</button>
+    </fieldset>
+    <div id="bridgeInfo" class="muted"></div>
+    <button type="button" id="btnInstall" style="margin-top:8px">Install DCS bridge into Export.lua</button>
+    <div class="row-end">
+      <button type="button" id="btnDisc">Disconnect</button>
+      <button value="close">Close</button>
+    </div>
+  </form>
+</dialog>
+<script type="module" src="/static/js/live.js"></script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+# Only needed to BUILD the Windows exe or to get native windows when running
+# from source.  The app itself runs on the Python standard library alone.
+pywebview>=5.0
+pyinstaller>=6.0

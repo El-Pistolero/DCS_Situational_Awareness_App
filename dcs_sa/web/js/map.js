@@ -27,6 +27,13 @@ export const LAYERS = {
     maxZoom: 18,
     dim: 0.55,
   },
+  hillshade: {
+    label: "Relief",
+    url: (z, x, y) => `https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade_Dark/MapServer/tile/${z}/${y}/${x}`,
+    attribution: "Relief © Esri, USGS, NASA",
+    maxZoom: 16,
+    dim: 0.15,
+  },
   grid: { label: "Grid only", url: null, attribution: "", maxZoom: 22 },
 };
 
@@ -42,7 +49,7 @@ const yToLat = (y, z) => {
 };
 
 export class TacticalMap {
-  constructor(canvas, { layer = "dark", minZoom = 3, maxZoom = 17 } = {}) {
+  constructor(canvas, { layer = "satellite", minZoom = 3, maxZoom = 17 } = {}) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
     this.center = [41.6, 41.6];

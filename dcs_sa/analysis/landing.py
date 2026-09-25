@@ -505,16 +505,23 @@ def _analyze_landing(
     prof_h: List[float] = []
     prof_x: List[float] = []
     prof_t: List[float] = []
-    for i in range(start, idx + 1):
+    # Walk back from touchdown and keep only the continuous final approach:
+    # stop at the first sample outside a wedge around the extended
+    # centreline, which is where the base turn / downwind begins.
+    for i in range(idx, start - 1, -1):
         e, nn = rel(i)
         along = -(e * ux + nn * uy)  # positive before touchdown
         cross = e * uy - nn * ux  # positive right of course
-        if along < 0 or along > 20000.0:
+        if along > 20000.0 or abs(cross) > 400.0 + 0.3 * max(along, 0.0):
+            break
+        if along < 0:
             continue
         prof_t.append(t[i] - td_t)
         prof_d.append(along)
         prof_h.append(alt[i] - td_alt)
         prof_x.append(cross)
+    for series in (prof_t, prof_d, prof_h, prof_x):
+        series.reverse()
     landing.profile = {"t": prof_t, "distance": prof_d, "height": prof_h, "lateral": prof_x}
 
     ref = landing.reference_glideslope

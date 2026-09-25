@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dcs-sa"
+version = "0.1.0"
+description = "Situational awareness and debrief tool for DCS World (Tacview / ACMI)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+desktop = ["pywebview>=5.0"]
+
+[project.scripts]
+dcs-sa = "dcs_sa.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["dcs_sa*"]
+
+[tool.setuptools.package-data]
+dcs_sa = ["web/*.html", "web/css/*.css", "web/js/*.js"]

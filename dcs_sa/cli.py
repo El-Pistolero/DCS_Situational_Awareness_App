@@ -41,7 +41,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command")
 
-    _add_serve_args(sub.add_parser("serve", help="start the web app (default)"))
+    _add_serve_args(sub.add_parser("serve", help="start the app in a browser tab"))
+    pd = sub.add_parser("app", help="start the app in its own desktop window (default)")
+    _add_serve_args(pd)
+    pd.add_argument("--live", action="store_true", help="open straight into the live view")
 
     pa = sub.add_parser("analyze", help="print a debrief for a recording")
     pa.add_argument("file")
@@ -54,10 +57,11 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Bare `python -m dcs_sa --replay x` should still work.
     argv = list(sys.argv[1:] if argv is None else argv)
+    cmds = ("serve", "app", "analyze", "sample")
     if not argv or argv[0].startswith("-") and argv[0] not in ("-h", "--help", "--version", "-v", "--verbose", "--config"):
-        argv = ["serve", *argv]
-    elif argv[0] in ("-v", "--verbose", "--config") and not any(a in ("serve", "analyze", "sample") for a in argv):
-        argv = [*argv, "serve"]
+        argv = ["app", *argv]
+    elif argv[0] in ("-v", "--verbose", "--config") and not any(a in cmds for a in argv):
+        argv = [*argv, "app"]
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -79,6 +83,20 @@ def main(argv: Optional[List[str]] = None) -> int:
 def _serve(args) -> int:
     from .server.app import serve
 
+    cfg = _config_from(args)
+    if args.command == "app":
+        from .desktop import run
+
+        return run(cfg, live_only=getattr(args, "live", False))
+    try:
+        serve(cfg)
+    except OSError as exc:
+        print(f"error: could not start server on {cfg.host}:{cfg.port}: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def _config_from(args) -> Config:
     cfg = Config.load(getattr(args, "config", None))
     if args.host:
         cfg.host = args.host
@@ -106,12 +124,7 @@ def _serve(args) -> int:
         cfg.bridge_port = args.bridge_port
     if args.no_browser:
         cfg.open_browser = False
-    try:
-        serve(cfg)
-    except OSError as exc:
-        print(f"error: could not start server on {cfg.host}:{cfg.port}: {exc}", file=sys.stderr)
-        return 2
-    return 0
+    return cfg
 
 
 def _analyze(args) -> int:

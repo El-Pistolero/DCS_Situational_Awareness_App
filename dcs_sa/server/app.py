@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from .. import __version__
 from ..config import Config
+from ..dcs_profile import read_profile
 from ..telemetry.dcs_bridge import DcsBridgeListener
 from ..telemetry.live_world import LiveWorld
 from ..telemetry.realtime import RealtimeTelemetryClient
@@ -105,6 +106,14 @@ class App:
         self.store = RecordingStore(cfg.all_recording_dirs(), cfg.upload_dir, cfg.player_names)
         self.live = LiveManager(cfg)
         self.warnings: list[str] = []
+        self.desktop = False
+        self.open_live_window = None  # set by the desktop shell
+        self.profile = read_profile()
+        # No name configured: use the active DCS logbook pilot.
+        if not cfg.player_names and self.profile.get("player"):
+            cfg.player_names = [str(self.profile["player"])]
+            self.store.player_names = cfg.player_names
+            self.live.world.player_names = [n.lower() for n in cfg.player_names]
 
     def status(self) -> Dict[str, Any]:
         return {
@@ -120,6 +129,8 @@ class App:
             },
             "tacview": {"host": self.cfg.tacview_host, "port": self.cfg.tacview_port},
             "playerNames": self.cfg.player_names,
+            "profile": self.profile,
+            "desktop": self.desktop,
             "warnings": self.warnings,
         }
 
@@ -210,6 +221,24 @@ def make_handler(app: App):
                     return self._json({"ok": True, "focus": app.live.world.focus_id})
                 if path == "/api/live/source":
                     return self._set_source(self._body_json())
+                if path == "/api/open-live":
+                    if app.open_live_window:
+                        app.open_live_window()
+                        return self._json({"ok": True})
+                    return self._json({"ok": False})
+                if path == "/api/install-bridge":
+                    from ..dcs_profile import install_bridge
+
+                    result = install_bridge()
+                    app.profile = read_profile()
+                    return self._json(result, 200 if result.get("ok") else 404)
+                if path == "/api/player":
+                    body = self._body_json()
+                    names = [n for n in (body.get("names") or []) if isinstance(n, str) and n.strip()]
+                    app.cfg.player_names = names
+                    app.store.player_names = names
+                    app.live.world.player_names = [n.lower() for n in names]
+                    return self._json({"ok": True, "playerNames": names})
                 return self._error(404, "not found")
             except (ValueError, json.JSONDecodeError) as exc:
                 return self._error(400, str(exc))
@@ -334,7 +363,12 @@ class _Server(ThreadingHTTPServer):
     allow_reuse_address = True
 
 
-def serve(cfg: Config) -> None:
+def start(cfg: Config):
+    """Start sources and the HTTP server on a background thread.
+
+    Returns (app, httpd, url).  Used by both the console server and the
+    desktop shell.
+    """
     app = App(cfg)
     err = app.live.start_bridge()
     if err:
@@ -344,24 +378,38 @@ def serve(cfg: Config) -> None:
         app.live.replay(cfg.replay_file, cfg.replay_speed)
     elif cfg.tacview_autoconnect:
         app.live.connect_tacview(cfg.tacview_host, cfg.tacview_port, cfg.tacview_password)
-
     httpd = _Server((cfg.host, cfg.port), make_handler(app))
+    threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.5},
+                     name="http", daemon=True).start()
     url_host = "localhost" if cfg.host in ("0.0.0.0", "127.0.0.1", "") else cfg.host
-    url = f"http://{url_host}:{cfg.port}/"
+    return app, httpd, f"http://{url_host}:{httpd.server_address[1]}/"
+
+
+def stop(app: App, httpd) -> None:
+    app.live.shutdown()
+    httpd.shutdown()
+    httpd.server_close()
+
+
+def serve(cfg: Config) -> None:
+    """Console mode: run until Ctrl+C, opening the default browser."""
+    app, httpd, url = start(cfg)
     print(f"\n  DCS Situational Awareness {__version__}")
-    print(f"  Debrief / review : {url}")
+    print(f"  Debrief / review  : {url}")
     print(f"  Live second screen: {url}live")
     if app.live.bridge:
-        print(f"  DCS bridge       : udp://{cfg.bridge_host}:{cfg.bridge_port}")
+        print(f"  DCS bridge        : udp://{cfg.bridge_host}:{cfg.bridge_port}")
+    if app.profile.get("player"):
+        print(f"  DCS pilot profile : {app.profile['player']}")
     for w in app.warnings:
         print(f"  ! {w}")
     print("  Press Ctrl+C to stop.\n")
     if cfg.open_browser:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     try:
-        httpd.serve_forever(poll_interval=0.5)
+        while True:
+            time.sleep(1.0)
     except KeyboardInterrupt:
         print("\nShutting down...")
     finally:
-        app.live.shutdown()
-        httpd.server_close()
+        stop(app, httpd)

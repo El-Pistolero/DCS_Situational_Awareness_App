@@ -25,6 +25,7 @@ def default_recording_dirs() -> List[str]:
         home / "Saved Games" / "DCS" / "Tacview",
         home / "Saved Games" / "DCS.openbeta" / "Tacview",
         Path.cwd() / "recordings",
+        home / "Documents" / "DCS-SA" / "recordings",
     ]
     user_profile = os.environ.get("USERPROFILE")
     if user_profile:
@@ -42,7 +43,7 @@ class Config:
     host: str = "127.0.0.1"
     port: int = 8765
     recording_dirs: List[str] = field(default_factory=default_recording_dirs)
-    upload_dir: str = str(Path.cwd() / "recordings")
+    upload_dir: str = str(Path.home() / "Documents" / "DCS-SA" / "recordings")
     player_names: List[str] = field(default_factory=list)
 
     # Live sources
@@ -62,7 +63,11 @@ class Config:
     @classmethod
     def load(cls, path: Optional[str] = None) -> "Config":
         cfg = cls()
-        candidates = [Path(path)] if path else [Path.cwd() / n for n in CONFIG_NAMES]
+        if path:
+            candidates = [Path(path)]
+        else:
+            dirs = [Path.cwd(), Path(sys.executable).parent, Path.home() / "Documents" / "DCS-SA"]
+            candidates = [d / n for d in dirs for n in CONFIG_NAMES]
         for cand in candidates:
             if cand.is_file():
                 cfg.apply(_read_toml(cand))
