@@ -457,10 +457,11 @@ tr.shotcard-row > td { padding: 0 0 8px; background: transparent !important; }
 .modesw button.m-a2g.active { background: #5a3a14; color: var(--orange); }
 .modesw button.m-all.active { background: #2a3a4c; color: #fff; }
 .modesw button.custom::after { content: "•"; margin-left: 3px; opacity: 0.7; }
-body.mode-a2a .mapwrap { box-shadow: inset 0 0 0 2px var(--cyan); }
-body.mode-a2g .mapwrap { box-shadow: inset 0 0 0 2px var(--orange); }
-body.mode-a2a .lv-map { box-shadow: inset 0 0 0 2px var(--cyan); }
-body.mode-a2g .lv-map { box-shadow: inset 0 0 0 2px var(--orange); }
+/* The mode's edge, drawn over the map canvas (an inset shadow on the container is hidden by it). */
+body.mode-a2a .mapwrap::after, body.mode-a2g .mapwrap::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 2; box-shadow: inset 0 0 0 2px var(--cyan);
+}
+body.mode-a2g .mapwrap::after { box-shadow: inset 0 0 0 2px var(--orange); }
 .modechip { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 6; font: 12px var(--sans); background: rgba(8,12,17,0.92);
   border: 1px solid var(--line-2); border-radius: 14px; padding: 5px 12px; pointer-events: none; white-space: nowrap; max-width: 80%; overflow: hidden; text-overflow: ellipsis; }
 .modechip.m-a2a { border-color: var(--cyan); color: var(--cyan); }
