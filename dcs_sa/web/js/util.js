@@ -176,6 +176,59 @@ export function bisectRight(arr, x) {
   return lo - 1;
 }
 
+/** Radar state (ACMI channel names) at playback index i, or null. */
+export function radarAt(pb, i) {
+  const r = pb && pb.radar;
+  if (!r || !r.mode || i < 0) return null;
+  const at = (a) => (a && isNum(a[i]) ? a[i] : undefined);
+  return {
+    RadarMode: at(r.mode), RadarAzimuth: at(r.az), RadarElevation: at(r.el), RadarRange: at(r.range),
+    RadarHorizontalBeamwidth: at(r.hbw), RadarVerticalBeamwidth: at(r.vbw),
+  };
+}
+
+/**
+ * Gun rounds visible at time t, as drawable paths.
+ * mode "paths": each round's path from the muzzle to where it is now, and the
+ * whole path lingers `linger` seconds after impact; "tracers": only a short
+ * streak at the round's current position.
+ */
+export function roundsAt(rounds, t, { mode = "paths", linger = 2.5, maxLife = 8 } = {}) {
+  if (!rounds || !rounds.length || mode === "off") return [];
+  const out = [];
+  // rounds are sorted by first sample; skip anything fired long before t.
+  let lo = 0, hi = rounds.length;
+  const from = t - maxLife - linger;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (rounds[mid].t[0] < from) lo = mid + 1; else hi = mid; }
+  for (let k = lo; k < rounds.length; k++) {
+    const r = rounds[k];
+    const t0 = r.t[0];
+    if (t0 > t) break;
+    const end = r.end ?? r.t[r.t.length - 1];
+    const keep = mode === "paths" ? linger : 0;
+    if (t > end + keep) continue;
+    const n = r.t.length;
+    let i = bisectRight(r.t, t);
+    if (i < 0) i = 0;
+    const pts = [];
+    const tailFrom = mode === "tracers" ? t - 0.15 : -Infinity;
+    for (let j = 0; j <= Math.min(i, n - 1); j++) if (r.t[j] >= tailFrom) pts.push([r.lon[j], r.lat[j], r.alt[j]]);
+    let head;
+    if (i < n - 1 && t <= end) {
+      const f = (t - r.t[i]) / Math.max(1e-6, r.t[i + 1] - r.t[i]);
+      head = [r.lon[i] + (r.lon[i + 1] - r.lon[i]) * f, r.lat[i] + (r.lat[i + 1] - r.lat[i]) * f, r.alt[i] + (r.alt[i + 1] - r.alt[i]) * f];
+      pts.push(head);
+    } else {
+      head = [r.lon[n - 1], r.lat[n - 1], r.alt[n - 1]];
+    }
+    if (mode === "tracers" && pts.length < 2 && i > 0) pts.unshift([r.lon[i - 1], r.lat[i - 1], r.alt[i - 1]]);
+    const impacted = t > end;
+    out.push({ id: r.id, shooter: r.shooter, color: r.color, coalition: r.coalition, pts, head, impacted,
+      fade: impacted ? Math.max(0, 1 - (t - end) / Math.max(linger, 1e-6)) : 1 });
+  }
+  return out;
+}
+
 /** Interpolate an object's playback arrays at time t. */
 export function sampleTrack(tr, t) {
   const n = tr.t.length;

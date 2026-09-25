@@ -2,7 +2,7 @@
 
 import {
   api, bisectRight, braa, el, fmtAlt, fmtClock, fmtDeg, fmtDist, fmtHdg, fmtMass, fmtNum,
-  fmtPct, fmtSpeed, fmtVs, fmtZulu, isNum, sampleTrack, sideColor, units, distance,
+  fmtPct, fmtSpeed, fmtVs, fmtZulu, isNum, radarAt, roundsAt, sampleTrack, sideColor, units, distance,
   M_TO_FT, MPS_TO_KT, MPS_TO_FPM,
 } from "./util.js";
 import { LAYERS, TacticalMap } from "./map.js";
@@ -19,7 +19,8 @@ const S = {
   key: null, analysis: null, playback: null, objects: new Map(), deaths: new Map(),
   t: 0, start: 0, end: 0, playing: false, speed: 4,
   selected: null, me: null, follow: false,
-  series: new Map(), trailSec: 90, labels: "aircraft", radar: "focus",
+  series: new Map(), trailSec: 90, labels: "aircraft", radar: pref("radar", "all"), bullets: pref("bullets", "paths"),
+  rounds: [], roundLife: 8,
   tab: "flight", status: null, lastPanel: 0, filter: "", eventFilter: new Set(),
 };
 
@@ -64,7 +65,10 @@ async function init() {
   $("unitSel").onchange = (e) => { units.set(e.target.value); renderAllPanels(); map.invalidate(); };
   $("labelSel").onchange = (e) => { S.labels = e.target.value; map.invalidate(); };
   $("trailSel").onchange = (e) => { S.trailSec = +e.target.value; map.invalidate(); };
-  $("radarSel").onchange = (e) => { S.radar = e.target.value; map.invalidate(); };
+  $("radarSel").value = S.radar;
+  $("radarSel").onchange = (e) => { S.radar = e.target.value; setPref("radar", S.radar); onTimeChange(true); };
+  $("bulletSel").value = S.bullets;
+  $("bulletSel").onchange = (e) => { S.bullets = e.target.value; setPref("bullets", S.bullets); onTimeChange(true); };
   $("btnFollow").onclick = () => setFollow(!S.follow);
   $("btn2d").onclick = () => setView("2d");
   $("btn3d").onclick = () => setView("3d");
@@ -193,6 +197,9 @@ function setupRecording(key, analysis, playback) {
     if (pb) S.objects.set(o.id, { ...o, pb });
   }
   for (const k of analysis.weapons.kills) S.deaths.set(k.victimId, k.time);
+  S.rounds = playback.rounds || [];
+  S.roundLife = Math.max(1, ...S.rounds.map((r) => (r.end ?? r.t[r.t.length - 1]) - r.t[0]));
+  if (playback.roundsTruncated) toast(`Showing the first ${S.rounds.length} of ${playback.roundsTotal} gun rounds.`);
   S.start = playback.start; S.end = playback.end;
   S.t = S.start;
   S.me = analysis.player;
@@ -247,7 +254,7 @@ function onTimeChange(force = false) {
   map.invalidate();
   if (S.view === "3d" && scene3d && S.analysis) {
     scene3d.follow = true;
-    scene3d.update(sceneObjects(), { focusId: S.selected || S.me, selectedId: S.selected });
+    scene3d.update(sceneObjects(), { focusId: S.selected || S.me, selectedId: S.selected, radar: S.radar, rounds: currentRounds() });
   }
   updateScrubber();
   const now = performance.now();
@@ -358,7 +365,9 @@ function sceneObjects() {
       trail.push([p.lon, p.lat, p.alt]);
       row.trail = trail;
     }
-    if (o.id === S.selected || S.radar === "all") {
+    const rad = S.radar !== "none" ? radarAt(pb, i) : null;
+    if (rad) Object.assign(row.v, rad);
+    else if (o.id === S.selected) {
       const ser = S.series.get(o.id);
       if (ser) {
         const j = bisectRight(ser.t, t);
@@ -373,11 +382,16 @@ function sceneObjects() {
   return out;
 }
 
+function currentRounds() {
+  return roundsAt(S.rounds, S.t, { mode: S.bullets, maxLife: S.roundLife });
+}
+
 let hitboxes = [];
 function drawMap(ctx, m) {
   const objs = sceneObjects();
   hitboxes = drawScene(ctx, m, objs, {
     selectedId: S.selected, focusId: S.me, labels: S.labels, showTrails: S.trailSec > 0, showRadar: S.radar,
+    rounds: currentRounds(),
   });
 }
 
@@ -716,11 +730,17 @@ function renderWeapons(panel) {
   }
   panel.append(el("div", { class: "section" }, el("h3", {}, "Missiles, rockets & bombs"), w.shots.length ? shots : el("div", { class: "empty" }, "None")));
   if (w.bursts.length) {
-    const b = el("table", { class: "grid" }, el("tr", {}, ...["Time", "Shooter", "Rounds", "Target", "Range", "Result"].map((h) => el("th", {}, h))));
+    const b = el("table", { class: "grid" }, el("tr", {}, ...["Time", "Shooter", "Rounds", "On target", "Target", "Range", "Result"].map((h) => el("th", {}, h))));
     for (const x of w.bursts) {
-      b.append(el("tr", { class: "click", onclick: () => seek(x.start - 2) },
+      const hits = isNum(x.roundsOnTarget) && x.rounds ? `${x.roundsOnTarget} (${Math.round((100 * x.roundsOnTarget) / x.rounds)}%)` : "—";
+      b.append(el("tr", {
+        class: "click",
+        title: [x.weaponName, isNum(x.fireRate) ? `${Math.round(x.fireRate)} rds/s recorded` : "", isNum(x.timeOfFlight) ? `mean time of flight ${x.timeOfFlight.toFixed(1)} s` : "",
+          isNum(x.closestApproach) ? `closest round ${x.closestApproach.toFixed(1)} m` : ""].filter(Boolean).join(" · "),
+        onclick: () => { seek(x.start - 1.5); select(x.launcherId); if (S.bullets === "off") { S.bullets = "paths"; $("bulletSel").value = "paths"; } },
+      },
         el("td", { class: "num" }, fmtClock(x.start - S.start)), el("td", {}, x.launcherPilot || x.launcherName),
-        el("td", { class: "num" }, x.rounds || "trigger"), el("td", {}, x.targetName || "—"),
+        el("td", { class: "num" }, x.rounds || "trigger"), el("td", { class: "num" }, hits), el("td", {}, x.targetName || "—"),
         el("td", { class: "num" }, fmtDist(x.rangeAtOpen)), el("td", {}, outcomePill(x.kill ? "kill" : "no kill"))));
     }
     panel.append(el("div", { class: "section" }, el("h3", {}, "Gun"), b));

@@ -334,7 +334,7 @@ def make_handler(app: App):
             if action == "analysis":
                 return self._json(report)
             if action == "playback":
-                return self._json(app.store.playback(rec))
+                return self._json(app.store.playback(rec, report))
             if action == "series" and len(parts) > 2:
                 chans = [c for c in q.get("channels", "").split(",") if c] or None
                 return self._json(app.store.series(rec, unquote(parts[2]), chans, int(q.get("max", 4000))))
@@ -384,12 +384,17 @@ def make_handler(app: App):
             self.end_headers()
             self.close_connection = True
             since = 0
+            session = None
             n = 0
             period = 1.0 / rate
             try:
                 self.wfile.write(b"retry: 2000\n\n")
                 while True:
                     t0 = time.monotonic()
+                    if app.live.world.session != session:
+                        # World was reset: replay its events from the start and
+                        # resend trails.
+                        session, since, n = app.live.world.session, 0, 0
                     snap = app.live.world.snapshot(since, include_trails=(n % 10 == 0))
                     since = snap["eventSeq"]
                     data = json.dumps(snap, separators=(",", ":"), allow_nan=False, default=str)

@@ -25,7 +25,9 @@ NAN = float("nan")
 #: ever plot their position and health.
 BASIC_CHANNELS = frozenset(P.TRANSFORM_CHANNELS) | {
     "Health", "Disabled", "Visible", "AGL", "IAS", "TAS", "Mach",
-    "EngagementRange", "EngagementMode", "RadarMode", "RadarRange",
+    "EngagementRange", "EngagementMode", "VerticalEngagementRange",
+    "RadarMode", "RadarRange", "RadarAzimuth", "RadarElevation",
+    "RadarHorizontalBeamwidth", "RadarVerticalBeamwidth", "LockedTargetMode",
 }
 
 
@@ -223,6 +225,35 @@ class Track:
         if math.isnan(lon) or math.isnan(lat):
             return None
         return (lon, lat, 0.0 if math.isnan(alt) else alt)
+
+    def position_interp(self, t: float) -> Optional[tuple[float, float, float]]:
+        """Position at *t*, linearly interpolated between recorded samples.
+
+        :meth:`position_at` holds the last sample, which is right for "what
+        did the recording say" but wrong for geometry against fast objects: a
+        200 m/s jet sampled at 2 Hz is up to 100 m from its last sample.
+        """
+        n = self._sample_count
+        if not n:
+            return None
+        i = bisect.bisect_right(self.t, t) - 1
+        if i < 0 or i >= n - 1:
+            return self.position_at(t)
+        t0, t1 = self.t[i], self.t[i + 1]
+        lon, lat, alt = self.channels.get("Longitude"), self.channels.get("Latitude"), self.channels.get("Altitude")
+        if lon is None or lat is None:
+            return None
+        f = (t - t0) / (t1 - t0) if t1 > t0 else 0.0
+        vals = []
+        for col in (lon, lat, alt):
+            if col is None:
+                vals.append(0.0)
+                continue
+            a, b = col[i], col[i + 1]
+            if math.isnan(a):
+                return self.position_at(t)
+            vals.append(a if math.isnan(b) else a + (b - a) * f)
+        return vals[0], vals[1], vals[2]
 
     def summary(self) -> Dict[str, Any]:
         return {

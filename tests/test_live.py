@@ -125,3 +125,26 @@ class ServerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LiveSessionTests(unittest.TestCase):
+    def test_reset_starts_a_new_session(self):
+        w = LiveWorld()
+        w.on_event(Event(1.0, "Message", [], "old"))
+        first = w.snapshot()["session"]
+        w.reset()
+        snap = w.snapshot()
+        self.assertEqual(snap["session"], first + 1)
+        self.assertEqual(snap["events"], [])
+
+    def test_rounds_listed_separately_and_not_threats(self):
+        w = LiveWorld()
+        w.on_object(0, "1", {"Longitude": 41.0, "Latitude": 41.0, "Altitude": 1000, "Yaw": 0}, {"Type": "Air+FixedWing", "Coalition": "Allies"})
+        w.on_object(0, "E", {"Longitude": 41.0, "Latitude": 41.05, "Altitude": 1000}, {"Type": "Air+FixedWing", "Coalition": "Enemies"})
+        for t in (0.0, 0.25):
+            w.on_object(t, "R", {"Longitude": 41.0, "Latitude": 41.04 - t * 0.01, "Altitude": 1000}, {"Type": "Projectile+Bullet", "Coalition": "Enemies"})
+        snap = w.snapshot()
+        self.assertEqual([r["id"] for r in snap["rounds"]], ["R"])
+        self.assertEqual(len(snap["rounds"][0]["trail"]), 2)
+        self.assertNotIn("R", {o["id"] for o in snap["objects"]})
+        self.assertNotIn("R", {t["id"] for t in snap["threats"]})

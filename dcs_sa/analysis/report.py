@@ -85,7 +85,7 @@ def analyze(rec: Recording, player_names: Iterable[str] = ()) -> Dict:
         "bullseye": {"id": bullseye.id, "longitude": bpos[0], "latitude": bpos[1]} if bpos else None,
         "bounds": list(box) if box else None,
         "objects": [tr.summary() for tr in sorted(rec.tracks.values(), key=lambda t: t.first_seen)
-                    if tr.category not in ("clutter",)],
+                    if tr.category not in ("clutter", "round")],
         "aircraft": aircraft,
         "weapons": weapons.to_dict(),
         "landings": [ld.to_dict() for ld in landings["landings"]],

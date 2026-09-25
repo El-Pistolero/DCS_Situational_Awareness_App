@@ -5,6 +5,7 @@ import * as THREE from "three";
 import { OrbitControls } from "/static/vendor/OrbitControls.js";
 import { isNum, sideColor, units, M_TO_FT, MPS_TO_KT } from "./util.js";
 import { buildF16, isF16 } from "./f16.js";
+import { radarVolume } from "./symbols.js";
 
 const R_LAT = 111320;
 const D2R = Math.PI / 180;
@@ -120,6 +121,46 @@ const GEOM = {
 };
 
 // ---------------------------------------------------------------------------
+// Radar volumes
+// ---------------------------------------------------------------------------
+
+const radarGeomCache = new Map();
+
+/** Unit-radius search volume (spherical sector) centred on -Z, plus its outline. */
+function radarGeometry(azDeg, elDeg) {
+  const key = `${azDeg}/${elDeg}`;
+  let g = radarGeomCache.get(key);
+  if (g) return g;
+  const az = Math.min(azDeg, 180) * D2R, el = elDeg * D2R;
+  const full = azDeg >= 180;
+  const fill = new THREE.SphereGeometry(1, full ? 64 : 32, 6, 1.5 * Math.PI - az, 2 * az, Math.PI / 2 - el, 2 * el);
+  // Outline: far-surface rims at the top and bottom of the volume, plus the
+  // four radial edges for a sector.
+  const pts = [];
+  const dir = (a, e) => new THREE.Vector3(Math.sin(a) * Math.cos(e), Math.sin(e), -Math.cos(a) * Math.cos(e));
+  const steps = full ? 72 : 24;
+  for (const e of [-el, el]) {
+    for (let i = 0; i < steps; i++) {
+      const a0 = -az + (2 * az * i) / steps, a1 = -az + (2 * az * (i + 1)) / steps;
+      pts.push(dir(a0, e), dir(a1, e));
+    }
+  }
+  if (!full) {
+    for (const a of [-az, az]) {
+      for (const e of [-el, el]) pts.push(new THREE.Vector3(0, 0, 0), dir(a, e));
+      pts.push(dir(a, -el), dir(a, el));
+    }
+  }
+  const edges = new THREE.BufferGeometry().setFromPoints(pts);
+  g = { fill, edges };
+  radarGeomCache.set(key, g);
+  return g;
+}
+
+/** Unit beam: cone of radius 1 at distance 1 along -Z, apex at the origin. */
+const BEAM_GEOM = new THREE.ConeGeometry(1, 1, 16, 1, true).translate(0, -0.5, 0).rotateX(Math.PI / 2);
+
+// ---------------------------------------------------------------------------
 
 export class Scene3D {
   constructor(container) {
@@ -136,6 +177,7 @@ export class Scene3D {
     this.terrainSources = { dcs: 0, online: 0 };
     this.runwayGroup = new THREE.Group();
     this.airbasesFor = null;
+    this.radars = new Map();
 
     this.scene = new THREE.Scene();
     const sky = new THREE.Color(0x8fa9c4);
@@ -162,6 +204,7 @@ export class Scene3D {
     this.grid = new THREE.GridHelper(400000, 80, 0x60707a, 0x4b5860);
     this.grid.position.y = -1;
     this.scene.add(this.grid);
+    this._initRounds();
 
     this.origin = null;
     this.exaggeration = 1;
@@ -541,6 +584,8 @@ export class Scene3D {
     });
     e.label.remove();
     this._pickables = this._pickables.filter((m) => m.userData.id !== id);
+    const rd = this.radars.get(id);
+    if (rd) { this.scene.remove(rd.vol, rd.beamGroup); rd.mats.forEach((m) => m.dispose()); this.radars.delete(id); }
     this.objects.delete(id);
   }
 
@@ -548,7 +593,7 @@ export class Scene3D {
    * objects: [{id, category, type, lon, lat, alt, hdg, pitch, roll, trail, name, pilot,
    *            coalition, color, dead, lock, v:{EngagementRange}}]
    */
-  update(objects, { focusId = null, selectedId = null } = {}) {
+  update(objects, { focusId = null, selectedId = null, radar = "all", rounds = [] } = {}) {
     const focus = objects.find((o) => o.id === focusId) || objects.find((o) => o.id === selectedId) ||
       objects.find((o) => ["fixedwing", "rotorcraft"].includes(o.category)) || objects[0];
     if (!focus) return;
@@ -594,6 +639,8 @@ export class Scene3D {
       e.trail.geometry.attributes.position.needsUpdate = true;
     }
     for (const id of [...this.objects.keys()]) if (!seen.has(id)) this._remove(id);
+    this._updateRadars(objects, radar, focus.id, selectedId);
+    this._updateRounds(rounds);
 
     // Lock lines.
     if (!this.lockLines) {
@@ -626,19 +673,170 @@ export class Scene3D {
         const hdg = (focus.hdg || 0) * D2R;
         const back = 42, up = 11; // close enough to see the jet's shape
         const want = fp.clone().add(new THREE.Vector3(Math.sin(hdg) * -back, up, Math.cos(hdg) * back));
-        // Smooth while flying; snap after a seek or when first entering chase.
+        // Time-based smoothing: the same feel at 60 Hz playback and 5 Hz live
+        // updates.  Snap after a seek or when first entering chase.
+        const now = performance.now();
+        const dt = this._lastChase ? (now - this._lastChase) / 1000 : 1;
+        this._lastChase = now;
         const snap = !this.lastFocusPos || this.camera.position.distanceTo(want) > 600;
-        this.camera.position.lerp(want, snap ? 1 : 0.25);
+        this.camera.position.lerp(want, snap ? 1 : 1 - Math.exp(-dt / 0.08));
         this.camera.lookAt(fp.clone().add(new THREE.Vector3(Math.sin(hdg) * 40, 3, -Math.cos(hdg) * 40)));
       }
       this.lastFocusPos = fp.clone();
     }
   }
 
+  // -- radar -------------------------------------------------------------------------
+
+  _updateRadars(objects, mode, focusId, selectedId) {
+    const shown = new Set();
+    if (mode !== "none") {
+      for (const o of objects) {
+        if (mode === "focus" && o.id !== focusId && o.id !== selectedId) continue;
+        const e = this.objects.get(o.id);
+        if (!e?.pos || o.dead) continue;
+        const r = radarVolume(o);
+        if (!r.on) continue;
+        if (!r.surface && !isNum(o.hdg)) continue;
+        shown.add(o.id);
+        let rd = this.radars.get(o.id);
+        const key = `${r.az}/${r.el}`;
+        if (!rd || rd.key !== key) {
+          if (rd) { this.scene.remove(rd.vol, rd.beamGroup); rd.mats.forEach((m) => m.dispose()); }
+          const color = new THREE.Color(e.color);
+          const g = radarGeometry(r.az, r.el);
+          const fillMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: r.surface ? 0.015 : 0.06, depthWrite: false, side: THREE.DoubleSide });
+          const edgeMat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: r.surface ? 0.18 : 0.35, depthWrite: false });
+          // A surface search radar's fan beam sweeps 360 deg out to ~90 km; keep it a
+          // quiet sweep so it does not drown out the fighters' beams.
+          const beamMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: r.surface ? 0.06 : 0.2, depthWrite: false, side: THREE.DoubleSide });
+          const vol = new THREE.Group();
+          vol.add(new THREE.Mesh(g.fill, fillMat), new THREE.LineSegments(g.edges, edgeMat));
+          const beamGroup = new THREE.Group();
+          const beam = new THREE.Mesh(BEAM_GEOM, beamMat);
+          beamGroup.add(beam);
+          this.scene.add(vol, beamGroup);
+          rd = { key, vol, beamGroup, beam, mats: [fillMat, edgeMat, beamMat] };
+          this.radars.set(o.id, rd);
+        }
+        const hdg = (isNum(o.hdg) ? o.hdg : 0) * D2R;
+        // Scan volume: heading-referenced, horizon-stabilised (surface search
+        // radars cover 0..2*el above the horizon).
+        rd.vol.position.copy(e.pos);
+        rd.vol.rotation.set(r.surface ? r.el * D2R : 0, -hdg, 0, "YXZ");
+        rd.vol.scale.setScalar(r.range);
+        rd.vol.visible = true;
+        // Antenna beam: azimuth/elevation relative to the airframe.
+        if (r.beamAz !== null) {
+          const pitch = r.surface || !isNum(o.pitch) ? 0 : o.pitch;
+          rd.beamGroup.position.copy(e.pos);
+          rd.beamGroup.rotation.set((pitch + r.beamEl) * D2R, -(hdg + r.beamAz * D2R), 0, "YXZ");
+          rd.beam.scale.set(Math.tan((r.hbw / 2) * D2R) * r.range, Math.tan((r.vbw / 2) * D2R) * r.range, r.range);
+          rd.beamGroup.visible = true;
+        } else {
+          rd.beamGroup.visible = false;
+        }
+      }
+    }
+    for (const [id, rd] of this.radars) {
+      if (!shown.has(id)) { rd.vol.visible = false; rd.beamGroup.visible = false; }
+    }
+  }
+
+  // -- gun rounds ----------------------------------------------------------------------
+
+  _initRounds() {
+    const mk = (Ctor, mat) => {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(3 * 1024), 3));
+      g.setAttribute("color", new THREE.BufferAttribute(new Float32Array(3 * 1024), 3));
+      g.setDrawRange(0, 0);
+      const obj = new Ctor(g, mat);
+      obj.frustumCulled = false;
+      obj.renderOrder = 5;
+      this.scene.add(obj);
+      return obj;
+    };
+    const additive = { vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false };
+    this.roundPaths = mk(THREE.LineSegments, new THREE.LineBasicMaterial({ ...additive, opacity: 0.55 }));
+    this.roundHeads = mk(THREE.Points, new THREE.PointsMaterial({ ...additive, size: 5, sizeAttenuation: false }));
+    this.roundImpacts = mk(THREE.Points, new THREE.PointsMaterial({ ...additive, size: 7, sizeAttenuation: false }));
+  }
+
+  _fill(obj, verts, cols) {
+    const g = obj.geometry;
+    let pos = g.attributes.position, col = g.attributes.color;
+    if (pos.array.length < verts.length) {
+      let cap = pos.array.length;
+      while (cap < verts.length) cap *= 2;
+      pos = new THREE.BufferAttribute(new Float32Array(cap), 3);
+      col = new THREE.BufferAttribute(new Float32Array(cap), 3);
+      g.setAttribute("position", pos);
+      g.setAttribute("color", col);
+    }
+    pos.array.set(verts);
+    col.array.set(cols);
+    pos.needsUpdate = true;
+    col.needsUpdate = true;
+    g.setDrawRange(0, verts.length / 3);
+  }
+
+  _updateRounds(rounds) {
+    const pv = [], pc = [], hv = [], hc = [], iv = [], ic = [];
+    const tracer = [1.0, 0.88, 0.55];
+    for (const r of rounds || []) {
+      const c = new THREE.Color(sideColor(r));
+      // Many overlapping additive paths saturate to white; keep each faint.
+      const f = (r.fade ?? 1) * 0.35;
+      let prev = null;
+      for (const p of r.pts) {
+        const v = this.toLocal(p[0], p[1], p[2]);
+        if (prev) {
+          pv.push(prev.x, prev.y, prev.z, v.x, v.y, v.z);
+          // Additive blending: darker colour == more transparent, so fading
+          // is just scaling the colour.
+          pc.push(c.r * f, c.g * f, c.b * f, c.r * f, c.g * f, c.b * f);
+        }
+        prev = v;
+      }
+      const h = this.toLocal(r.head[0], r.head[1], r.head[2]);
+      if (r.impacted) { iv.push(h.x, h.y, h.z); ic.push(1.0 * f, 0.6 * f, 0.25 * f); }
+      else { hv.push(h.x, h.y, h.z); hc.push(...tracer); }
+    }
+    this._fill(this.roundPaths, pv, pc);
+    this._fill(this.roundHeads, hv, hc);
+    this._fill(this.roundImpacts, iv, ic);
+  }
+
   // -- render ------------------------------------------------------------------------
 
+  /** Terrain height under a point (local x/z), or null if no tile is there. */
+  groundHeight(x, z) {
+    // Only test the tile(s) whose footprint contains the point.
+    const meshes = [];
+    for (const t of this.tiles.values()) {
+      if (!t.mesh) continue;
+      const g = t.mesh.geometry;
+      if (!g.boundingBox) g.computeBoundingBox();
+      const b = g.boundingBox;
+      if (x >= b.min.x && x <= b.max.x && z >= b.min.z && z <= b.max.z) meshes.push(t.mesh);
+    }
+    if (!meshes.length) return null;
+    this._downRay ||= new THREE.Raycaster();
+    this._downRay.set(new THREE.Vector3(x, 20000, z), new THREE.Vector3(0, -1, 0));
+    const hit = this._downRay.intersectObjects(meshes, false)[0];
+    return hit ? hit.point.y : null;
+  }
+
   render() {
-    if (this.mode === "orbit") this.controls.update();
+    if (this.mode === "orbit") {
+      this.controls.update();
+      // Never let the orbit camera sink into the terrain.
+      const cam = this.camera.position;
+      const g = this.groundHeight(cam.x, cam.z);
+      const floor = Math.max(g ?? 0, 0) + 15;
+      if (cam.y < floor) cam.y = floor;
+    }
     const cam = this.camera.position;
     // Keep models visible at range: never smaller than ~1/150 of the distance.
     for (const e of this.objects.values()) {

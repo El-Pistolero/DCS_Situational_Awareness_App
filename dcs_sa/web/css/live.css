@@ -5,7 +5,11 @@ body.live { overflow: hidden; }
 .lv-top .rec { width: 10px; height: 10px; border-radius: 50%; background: var(--faint); display: inline-block; }
 .lv-top .rec.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
 .lv-top .rec.stale { background: var(--warn); }
-.lv-status { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.lv-status { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 0; }
+/* Controls keep their size; the status text is what gives way. */
+.lv-top > :not(.lv-status):not(.spacer) { flex-shrink: 0; }
+.lv-top .spacer { display: none; }
+.lv-top select { max-width: 150px; }
 .lv-map { position: relative; min-width: 0; }
 .lv-map canvas.map { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
 .lv-side { background: var(--panel); border-left: 1px solid var(--line); overflow: auto; padding: 10px; }

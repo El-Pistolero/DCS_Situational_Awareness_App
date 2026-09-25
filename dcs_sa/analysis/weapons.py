@@ -33,9 +33,14 @@ TARGET_RADIUS = {"missile": 6000.0, "rocket": 1500.0, "bomb": 1500.0, "torpedo":
 LAUNCHER_RADIUS = 600.0
 #: Gun rounds further apart than this belong to separate bursts.
 BURST_GAP = 1.0
+#: A round whose path passes this close to the target counts as on target
+#: (roughly a fighter's half-span; DCS resolves real hits on the airframe).
+ROUND_HIT_RADIUS = 12.0
 
 
 def weapon_kind(tags) -> str:
+    if T.is_gun_round(tags):
+        return "gun"
     if "Missile" in tags:
         return "missile"
     if "Rocket" in tags:
@@ -116,6 +121,11 @@ class GunBurst:
     kill: bool = False
     killed_id: Optional[str] = None
     source: str = "rounds"  # "rounds" (projectiles exported) or "trigger"
+    weapon_name: Optional[str] = None
+    rounds_on_target: Optional[int] = None
+    fire_rate: Optional[float] = None  # rounds per second, as recorded
+    time_of_flight: Optional[float] = None  # mean, seconds
+    round_ids: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict:
         return _clean(asdict(self))
@@ -287,19 +297,45 @@ def _closest_approach(
     candidates: List[Track],
     limit: float,
 ) -> Tuple[Optional[Track], float, float]:
+    """Closest distance between a weapon's path and any candidate.
+
+    Between consecutive weapon samples both the weapon and the candidate are
+    treated as moving in straight lines, and the minimum of that relative
+    motion is solved exactly.  A round at ~1000 m/s covers hundreds of metres
+    per recorded sample, so checking only at the samples - or even on a fine
+    grid - misses near passes by tens of metres.
+    """
     best: Optional[Track] = None
     best_d = limit
     best_t = NAN
+    if not samples:
+        return best, best_d, best_t
     for cand in candidates:
+        prev = None  # (t, rel_east, rel_north, rel_up) of the previous sample
         for t, lo, la, al in samples:
             if not cand.alive_at(t, grace=0.5):
+                prev = None
                 continue
-            pos = cand.position_at(t)
+            pos = cand.position_interp(t)
             if pos is None:
+                prev = None
                 continue
-            d = geo.slant_range(lo, la, al, pos[0], pos[1], pos[2])
+            kx = geo.m_per_deg_lon(la)
+            rel = (t, (lo - pos[0]) * kx, (la - pos[1]) * geo.M_PER_DEG_LAT, al - pos[2])
+            d = math.sqrt(rel[1] ** 2 + rel[2] ** 2 + rel[3] ** 2)
             if d < best_d:
                 best, best_d, best_t = cand, d, t
+            if prev is not None:
+                dx, dy, dz = rel[1] - prev[1], rel[2] - prev[2], rel[3] - prev[3]
+                seg2 = dx * dx + dy * dy + dz * dz
+                if seg2 > 1e-9:
+                    f = -(prev[1] * dx + prev[2] * dy + prev[3] * dz) / seg2
+                    if 0.0 < f < 1.0:
+                        cx, cy, cz = prev[1] + dx * f, prev[2] + dy * f, prev[3] + dz * f
+                        dm = math.sqrt(cx * cx + cy * cy + cz * cz)
+                        if dm < best_d:
+                            best, best_d, best_t = cand, dm, prev[0] + (t - prev[0]) * f
+            prev = rel
     return best, best_d, best_t
 
 
@@ -369,7 +405,7 @@ def analyze_weapons(rec: Recording, destructions: Optional[Dict[str, Destruction
     destructions = destructions if destructions is not None else find_destructions(rec)
     platforms = [tr for tr in rec.tracks.values() if _is_platform(tr)]
     weapons = sorted(
-        (tr for tr in rec.tracks.values() if tr.category == "weapon"),
+        (tr for tr in rec.tracks.values() if tr.category in ("weapon", "round")),
         key=lambda tr: tr.first_seen,
     )
 
@@ -497,6 +533,7 @@ def _gun_bursts(
         for grp in groups:
             start = grp[0][0].first_seen
             end = max((r[0].removed_at or r[0].last_seen) for r in grp)
+            last_fired = grp[-1][0].first_seen
             burst = GunBurst(
                 launcher_id=launcher_id,
                 launcher_name=launcher.name,
@@ -504,9 +541,22 @@ def _gun_bursts(
                 start=start,
                 end=end,
                 rounds=len(grp),
+                weapon_name=grp[0][0].name,
+                round_ids=[r[0].id for r in grp],
             )
+            # Rounds are first seen on recorder frames, so several share a
+            # timestamp; count the last frame as a full frame interval.
+            seen = sorted({r[0].first_seen for r in grp})
+            if len(seen) > 1:
+                frame = min(b - a for a, b in zip(seen, seen[1:]))
+                burst.fire_rate = len(grp) / (seen[-1] - seen[0] + frame)
+            tofs = [((r[0].removed_at or r[0].last_seen) - r[0].first_seen) for r in grp]
+            burst.time_of_flight = sum(tofs) / len(tofs) if tofs else None
+            # Target: whatever the burst's rounds passed closest to.  Probe a
+            # spread of rounds so a long burst walked across a target counts.
+            step = max(1, len(grp) // 8)
             probe = []
-            for r in (grp[0], grp[len(grp) // 2], grp[-1]):
+            for r in grp[::step] + [grp[-1]]:
                 probe.extend(r[1])
             tgt, ca, _ = _closest_approach(probe, hostile, TARGET_RADIUS["gun"])
             if tgt is not None:
@@ -514,6 +564,13 @@ def _gun_bursts(
                 lp, tp = launcher.position_at(start), tgt.position_at(start)
                 if lp and tp:
                     burst.range_at_open = geo.slant_range(*lp, *tp)
+                # Per-round miss distance along its whole recorded path.
+                on_target = 0
+                for rnd, samples in grp:
+                    _, miss, _ = _closest_approach(samples, [tgt], float("inf"))
+                    if miss <= ROUND_HIT_RADIUS:
+                        on_target += 1
+                burst.rounds_on_target = on_target
             bursts.append(burst)
     return bursts
 

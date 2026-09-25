@@ -24,6 +24,7 @@ MAX_EVENTS = 300
 #: Beyond this range a contact is not worth a threat-list row.
 THREAT_RANGE_AIR = 150_000.0
 THREAT_RANGE_MISSILE = 80_000.0
+MAX_LIVE_ROUNDS = 400
 
 
 class LiveObject:
@@ -89,6 +90,9 @@ class LiveWorld:
 
     def reset(self) -> None:
         with getattr(self, "_lock", threading.RLock()):
+            # A new session (reconnect, mission restart, replay loop) tells
+            # clients to drop their event list and trails.
+            self.session = getattr(self, "session", 0) + 1
             self.objects: Dict[str, LiveObject] = {}
             self.globals: Dict[str, Any] = {}
             self.events: Deque[Dict[str, Any]] = deque(maxlen=MAX_EVENTS)
@@ -248,7 +252,7 @@ class LiveWorld:
             obj.prev = cur
         elif prev is None:
             obj.prev = cur
-        if not obj.trail or t - obj.trail[-1][0] >= 0.5:
+        if not obj.trail or t - obj.trail[-1][0] >= (0.0 if obj.category == "round" else 0.5):
             obj.trail.append(cur)
         while obj.trail and t - obj.trail[0][0] > TRAIL_SECONDS:
             obj.trail.popleft()
@@ -281,8 +285,22 @@ class LiveWorld:
     def snapshot(self, since_event: int = 0, include_trails: bool = True) -> Dict[str, Any]:
         with self._lock:
             objs = []
+            rounds = []
+            focus_obj = self.objects.get(self.focus_id) if self.focus_id else None
+            fpos = focus_obj.position() if focus_obj else None
             for obj in self.objects.values():
                 if obj.category == "clutter":
+                    continue
+                if obj.category == "round":
+                    pos = obj.position()
+                    if pos is None:
+                        continue
+                    rounds.append({
+                        "id": obj.id, "parent": obj.props.get("Parent"), "color": obj.props.get("Color"),
+                        "coalition": obj.coalition, "lon": pos[0], "lat": pos[1], "alt": pos[2],
+                        "trail": [[p[1], p[2], p[3]] for p in list(obj.trail)[-12:]],
+                        "_d": geo.ground_distance(fpos[0], fpos[1], pos[0], pos[1]) if fpos else 0.0,
+                    })
                     continue
                 pos = obj.position()
                 if pos is None:
@@ -314,6 +332,7 @@ class LiveWorld:
             focus = self.objects.get(self.focus_id) if self.focus_id else None
             return {
                 "time": self.time,
+                "session": self.session,
                 "wallclock": time.time(),
                 "stale": (time.time() - self.wall_updated) > 5.0 if self.wall_updated else True,
                 "status": dict(self.status),
@@ -322,6 +341,9 @@ class LiveWorld:
                 "focus": self.focus_id,
                 "focusLocked": self.focus_locked,
                 "objects": objs,
+                # Nearest rounds only: a gun fight can have hundreds in the air.
+                "rounds": [{k: v for k, v in rd.items() if k != "_d"}
+                           for rd in sorted(rounds, key=lambda x: x["_d"])[:MAX_LIVE_ROUNDS]],
                 "events": [e for e in self.events if e["seq"] > since_event],
                 "eventSeq": self.event_seq,
                 "threats": self._threats(focus) if focus else [],
@@ -336,7 +358,7 @@ class LiveWorld:
         my_hdg = me.heading() or 0.0
         out: List[Dict[str, Any]] = []
         for obj in self.objects.values():
-            if obj.id == me.id or obj.category in ("clutter", "countermeasure", "bullseye", "navaid", "misc"):
+            if obj.id == me.id or obj.category in ("clutter", "round", "countermeasure", "bullseye", "navaid", "misc"):
                 continue
             op = obj.position()
             if op is None:

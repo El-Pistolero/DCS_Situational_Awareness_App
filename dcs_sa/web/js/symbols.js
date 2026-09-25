@@ -155,34 +155,105 @@ function drawBullseye(ctx, map, obj) {
   ctx.restore();
 }
 
-/** Radar coverage wedge and antenna line for one aircraft. */
+/**
+ * Default radar search volume when a recording says only "radar on".
+ * ACMI carries the antenna direction and beam width but not the scan limits,
+ * so airborne radars get a typical fighter search of +/-60 deg azimuth and a
+ * few bars of elevation; surface search radars rotate through 360 deg.
+ */
+export const RADAR_DEFAULTS = {
+  air: { az: 60, el: 6.5, range: 74000, beam: 3.5 },
+  surface: { az: 180, el: 15, range: 90000, beam: 2 },
+};
+
+export function radarVolume(o) {
+  const v = o.v || {};
+  const surface = !["fixedwing", "rotorcraft", "air"].includes(o.category);
+  const d = surface ? RADAR_DEFAULTS.surface : RADAR_DEFAULTS.air;
+  return {
+    surface,
+    on: isNum(v.RadarMode) && v.RadarMode > 0,
+    range: isNum(v.RadarRange) && v.RadarRange > 0 ? v.RadarRange : d.range,
+    az: d.az,
+    el: d.el,
+    beamAz: isNum(v.RadarAzimuth) ? v.RadarAzimuth : null,
+    beamEl: isNum(v.RadarElevation) ? v.RadarElevation : 0,
+    hbw: isNum(v.RadarHorizontalBeamwidth) && v.RadarHorizontalBeamwidth > 0 ? v.RadarHorizontalBeamwidth : d.beam,
+    vbw: isNum(v.RadarVerticalBeamwidth) && v.RadarVerticalBeamwidth > 0 ? v.RadarVerticalBeamwidth : d.beam,
+  };
+}
+
+/** Radar search wedge (or ring, for surface radars) and antenna beam. */
 export function drawRadar(ctx, map, obj) {
-  const v = obj.v || {};
-  if (!isNum(v.RadarMode) || v.RadarMode <= 0 || !isNum(obj.hdg)) return;
-  const range = isNum(v.RadarRange) && v.RadarRange > 0 ? v.RadarRange : 74000;
+  const r = radarVolume(obj);
+  if (!r.on) return;
+  const hdg = isNum(obj.hdg) ? obj.hdg : 0;
+  if (!r.surface && !isNum(obj.hdg)) return;
   const color = sideColor(obj);
   const mpp = map.metersPerPixel();
-  const rpx = Math.min(range / mpp, 4000);
+  const rpx = Math.min(r.range / mpp, 4000);
   const [x, y] = map.project(obj.lon, obj.lat);
   ctx.save();
-  // Generic +/-60 deg search volume - ACMI does not carry scan limits.
-  ctx.fillStyle = withAlpha(color, 0.06);
+  ctx.fillStyle = withAlpha(color, r.surface ? 0.03 : 0.06);
   ctx.strokeStyle = withAlpha(color, 0.25);
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(x, y);
-  ctx.arc(x, y, rpx, map.screenAngle(obj.hdg - 60), map.screenAngle(obj.hdg + 60));
-  ctx.closePath();
-  ctx.fill(); ctx.stroke();
-  if (isNum(v.RadarAzimuth)) {
-    const az = obj.hdg + v.RadarAzimuth;
-    const bw = isNum(v.RadarHorizontalBeamwidth) ? v.RadarHorizontalBeamwidth : 3;
-    ctx.fillStyle = withAlpha(color, 0.22);
+  if (r.surface) {
+    ctx.arc(x, y, rpx, 0, TAU);
+  } else {
+    ctx.moveTo(x, y);
+    ctx.arc(x, y, rpx, map.screenAngle(hdg - r.az), map.screenAngle(hdg + r.az));
+    ctx.closePath();
+  }
+  ctx.fill();
+  if (!r.surface) ctx.stroke();
+  if (r.beamAz !== null) {
+    const az = hdg + r.beamAz;
+    const bw = Math.max(r.hbw, 1.5);
+    ctx.fillStyle = withAlpha(color, 0.28);
     ctx.beginPath();
     ctx.moveTo(x, y);
     ctx.arc(x, y, rpx, map.screenAngle(az - bw / 2), map.screenAngle(az + bw / 2));
     ctx.closePath();
     ctx.fill();
+  }
+  ctx.restore();
+}
+
+/** Gun rounds from roundsAt(): faint path, bright tracer head, impact puff. */
+export function drawRounds(ctx, map, rounds) {
+  if (!rounds || !rounds.length) return;
+  ctx.save();
+  ctx.lineCap = "round";
+  for (const r of rounds) {
+    const color = sideColor(r);
+    const pts = r.pts.map((p) => map.project(p[0], p[1]));
+    if (pts.length >= 2) {
+      ctx.strokeStyle = withAlpha(color, 0.45 * r.fade);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(...pts[0]);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(...pts[i]);
+      ctx.stroke();
+    }
+    const [hx, hy] = map.project(r.head[0], r.head[1]);
+    if (r.impacted) {
+      ctx.fillStyle = `rgba(255,190,110,${0.8 * r.fade})`;
+      ctx.beginPath(); ctx.arc(hx, hy, 2.2, 0, TAU); ctx.fill();
+    } else {
+      // Tracer: a short bright streak ending at the round.
+      const prev = pts.length >= 2 ? pts[pts.length - 2] : null;
+      ctx.strokeStyle = "rgba(255,226,140,0.95)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      if (prev) {
+        const dx = hx - prev[0], dy = hy - prev[1], len = Math.hypot(dx, dy) || 1;
+        const l = Math.min(len, 9);
+        ctx.moveTo(hx - (dx / len) * l, hy - (dy / len) * l);
+      } else ctx.moveTo(hx - 1, hy);
+      ctx.lineTo(hx, hy);
+      ctx.stroke();
+    }
   }
   ctx.restore();
 }
@@ -239,6 +310,7 @@ export function drawScene(ctx, map, objects, opts = {}) {
       }
     }
   }
+  if (opts.rounds) drawRounds(ctx, map, opts.rounds);
   if (opts.lockLines !== false) {
     ctx.save();
     ctx.setLineDash([4, 4]);

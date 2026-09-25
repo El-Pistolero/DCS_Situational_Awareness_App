@@ -39,9 +39,10 @@ class SampleSortieAnalysis(unittest.TestCase):
         self.assertEqual(r27["outcomeDetail"], "timed out")
 
     def test_gun_kill(self):
-        burst = self.report["weapons"]["bursts"][0]
-        self.assertTrue(burst["kill"])
-        self.assertEqual(burst["targetId"], "301")
+        bursts = self.report["weapons"]["bursts"]
+        self.assertEqual(len(bursts), 2)
+        self.assertEqual([b["kill"] for b in bursts], [False, True])
+        self.assertTrue(all(b["targetId"] == "301" for b in bursts))
 
     def test_landing_graded(self):
         ld = next(l for l in self.report["landings"] if l["aircraftId"] == "101")

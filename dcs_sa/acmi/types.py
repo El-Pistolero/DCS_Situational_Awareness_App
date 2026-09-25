@@ -27,7 +27,9 @@ ORDNANCE_TAGS = frozenset({"Missile", "Rocket", "Bomb", "Torpedo", "Shell", "Pro
 #: Tags for expendables we do not want cluttering an engagement report.
 COUNTERMEASURE_TAGS = frozenset({"Flare", "Chaff", "Decoy", "SmokeGrenade"})
 #: Tags for things that are never a meaningful tactical contact.
-CLUTTER_TAGS = frozenset({"Bullet", "Shrapnel", "Explosion", "Beam", "Grenade"})
+CLUTTER_TAGS = frozenset({"Shrapnel", "Explosion", "Beam", "Grenade"})
+#: Guided or powered ordnance - anything carrying one of these is not a gun round.
+_NOT_ROUND = frozenset({"Missile", "Rocket", "Bomb", "Torpedo"})
 
 
 def parse_tags(type_str: str | None) -> FrozenSet[str]:
@@ -61,6 +63,18 @@ def is_countermeasure(tags: FrozenSet[str]) -> bool:
     return _has_any(tags, COUNTERMEASURE_TAGS)
 
 
+def is_gun_round(tags: FrozenSet[str]) -> bool:
+    """Cannon / machine-gun / AAA round.
+
+    Tacview uses both ``Bullet`` and ``Shell``; some writers emit a bare
+    ``Projectile``.  Rockets and missiles are ``Projectile`` too in a few
+    exporters, so the guided/powered tags win.
+    """
+    if tags & _NOT_ROUND:
+        return False
+    return bool(tags & {"Bullet", "Shell"}) or ("Projectile" in tags and "Weapon" in tags) or tags == {"Projectile"}
+
+
 def is_clutter(tags: FrozenSet[str]) -> bool:
     return _has_any(tags, CLUTTER_TAGS)
 
@@ -91,6 +105,8 @@ def category(tags: FrozenSet[str]) -> str:
         return "bullseye"
     if is_countermeasure(tags):
         return "countermeasure"
+    if is_gun_round(tags):
+        return "round"
     if is_clutter(tags):
         return "clutter"
     if is_weapon(tags):

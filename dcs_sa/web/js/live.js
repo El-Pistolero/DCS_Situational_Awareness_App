@@ -13,7 +13,21 @@ const map = new TacticalMap($("map"), { layer: pref("layer", "satellite") });
 const S = {
   snap: null, trails: new Map(), rangeNm: +pref("range", 40), headingUp: pref("hdgUp", "1") === "1",
   sound: false, lastMissiles: new Set(), events: [], userPanned: false, panTimer: null,
+  radar: pref("radar", "all"), bullets: pref("bullets", "paths"),
 };
+$("radarSel").value = S.radar;
+$("radarSel").onchange = (e) => { S.radar = e.target.value; setPref("radar", S.radar); map.invalidate(); };
+$("bulletSel").value = S.bullets;
+$("bulletSel").onchange = (e) => { S.bullets = e.target.value; setPref("bullets", S.bullets); map.invalidate(); };
+
+/** Live rounds -> the drawable shape roundsAt() produces for recordings. */
+function liveRounds(snap) {
+  if (S.bullets === "off") return [];
+  return (snap.rounds || []).map((r) => ({
+    id: r.id, color: r.color, coalition: r.coalition, impacted: false, fade: 1,
+    pts: [...(r.trail || []), [r.lon, r.lat, r.alt]], head: [r.lon, r.lat, r.alt],
+  }));
+}
 
 let scene3d = null;
 S.view = "2d";
@@ -126,6 +140,13 @@ function connect() {
 }
 
 function onSnapshot(snap) {
+  if (snap.session !== S.session) {
+    // New live session (reconnect / mission restart): start clean.
+    S.session = snap.session;
+    S.events = [];
+    S.trails.clear();
+    S.lastMissiles = new Set();
+  }
   S.snap = snap;
   // Maintain trails client-side; the server only sends them occasionally.
   const alive = new Set();
@@ -171,7 +192,7 @@ function onSnapshot(snap) {
   if (S.view === "3d" && scene3d) {
     scene3d.update(snap.objects.map((o) => ({
       ...o, pitch: o.v?.Pitch, roll: o.v?.Roll, ias: o.v?.IAS, tas: o.v?.TAS ?? o.d?.gs, trail: S.trails.get(o.id),
-    })), { focusId: snap.focus });
+    })), { focusId: snap.focus, radar: S.radar, rounds: liveRounds(snap) });
   }
 }
 
@@ -186,7 +207,7 @@ map.scene = (ctx, m) => {
   }));
   const me = objs.find((o) => o.id === snap.focus);
   if (me) drawRangeRings(ctx, m, me);
-  hits = drawScene(ctx, m, objs, { focusId: snap.focus, labels: "aircraft", showRadar: "focus" });
+  hits = drawScene(ctx, m, objs, { focusId: snap.focus, labels: "aircraft", showRadar: S.radar, rounds: liveRounds(snap) });
   // Threat lines from inbound missiles to me.
   if (me) {
     ctx.save();

@@ -330,6 +330,32 @@ def _runway_frame(ent: Entity) -> Tuple[float, float]:
     return along, cross
 
 
+def _round_pos(rnd: Dict, t: float) -> Tuple[float, float, float]:
+    """Ballistic position of a gun round at time *t* (no drag, gravity only)."""
+    tau = max(0.0, min(t - rnd["fired"], rnd["flight"]))
+    (e0, n0, a0), (ve, vn, va) = rnd["p0"], rnd["v"]
+    return e0 + ve * tau, n0 + vn * tau, a0 + va * tau - 0.5 * G * tau * tau
+
+
+def _scan(t: float, half_width: float = 60.0, rate: float = 60.0) -> float:
+    """Triangle-wave antenna sweep, degrees relative to the nose."""
+    period = 4.0 * half_width / rate
+    frac = (t / period) % 1.0
+    return half_width * (1.0 - 4.0 * abs(frac - 0.5))
+
+
+def _point_radar(ent: "Entity", target: "Entity", extra: Dict[str, float]) -> None:
+    """Antenna on a locked target: azimuth/elevation relative to the airframe."""
+    brg = math.degrees(math.atan2(target.east - ent.east, target.north - ent.north))
+    ground = math.hypot(target.east - ent.east, target.north - ent.north)
+    el = math.degrees(math.atan2(target.alt - ent.alt, max(ground, 1.0)))
+    extra["RadarAzimuth"] = geo.wrap180(brg - ent.hdg)
+    extra["RadarElevation"] = el - ent.pitch
+    extra["LockedTargetAzimuth"] = extra["RadarAzimuth"]
+    extra["LockedTargetElevation"] = extra["RadarElevation"]
+    extra["LockedTargetRange"] = math.dist((ent.east, ent.north, ent.alt), (target.east, target.north, target.alt))
+
+
 def _range3d(a: Entity, b: Entity) -> float:
     return math.dist((a.east, a.north, a.alt), (b.east, b.north, b.alt))
 
@@ -390,7 +416,8 @@ def build_sample(duration: float = 1200.0, log: Optional[List[str]] = None) -> L
 
     missiles: List[Missile] = []
     shells: List[Dict] = []
-    next_obj = [1000]
+    # Dynamic objects (weapons, rounds) get ids well clear of the fixed cast.
+    next_obj = [0x2000]
 
     def new_id() -> str:
         next_obj[0] += 1
@@ -400,7 +427,11 @@ def build_sample(duration: float = 1200.0, log: Optional[List[str]] = None) -> L
     state_t = 0.0
     fired_amraam = False
     bandit_fired = False
-    gun_bursts = 0
+    gun_bursts = 0          # bursts completed
+    burst_start = None      # time the current burst began
+    last_burst_end = -99.0
+    rounds_fired = 0
+    round_accum = 0.0
     landed = False
     if log is None:
         log = []
@@ -447,6 +478,8 @@ def build_sample(duration: float = 1200.0, log: Optional[List[str]] = None) -> L
         elif state == "TRANSIT":
             player.cmd_alt = 7600.0
             player.cmd_tas = 330.0
+            player.extra["RadarMode"] = 1.0
+            player.extra["RadarRange"] = 74000.0
             if bandit.alive:
                 _steer_to(player, bandit.east, bandit.north)
             if rng_bandit < 55000.0:
@@ -510,28 +543,63 @@ def build_sample(duration: float = 1200.0, log: Optional[List[str]] = None) -> L
             player.cmd_alt = 700.0
             player.cmd_tas = 200.0
             player.extra["TriggerPressed"] = 0.0
-            if 1200.0 < rng < 3200.0 and gun_bursts < 3:
+            # Two ~1 s bursts from the M61 (100 rds/s; the recorder keeps
+            # about every other round, as Tacview does at its sampling rate).
+            firing = False
+            if burst_start is not None:
+                if t - burst_start < 1.0:
+                    firing = True
+                else:
+                    burst_start, last_burst_end = None, t
+                    gun_bursts += 1
+            elif 1200.0 < rng < 3400.0 and gun_bursts < 2 and t - last_burst_end > 1.25:
+                burst_start, firing = t, True
+            if firing:
                 player.extra["TriggerPressed"] = 1.0
-                gun_bursts += 1
+                round_accum += 50.0 * DT
+                n_rounds = int(round_accum)
+                round_accum -= n_rounds
                 tgt_e, tgt_n, tgt_a = 15000.0, 20000.0, 240.0
-                for k in range(6):
+                walk = min(1.0, (t - burst_start) / 0.75)
+                vel_e = math.sin(math.radians(player.hdg)) * player.tas
+                vel_n = math.cos(math.radians(player.hdg)) * player.tas
+                for k in range(n_rounds):
+                    rounds_fired += 1
                     sid = new_id()
-                    # Rounds go where the pipper is: at the target, with dispersion.
-                    aim_e = tgt_e + (k - 2.5) * 6.0
-                    aim_n = tgt_n + ((k * 7) % 5 - 2) * 6.0
-                    flight = math.dist((player.east, player.north, player.alt), (aim_e, aim_n, tgt_a)) / 1030.0
-                    shells.append({
-                        "id": sid, "born": t, "die": t + flight,
-                        "e": player.east, "n": player.north, "a": player.alt,
-                        "ve": (aim_e - player.east) / flight,
-                        "vn": (aim_n - player.north) / flight,
-                        "va": (tgt_a - player.alt) / flight,
-                        "kills": gun_bursts == 2 and k == 0,
-                    })
-                    lon, lat = geo.to_lonlat(player.east, player.north, FIELD_LON, FIELD_LAT)
-                    em.update(sid, (lon, lat, player.alt, None, None, None), {},
-                              {"Name": "M61A1", "Type": "Weapon+Projectile+Shell",
-                               "Parent": player.obj_id, "Coalition": "Allies", "Color": "Blue"})
+                    # Fired k*20 ms ago, so already k*20 ms down range when the
+                    # recorder first sees it - exactly how a 4 Hz sampler observes a
+                    # 50 rds/s stream.
+                    age = k * 0.02
+                    fire_e, fire_n = player.east - vel_e * age, player.north - vel_n * age
+                    fire_a = player.alt - player.vs * age
+                    # Dispersion ~5 mil, deterministic; burst 1 walks onto the
+                    # target from short, burst 2 is centred.
+                    rng_now = math.dist((fire_e, fire_n, fire_a), (tgt_e, tgt_n, tgt_a))
+                    spread = 0.005 * rng_now
+                    de = math.sin(rounds_fired * 12.9898) * spread
+                    dn = math.sin(rounds_fired * 78.233) * spread
+                    short = (1.0 - walk) * 60.0 if gun_bursts == 0 else 0.0
+                    ux, uy = (tgt_e - fire_e) / rng_now, (tgt_n - fire_n) / rng_now
+                    aim = (tgt_e + de - ux * short, tgt_n + dn - uy * short, tgt_a)
+                    flight = rng_now / 1000.0
+                    # Ballistic: p(tau) = p0 + v*tau + 0.5*g*tau^2, v chosen to hit the aim point.
+                    rnd = {
+                        "id": sid, "fired": t - age, "flight": flight,
+                        "p0": (fire_e, fire_n, fire_a),
+                        "v": ((aim[0] - fire_e) / flight, (aim[1] - fire_n) / flight,
+                              (aim[2] - fire_a) / flight + 0.5 * G * flight),
+                        "kills": gun_bursts == 1 and k == 0 and not any(r.get("kills") for r in shells),
+                    }
+                    shells.append(rnd)
+                    # Burst 1 carries Parent; burst 2 is written the way some
+                    # exporters do it - "Bullet", no Parent - so the shooter has
+                    # to be inferred.
+                    text = ({"Name": "M61A1", "Type": "Weapon+Projectile+Shell", "Parent": player.obj_id,
+                             "Coalition": "Allies", "Color": "Blue"} if gun_bursts == 0 else
+                            {"Name": "M61A1", "Type": "Projectile+Bullet", "Coalition": "Allies", "Color": "Blue"})
+                    pe, pn, pa = _round_pos(rnd, t)
+                    lon, lat = geo.to_lonlat(pe, pn, FIELD_LON, FIELD_LAT)
+                    em.update(sid, (lon, lat, pa, None, None, None), {}, text)
             if rng < 1100.0 or t - state_t > 70.0:
                 player.extra["TriggerPressed"] = 0.0
                 state, state_t = "RTB", t
@@ -611,6 +679,26 @@ def build_sample(duration: float = 1200.0, log: Optional[List[str]] = None) -> L
             bandit.cmd_tas = 330.0
             bandit.cmd_alt = 7000.0
 
+        # ---- radar antennas ---------------------------------------------------
+        for ent, tgt in ((player, bandit), (bandit, player)):
+            if ent.extra.get("RadarMode", 0.0) <= 0 or not ent.alive:
+                continue
+            ent.extra["RadarHorizontalBeamwidth"] = 3.5
+            ent.extra["RadarVerticalBeamwidth"] = 3.5
+            if ent.extra.get("LockedTargetMode", 0.0) > 0 and tgt.alive:
+                _point_radar(ent, tgt, ent.extra)
+            else:
+                # Search: +/-60 deg sweep, alternating between two elevation bars.
+                ent.extra["RadarAzimuth"] = _scan(t)
+                ent.extra["RadarElevation"] = 1.75 if int(t / 4.0) % 2 else -1.75
+                for k in ("LockedTargetAzimuth", "LockedTargetElevation", "LockedTargetRange"):
+                    ent.extra.pop(k, None)
+        # SA-11 search radar rotates at 10 rpm.
+        if int(t * 4) % 2 == 0:
+            em.update("304", (None, None, None, None, None, None),
+                      {"RadarAzimuth": ((t * 60.0) % 360.0) - 180.0, "RadarElevation": 8.0,
+                       "RadarHorizontalBeamwidth": 2.0, "RadarVerticalBeamwidth": 20.0}, {})
+
         # ---- wingman: formation takeoff/landing, 250 m line abreast up high --
         blend = min(1.0, player.agl / 300.0)
         off = math.radians(player.hdg + 90.0)
@@ -675,7 +763,11 @@ def build_sample(duration: float = 1200.0, log: Optional[List[str]] = None) -> L
                        "Coalition": m.coalition, "Color": m.color})
 
         for sh in list(shells):
-            if t > sh["die"]:
+            if sh.get("seen") != t and t - sh["fired"] >= sh["flight"]:
+                # Impact: one last sample on the ground, then the round is gone.
+                pe, pn, pa = _round_pos(sh, sh["fired"] + sh["flight"])
+                lon, lat = geo.to_lonlat(pe, pn, FIELD_LON, FIELD_LAT)
+                em.update(sh["id"], (lon, lat, pa, None, None, None), {}, {})
                 em.remove(sh["id"])
                 shells.remove(sh)
                 if sh["kills"]:
@@ -684,12 +776,12 @@ def build_sample(duration: float = 1200.0, log: Optional[List[str]] = None) -> L
                     em.update("301", (None, None, None, None, None, None), {"Health": 0.0}, {})
                     log.append(f"t={t:.1f} strafe kill 301")
                 continue
-            step = min(DT, max(0.0, sh["die"] - t))
-            sh["e"] += sh["ve"] * step
-            sh["n"] += sh["vn"] * step
-            sh["a"] += sh["va"] * step
-            lon, lat = geo.to_lonlat(sh["e"], sh["n"], FIELD_LON, FIELD_LAT)
-            em.update(sh["id"], (lon, lat, sh["a"], None, None, None), {}, {})
+            if sh.get("seen") is None:
+                sh["seen"] = t  # emitted at spawn this frame
+                continue
+            pe, pn, pa = _round_pos(sh, t)
+            lon, lat = geo.to_lonlat(pe, pn, FIELD_LON, FIELD_LAT)
+            em.update(sh["id"], (lon, lat, pa, None, None, None), {}, {})
 
         # Carrier steams west at 12 m/s.
         carrier_e -= 12.0 * DT

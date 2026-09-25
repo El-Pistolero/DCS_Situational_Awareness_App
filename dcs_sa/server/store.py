@@ -25,6 +25,9 @@ from ..analysis.report import analyze, to_markdown
 log = logging.getLogger(__name__)
 
 EXTENSIONS = (".acmi", ".txt.acmi", ".zip.acmi")
+#: Gun rounds sent to the browser for tracer drawing.  A long furball can
+#: record tens of thousands; beyond this the list is truncated (and flagged).
+MAX_ROUNDS = 30000
 MAX_PARSED = 3
 
 
@@ -204,10 +207,41 @@ class RecordingStore:
     # -- data shaping for the UI ------------------------------------------------
 
     @staticmethod
-    def playback(rec: Recording, air_step: float = 0.5, weapon_step: float = 0.2, other_step: float = 5.0) -> Dict:
-        """Downsampled positions of every object for map playback."""
+    def playback(rec: Recording, report: Optional[Dict] = None, air_step: float = 0.5,
+                 weapon_step: float = 0.2, other_step: float = 5.0) -> Dict:
+        """Downsampled positions of every object for map playback.
+
+        Gun rounds go in a separate compact ``rounds`` list at full recorded
+        resolution (they live for a second or two), tagged with the shooter
+        worked out by the weapons analysis.  Every emitter that recorded radar
+        data gets a ``radar`` block so cones can be drawn for all of them.
+        """
         out: Dict[str, Dict[str, List]] = {}
+        r = lambda v, nd: None if v != v else round(v, nd)  # noqa: E731
+        shooter: Dict[str, str] = {}
+        for b in ((report or {}).get("weapons") or {}).get("bursts", []):
+            for rid in b.get("roundIds") or []:
+                shooter[rid] = b.get("launcherId")
+        rounds: List[Dict] = []
         for tr in rec.tracks.values():
+            if tr.category == "round":
+                if len(rounds) >= MAX_ROUNDS:
+                    continue
+                lon, lat, alt = tr.channel("Longitude"), tr.channel("Latitude"), tr.channel("Altitude")
+                if lon is None or lat is None or not len(tr):
+                    continue
+                rounds.append({
+                    "id": tr.id,
+                    "shooter": tr.props.get("Parent") or shooter.get(tr.id),
+                    "color": tr.props.get("Color"),
+                    "coalition": tr.coalition,
+                    "t": [round(x, 3) for x in tr.t],
+                    "lon": [r(v, 7) for v in lon],
+                    "lat": [r(v, 7) for v in lat],
+                    "alt": [r(v, 1) for v in alt] if alt is not None else [0.0] * len(tr),
+                    "end": tr.ends_at,
+                })
+                continue
             if tr.category in ("clutter",):
                 continue
             lon, lat = tr.channel("Longitude"), tr.channel("Latitude")
@@ -243,12 +277,25 @@ class RecordingStore:
                     out[tr.id]["pitch"] = [r(pitch[i], 1) for i in idx]
                 if roll is not None:
                     out[tr.id]["roll"] = [r(roll[i], 1) for i in idx]
+            radar = tr.channel("RadarMode")
+            if radar is not None and any(v == v and v > 0 for v in radar):
+                block = {}
+                for key, ch, nd in (("mode", "RadarMode", 0), ("az", "RadarAzimuth", 1), ("el", "RadarElevation", 1),
+                                    ("range", "RadarRange", 0), ("hbw", "RadarHorizontalBeamwidth", 1),
+                                    ("vbw", "RadarVerticalBeamwidth", 1)):
+                    col = tr.channel(ch)
+                    if col is not None:
+                        block[key] = [r(col[i], nd) for i in idx]
+                out[tr.id]["radar"] = block
             eng = tr.channel("EngagementRange")
             if eng is not None:
                 vals = [v for v in eng if v == v and v > 0]
                 if vals:
                     out[tr.id]["eng"] = round(max(vals), 0)
-        return {"start": rec.start_time, "end": rec.end_time, "objects": out}
+        rounds.sort(key=lambda x: x["t"][0])
+        total = sum(1 for tr in rec.tracks.values() if tr.category == "round")
+        return {"start": rec.start_time, "end": rec.end_time, "objects": out, "rounds": rounds,
+                "roundsTotal": total, "roundsTruncated": total > len(rounds)}
 
     @staticmethod
     def series(rec: Recording, obj_id: str, channels: Optional[List[str]] = None, max_points: int = 4000) -> Dict:
