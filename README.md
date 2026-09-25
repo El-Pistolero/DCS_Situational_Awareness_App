@@ -36,7 +36,7 @@ To build the exe yourself, double-click `build_exe.bat`; the result is `dist\DCS
 ## Set up DCS (one time)
 
 1. **Recordings for the debrief:** in DCS go to *Options → Special → Tacview*, then enable recording. Files land in `Documents\Tacview` and the app finds them automatically. You can also drag and drop any `.acmi` onto the app.
-2. **Your jet live on the second screen:** open the live view (*Live view ↗* button), click **⚙ Connect**, then **Install DCS bridge into Export.lua**. Restart the mission. This streams your own aircraft (flight data, inputs, stores, RWR) and never touches your other exporters (Tacview, SRS, DCS-BIOS keep working).
+2. **Your jet live on the second screen, and DCS's own map in 3D:** open the live view (*Live view ↗* button), click **⚙ Connect**, then **Install DCS bridge into Export.lua**. Restart the mission. This installs two small scripts. One streams your own aircraft (flight data, inputs, stores, RWR); the other (`Scripts\Hooks\DCS-SA-Hook.lua`) lets the app read DCS's terrain and airfields. Your other exporters (Tacview, SRS, DCS-BIOS) keep working.
 3. **Everyone else live (optional):** Tacview's *real-time telemetry* streams every aircraft and missile. Enable it in the Tacview settings in DCS, then in the live view use **⚙ Connect → Tacview → Connect** (default `127.0.0.1:42674`). This needs Tacview Advanced on the PC running DCS.
 
 On a multiplayer server the server decides what may be exported. The bridge only ever *reads*, and anything the server blocks simply doesn't appear.
@@ -47,7 +47,8 @@ On a multiplayer server the server decides what may be exported. The bridge only
 
 Click **3D** in the top-right of either view.
 
-* **Terrain** is real elevation data (AWS open terrain tiles) draped with Esri satellite imagery: about 60 m/pixel out to ~100 km, and about 14 m/pixel within ~30 km of the selected aircraft. It streams in as you move. Tiles are cached in `Documents\DCS-SA\tilecache`, so areas you've flown before load instantly and work offline.
+* **Terrain comes from DCS itself** whenever it can. The DCS-SA hook (installed with the bridge) asks the running game for ground height and surface type (land, water, road, runway) plus every airbase and runway, through DCS's official scripting API. No game files are read. Your jet sits on exactly the terrain the game uses, and DCS's water, roads and runways are drawn in. Everything it samples is cached, so later debriefs of that area use the game's terrain even with DCS closed. This works in single player and on servers you host; when you're a client on someone else's server, the view uses the online data below. The corner of the 3D view shows which source is in use.
+* **Otherwise** terrain is real elevation data (AWS open terrain tiles) draped with Esri satellite imagery: about 60 m/pixel out to ~100 km, and about 14 m/pixel within ~30 km of the selected aircraft. It streams in as you move. Tiles are cached in `Documents\DCS-SA\tilecache`, so areas you've flown before load instantly and work offline.
 * **Aircraft** are drawn as 3D models posed with their recorded heading, pitch and bank. At long range they're scaled up so you can still see them.
 * **Weapons** leave smoke trails. Lock lines are dashed yellow. SAM envelopes are domes.
 * **Orbit** camera: drag to rotate, scroll to zoom, right-drag to pan; it follows the selected aircraft. **Chase** puts you behind the aircraft. Click any aircraft to select it.
@@ -80,7 +81,8 @@ DCS World ─ Tacview exporter ─┬─ .acmi file ─────────�
 * `dcs_sa/analysis/`: kinematics (G, turn rate, energy), weapons & kill attribution, takeoff/landing grading, radar locks, timeline.
 * `dcs_sa/telemetry/`: Tacview real-time client (handshake + CRC-64 password), DCS bridge receiver, live threat picture.
 * `dcs_sa/web/`: the UI (plain JavaScript, no build step; 3D via the bundled three.js). Map tiles are © Esri / OpenStreetMap / CARTO, and terrain comes from AWS Terrain Tiles. Offline, the map falls back to a grid.
-* `dcs-scripts/DCS-SA-Export.lua`: the in-game bridge.
+* `dcs-scripts/DCS-SA-Export.lua`: the in-game bridge (your aircraft).
+* `dcs-scripts/DCS-SA-Hook.lua`: samples DCS terrain and airbases on request via the official scripting API; `dcs_sa/dcsmap.py` caches them.
 
 The app is Python standard library only. Nothing is sent anywhere except map and terrain tile requests.
 

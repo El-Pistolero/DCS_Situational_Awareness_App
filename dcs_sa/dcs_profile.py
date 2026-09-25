@@ -83,6 +83,7 @@ def read_profile() -> Dict[str, object]:
                 info["players"] = parsed["players"]
             except OSError:
                 pass
+        info["mapHookInstalled"] = (sg / "Scripts" / "Hooks" / HOOK_NAME).is_file()
         export = sg / "Scripts" / "Export.lua"
         if export.is_file():
             info["exportLua"] = str(export)
@@ -101,18 +102,19 @@ def read_profile() -> Dict[str, object]:
 
 
 BRIDGE_NAME = "DCS-SA-Export.lua"
+HOOK_NAME = "DCS-SA-Hook.lua"
 BRIDGE_LINE = "local dcssalfs=require('lfs'); dofile(dcssalfs.writedir()..'Scripts/DCS-SA-Export.lua')"
 
 
-def bridge_source() -> Path:
-    """Location of the bundled Lua script (works from source and from the exe)."""
+def bridge_source(name: str = BRIDGE_NAME) -> Path:
+    """Location of a bundled Lua script (works from source and from the exe)."""
     import sys
 
     base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
-    for cand in (base / "dcs-scripts" / BRIDGE_NAME, Path(__file__).resolve().parent.parent / "dcs-scripts" / BRIDGE_NAME):
+    for cand in (base / "dcs-scripts" / name, Path(__file__).resolve().parent.parent / "dcs-scripts" / name):
         if cand.is_file():
             return cand
-    raise FileNotFoundError(BRIDGE_NAME)
+    raise FileNotFoundError(name)
 
 
 def install_bridge(saved_games: Optional[Path] = None) -> Dict[str, object]:
@@ -126,10 +128,13 @@ def install_bridge(saved_games: Optional[Path] = None) -> Dict[str, object]:
         return {"ok": False, "error": "No DCS Saved Games folder found."}
     done = []
     src = bridge_source().read_bytes()
+    hook_src = bridge_source(HOOK_NAME).read_bytes()
     for sg in targets:
         scripts = Path(sg) / "Scripts"
-        scripts.mkdir(parents=True, exist_ok=True)
+        (scripts / "Hooks").mkdir(parents=True, exist_ok=True)
         (scripts / BRIDGE_NAME).write_bytes(src)
+        # Hooks load automatically; this one lets the app read DCS's own map.
+        (scripts / "Hooks" / HOOK_NAME).write_bytes(hook_src)
         export = scripts / "Export.lua"
         text = export.read_text(encoding="utf-8", errors="replace") if export.is_file() else ""
         if BRIDGE_NAME not in text:

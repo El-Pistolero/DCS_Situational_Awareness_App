@@ -382,3 +382,6 @@ canvas.scene3d { position: absolute; inset: 0; display: none; touch-action: none
 .only3d { display: none !important; }
 .is3d .only3d { display: inline-flex !important; }
 .is3d .only2d { display: none !important; }
+.lbl3d.airbase { color: #e8ecf2; font-weight: 600; opacity: 0.85; }
+.terrain-hud { position: absolute; left: 10px; bottom: 34px; display: none; font: 11px var(--sans); color: #e3e8ef;
+  background: rgba(8,12,17,0.72); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; pointer-events: none; }

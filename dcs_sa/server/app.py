@@ -28,6 +28,7 @@ from ..telemetry.realtime import RealtimeTelemetryClient
 from ..telemetry.replay import ReplaySource
 from .store import RecordingStore
 from .tiles import TileCache
+from ..dcsmap import DcsMapStore
 
 log = logging.getLogger(__name__)
 
@@ -49,8 +50,14 @@ class LiveManager:
     def start_bridge(self) -> Optional[str]:
         if not self.cfg.bridge_enabled:
             return None
+        def on_packet(p):
+            dcsmap = getattr(self, "dcsmap", None)
+            if dcsmap is not None and dcsmap.on_packet(p):
+                return
+            self.world.ingest_bridge(p)
+
         try:
-            self.bridge = DcsBridgeListener(self.world.ingest_bridge, self.cfg.bridge_host, self.cfg.bridge_port)
+            self.bridge = DcsBridgeListener(on_packet, self.cfg.bridge_host, self.cfg.bridge_port)
             self.bridge.start()
             return None
         except OSError as exc:
@@ -111,6 +118,8 @@ class App:
         self.open_live_window = None  # set by the desktop shell
         self.profile = read_profile()
         self.tiles = TileCache(str(Path(cfg.upload_dir).parent / "tilecache"))
+        self.dcsmap = DcsMapStore(str(Path(cfg.upload_dir).parent / "tilecache" / "dcs"))
+        self.live.dcsmap = self.dcsmap
         # No name configured: use the active DCS logbook pilot.
         if not cfg.player_names and self.profile.get("player"):
             cfg.player_names = [str(self.profile["player"])]
@@ -132,6 +141,7 @@ class App:
             "tacview": {"host": self.cfg.tacview_host, "port": self.cfg.tacview_port},
             "playerNames": self.cfg.player_names,
             "profile": self.profile,
+            "dcsMap": self.dcsmap.status(),
             "desktop": self.desktop,
             "warnings": self.warnings,
         }
@@ -190,6 +200,12 @@ def make_handler(app: App):
                     return self._static("live.html")
                 if path.startswith("/static/"):
                     return self._static(path[len("/static/"):])
+                if path.startswith("/tiles/dcs/"):
+                    return self._dcs_tile(path.split("/")[3:])
+                if path == "/api/dcsmap":
+                    lon, lat = float(q.get("lon", "nan")), float(q.get("lat", "nan"))
+                    near = app.dcsmap.airbases_near(lon, lat) if lon == lon and lat == lat else app.dcsmap.airbases
+                    return self._json({**app.dcsmap.status(), "airbaseList": near})
                 if path.startswith("/tiles/"):
                     return self._tile(path.split("/")[2:])
                 if path == "/api/status":
@@ -270,6 +286,19 @@ def make_handler(app: App):
             if target.suffix == ".js":
                 ctype = "text/javascript; charset=utf-8"
             self._send(200, target.read_bytes(), ctype)
+
+        def _dcs_tile(self, parts) -> None:
+            try:
+                z, x, y = int(parts[0]), int(parts[1]), int(parts[2].split(".")[0])
+            except (IndexError, ValueError):
+                return self._error(400, "bad tile path")
+            tile = app.dcsmap.get_tile(z, x, y)
+            if tile is not None:
+                return self._send(200, json.dumps(tile, separators=(",", ":")).encode(), "application/json",
+                                  {"Cache-Control": "max-age=3600"})
+            if app.dcsmap.is_pending(z, x, y):
+                return self._json({"pending": True}, 202)
+            return self._error(404, "DCS terrain not available (start a mission with the DCS-SA hook installed)")
 
         def _tile(self, parts) -> None:
             try:

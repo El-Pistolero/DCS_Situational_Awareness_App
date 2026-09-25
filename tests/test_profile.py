@@ -33,6 +33,7 @@ class ProfileTests(unittest.TestCase):
             self.assertIn("Tacview.lua", text)
             self.assertEqual(text.count("DCS-SA-Export.lua"), 1)
             self.assertTrue((sg / "Scripts" / "DCS-SA-Export.lua").is_file())
+            self.assertTrue((sg / "Scripts" / "Hooks" / "DCS-SA-Hook.lua").is_file())
             self.assertTrue((sg / "Scripts" / "Export.lua.before-dcs-sa").is_file())
 
 

@@ -29,6 +29,33 @@ function loadImage(src) {
   });
 }
 
+// DCS surface types (land.SurfaceType): colour when there is no imagery, and
+// a multiplier over the satellite imagery so game water/roads/runways show.
+const SURF_BASE = { 1: null, 2: [0.36, 0.55, 0.62], 3: [0.13, 0.27, 0.42], 4: [0.46, 0.46, 0.44], 5: [0.24, 0.24, 0.26] };
+const SURF_TINT = { 1: [1, 1, 1], 2: [0.8, 0.95, 1.05], 3: [0.55, 0.75, 1.0], 4: [0.9, 0.9, 0.9], 5: [0.55, 0.55, 0.6] };
+
+function landColour(h) {
+  // Lowland green -> upland brown -> rock -> snow.
+  const stops = [[0, [0.30, 0.40, 0.24]], [400, [0.36, 0.42, 0.25]], [1200, [0.45, 0.40, 0.30]], [2400, [0.52, 0.50, 0.48]], [3400, [0.92, 0.93, 0.95]]];
+  for (let i = 1; i < stops.length; i++) {
+    if (h <= stops[i][0]) {
+      const [h0, c0] = stops[i - 1], [h1, c1] = stops[i];
+      const f = Math.max(0, (h - h0) / (h1 - h0));
+      return c0.map((c, k) => c + (c1[k] - c) * f);
+    }
+  }
+  return stops[stops.length - 1][1];
+}
+
+async function fetchDcsTile(z, x, y) {
+  try {
+    const res = await fetch(`/tiles/dcs/${z}/${x}/${y}`);
+    if (res.status === 200) return { tile: await res.json() };
+    if (res.status === 202) return { pending: true };
+  } catch { /* app unreachable */ }
+  return {};
+}
+
 /** Tiny priority queue so near tiles load before far ones. */
 class Loader {
   constructor(concurrency = 6) { this.q = []; this.active = 0; this.max = concurrency; }
@@ -102,7 +129,12 @@ export class Scene3D {
     // Insert underneath any toolbars / HUDs already in the container.
     this.labelLayer = document.createElement("div");
     this.labelLayer.className = "labels3d";
-    container.prepend(this.renderer.domElement, this.labelLayer);
+    this.terrainHud = document.createElement("div");
+    this.terrainHud.className = "terrain-hud";
+    container.prepend(this.renderer.domElement, this.labelLayer, this.terrainHud);
+    this.terrainSources = { dcs: 0, online: 0 };
+    this.runwayGroup = new THREE.Group();
+    this.airbasesFor = null;
 
     this.scene = new THREE.Scene();
     const sky = new THREE.Color(0x8fa9c4);
@@ -157,6 +189,7 @@ export class Scene3D {
     this.visible = v;
     this.renderer.domElement.style.display = v ? "block" : "none";
     this.labelLayer.style.display = v ? "block" : "none";
+    this.terrainHud.style.display = v ? "block" : "none";
     if (v) this.resize();
   }
 
@@ -206,6 +239,58 @@ export class Scene3D {
     this.tileCenter = null;
     const p = this.toLocal(lon, lat, 0);
     this.controls.target.copy(p);
+    this.terrainSources = { dcs: 0, online: 0 };
+    this._loadAirbases(lon, lat);
+  }
+
+  // -- DCS airbases ------------------------------------------------------------
+
+  async _loadAirbases(lon, lat) {
+    this.scene.remove(this.runwayGroup);
+    for (const a of this.airbaseLabels || []) a.el.remove();
+    this.airbaseLabels = [];
+    this.runwayGroup = new THREE.Group();
+    this.scene.add(this.runwayGroup);
+    let data;
+    try { data = await (await fetch(`/api/dcsmap?lon=${lon}&lat=${lat}`)).json(); } catch { return; }
+    this.dcsStatus = data;
+    this._hud();
+    const asphalt = new THREE.MeshLambertMaterial({ color: 0x2c2d31, polygonOffset: true, polygonOffsetFactor: -4 });
+    const paint = new THREE.LineBasicMaterial({ color: 0xf2f2f2, transparent: true, opacity: 0.8 });
+    for (const ab of data.airbaseList || []) {
+      if (!this.origin) return;
+      for (const rw of ab.runways || []) {
+        if (!isNum(rw.lat) || !isNum(rw.length) || !isNum(rw.heading) || rw.length < 50) continue;
+        const c = this.toLocal(rw.lon, rw.lat, 0);
+        const y = (isNum(ab.alt) ? ab.alt : 0) + 1.5;
+        const strip = new THREE.Mesh(new THREE.BoxGeometry(Math.max(rw.width || 45, 20), 1.5, rw.length), asphalt);
+        strip.position.set(c.x, y * this.exaggeration, c.z);
+        strip.rotation.y = -rw.heading * D2R;
+        this.runwayGroup.add(strip);
+        const half = rw.length / 2 - 60;
+        const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 1, -half), new THREE.Vector3(0, 1, half)]), paint);
+        line.position.copy(strip.position);
+        line.rotation.y = strip.rotation.y;
+        this.runwayGroup.add(line);
+      }
+      if (ab.category === 0 && (ab.runways || []).length) {
+        const lbl = document.createElement("div");
+        lbl.className = "lbl3d airbase";
+        lbl.textContent = ab.name;
+        this.labelLayer.append(lbl);
+        (this.airbaseLabels ||= []).push({ el: lbl, pos: this.toLocal(ab.lon, ab.lat, (ab.alt || 0) + 30) });
+      }
+    }
+  }
+
+  _hud() {
+    const s = this.terrainSources, st = this.dcsStatus;
+    let txt;
+    if (s.dcs && !s.online) txt = `Terrain: DCS World${st?.theatre ? ` (${st.theatre})` : ""}`;
+    else if (s.dcs) txt = `Terrain: DCS World + online elevation${st?.connected ? " (sampling DCS…)" : ""}`;
+    else if (st?.connected) txt = "Terrain: sampling DCS World…";
+    else txt = "Terrain: online elevation · run a mission with the DCS-SA hook to use the game's own map";
+    this.terrainHud.textContent = txt;
   }
 
   // -- terrain -------------------------------------------------------------------
@@ -244,6 +329,17 @@ export class Scene3D {
     }
   }
 
+  _rebuildTile(z, x, y, retries) {
+    const k = `${z}/${x}/${y}`;
+    const old = this.tiles.get(k);
+    if (!old) return;
+    const entry = { pending: true, mesh: null, retries };
+    this.tiles.set(k, entry);
+    this._buildTile(z, x, y).then(() => {
+      if (old.mesh) { this._disposeTile(old); if (old.source) this.terrainSources[old.source] -= 1; this._hud(); }
+    });
+  }
+
   _disposeTile(t) {
     if (!t.mesh) return; // still loading; _buildTile notices it was dropped
     this.scene.remove(t.mesh);
@@ -256,8 +352,23 @@ export class Scene3D {
     const k = `${z}/${x}/${y}`;
     const entry = this.tiles.get(k);
     if (!entry) return;
-    const elev = await loadImage(`/tiles/elev/${z}/${x}/${y}.png`);
-    let heights = null;
+    const n = MESH_SEGS;
+    const dcs = await fetchDcsTile(z, x, y);
+    if (this.tiles.get(k) !== entry) return;
+    let heights = null, surface = null, source = "online";
+    if (dcs.tile && dcs.tile.n === n + 1) {
+      heights = Float32Array.from(dcs.tile.h, (v) => Math.max(0, v));
+      surface = dcs.tile.s;
+      source = "dcs";
+    } else if (dcs.pending && (entry.retries || 0) < 10) {
+      // DCS is sampling this tile; show online data now, upgrade when it lands.
+      entry.retries = (entry.retries || 0) + 1;
+      setTimeout(() => {
+        const cur = this.tiles.get(k);
+        if (cur === entry || cur?.source === "online") this._rebuildTile(z, x, y, entry.retries);
+      }, 2500);
+    }
+    const elev = heights ? null : await loadImage(`/tiles/elev/${z}/${x}/${y}.png`);
     if (elev) {
       const c = document.createElement("canvas");
       c.width = c.height = 256;
@@ -271,7 +382,6 @@ export class Scene3D {
       }
     }
     if (this.tiles.get(k) !== entry || !this.origin) return;
-    const n = MESH_SEGS;
     const pos = new Float32Array((n + 1) * (n + 1) * 3);
     const uv = new Float32Array((n + 1) * (n + 1) * 2);
     let p = 0, q = 0;
@@ -280,7 +390,9 @@ export class Scene3D {
         const fx = i / n, fy = j / n;
         const lon = x2lon(x + fx, z), lat = y2lat(y + fy, z);
         let h = 0;
-        if (heights) {
+        if (source === "dcs") {
+          h = heights[j * (n + 1) + i];
+        } else if (heights) {
           const px = Math.min(255, Math.round(fx * 255)), py = Math.min(255, Math.round(fy * 255));
           h = heights[py * 256 + px];
         }
@@ -301,14 +413,27 @@ export class Scene3D {
     g.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
     g.setIndex(idx);
     g.computeVertexNormals();
-    const mat = new THREE.MeshLambertMaterial({ color: 0x55664f });
+    // Vertex colours: terrain palette until imagery arrives, then a tint that
+    // keeps DCS water / roads / runways visible over the photo.
+    const base = new Float32Array((n + 1) * (n + 1) * 3), tint = new Float32Array(base.length);
+    for (let v = 0; v < (n + 1) * (n + 1); v++) {
+      const st = surface ? +surface[v] : 1;
+      const c = SURF_BASE[st] || landColour(pos[v * 3 + 1]);
+      const t = SURF_TINT[st] || SURF_TINT[1];
+      base.set(c, v * 3); tint.set(t, v * 3);
+    }
+    g.setAttribute("color", new THREE.BufferAttribute(base, 3));
+    const mat = new THREE.MeshLambertMaterial({ color: 0xffffff, vertexColors: true });
     const mesh = new THREE.Mesh(g, mat);
     mesh.scale.y = this.exaggeration;
     if (this.tiles.get(k) !== entry) { g.dispose(); mat.dispose(); return; }
     this.scene.add(mesh);
     entry.mesh = mesh;
     entry.pending = false;
-    if (heights) this.grid.visible = false;
+    entry.source = source;
+    this.terrainSources[source] += 1;
+    this._hud();
+    if (heights || elev) this.grid.visible = false;
 
     // Satellite imagery two zoom levels finer, composited progressively.
     const sub = 4, size = 256 * sub, iz = z + 2;
@@ -326,7 +451,10 @@ export class Scene3D {
           if (!img || !this.tiles.has(k)) return;
           ctx.drawImage(img, sx * 256, sy * 256);
           tex.needsUpdate = true;
-          if (!applied) { mat.map = tex; mat.color.set(0xffffff); mat.needsUpdate = true; applied = true; }
+          if (!applied) {
+            g.setAttribute("color", new THREE.BufferAttribute(tint, 3));
+            mat.map = tex; mat.needsUpdate = true; applied = true;
+          }
         }));
       }
     }
@@ -515,6 +643,13 @@ export class Scene3D {
   _labels() {
     const w = this.renderer.domElement.clientWidth, h = this.renderer.domElement.clientHeight;
     const v = new THREE.Vector3();
+    for (const a of this.airbaseLabels || []) {
+      v.copy(a.pos).project(this.camera);
+      const d = this.camera.position.distanceTo(a.pos);
+      const show = v.z < 1 && Math.abs(v.x) < 1.05 && Math.abs(v.y) < 1.05 && d < 120000;
+      a.el.style.display = show ? "block" : "none";
+      if (show) a.el.style.transform = `translate(${((v.x + 1) / 2) * w - 20}px, ${((1 - v.y) / 2) * h}px)`;
+    }
     for (const e of this.objects.values()) {
       const o = e.obj;
       const air = o && ["fixedwing", "rotorcraft", "air"].includes(o.category);

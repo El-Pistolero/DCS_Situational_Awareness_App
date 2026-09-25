@@ -9,6 +9,7 @@ a = Analysis(
     datas=[
         ("dcs_sa/web", "dcs_sa/web"),
         ("dcs-scripts/DCS-SA-Export.lua", "dcs-scripts"),
+        ("dcs-scripts/DCS-SA-Hook.lua", "dcs-scripts"),
         ("samples/sample_sortie.acmi", "samples"),
     ],
     hiddenimports=["webview", "clr_loader", "pythonnet"],
