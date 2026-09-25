@@ -79,7 +79,7 @@ async function init() {
   $("layerSel").value = map.layer;
   $("layerSel").onchange = (e) => { map.setLayer(e.target.value); setPref("layer", e.target.value); };
   $("unitSel").value = units.system;
-  $("unitSel").onchange = (e) => { units.set(e.target.value); renderAllPanels(); map.invalidate(); };
+  $("unitSel").onchange = (e) => { units.set(e.target.value); renderAllPanels(); updateLegend(); renderTapeHud(); map.invalidate(); };
   $("labelSel").onchange = (e) => { S.labels = e.target.value; map.invalidate(); };
   $("trailSel").onchange = (e) => { S.trailSec = +e.target.value; map.invalidate(); };
   $("radarSel").value = S.radar;
@@ -151,10 +151,11 @@ async function init() {
     const k = new URLSearchParams(location.hash.slice(1)).get("rec");
     if (k && k !== S.key) loadRecording(k);
   });
-  watchRecordings({
+  watcher = watchRecordings({
     host: document.querySelector(".mapwrap"), placement: "top",
     openHere: (key) => loadRecording(key),
-    isIdle: () => !S.analysis || !S.playing,
+    isOpen: (key) => key === S.key || key === S.loadingKey,
+    isIdle: () => !S.loadingKey && (!S.analysis || !S.playing),
   });
   // Test hook (?debug): symbol hitboxes and the map, for browser tests.
   if (new URLSearchParams(location.search).has("debug")) window.__dcsSA = { hitboxes: () => hitboxes, map, S };
@@ -217,11 +218,17 @@ async function showLibrary() {
 async function upload(file) {
   try {
     const { body } = await api("/api/upload", { method: "POST", headers: { "X-Filename": encodeURIComponent(file.name) }, body: file });
+    watcher?.markKnown(body.key);
     loadRecording(body.key);
   } catch (err) { toast(`Upload failed: ${err.message}`); }
 }
 
+let watcher = null;
 async function loadRecording(key) {
+  // A later load supersedes this one (e.g. auto-open while a big file parses).
+  const gen = (S.loadGen = (S.loadGen || 0) + 1);
+  S.loadingKey = key;
+  watcher?.markKnown(key);
   const w = $("welcome");
   w.classList.remove("hidden");
   w.innerHTML = "";
@@ -231,6 +238,7 @@ async function loadRecording(key) {
   try {
     for (;;) {
       const { body } = await api(`/api/recording/${key}/load`);
+      if (gen !== S.loadGen) return;
       fill.style.width = `${Math.round((body.progress || 0) * 100)}%`;
       if (body.state === "ready") break;
       if (body.state === "error") throw new Error(body.error);
@@ -238,10 +246,14 @@ async function loadRecording(key) {
       await new Promise((r) => setTimeout(r, 300));
     }
     const [a, p] = await Promise.all([api(`/api/recording/${key}/analysis`), api(`/api/recording/${key}/playback`)]);
+    if (gen !== S.loadGen) return;
+    S.loadingKey = null;
     setupRecording(key, a.body, p.body);
     w.classList.add("hidden");
     history.replaceState(null, "", `#rec=${key}`);
   } catch (err) {
+    if (gen !== S.loadGen) return;
+    S.loadingKey = null;
     toast(`Could not load recording: ${err.message}`);
     showLibrary();
   }
@@ -253,6 +265,8 @@ function setupRecording(key, analysis, playback) {
   S.trailSeries.clear(); trailCache.clear(); trailRanges.clear(); stopsCache = null;
   S.loop = { a: null, b: null, on: false }; S.padlockId = null; S.tapes = []; S.tapeDraft = null;
   S.openShots.clear();
+  S.lastStop = null;
+  hideChip();
   renderTapeHud();
   for (const o of analysis.objects) {
     const pb = playback.objects[o.id];
@@ -350,13 +364,13 @@ function setupScrubber() {
   let dragging = false, painting = null;
   sc.addEventListener("pointerdown", (e) => {
     sc.setPointerCapture(e.pointerId);
-    if (e.shiftKey && S.analysis) { painting = { a: tAt(e), b: tAt(e) }; updateLoopBand(painting); return; }
+    if (e.shiftKey && S.analysis) { painting = S.loopPaint = { a: tAt(e), b: tAt(e) }; updateLoopBand(painting); return; }
     dragging = true; seek(tAt(e));
   });
   sc.addEventListener("pointerup", () => {
     if (!painting) return;
     const { a, b } = painting;
-    painting = null;
+    painting = S.loopPaint = null;
     if (Math.abs(b - a) >= 1) setLoop(Math.min(a, b), Math.max(a, b), true); else updateLoopBand();
   });
   sc.addEventListener("pointermove", (e) => {
@@ -385,7 +399,7 @@ function renderTicks() {
 }
 
 function updateScrubber() {
-  updateLoopBand();
+  updateLoopBand(S.loopPaint || undefined);
   const f = (S.t - S.start) / (S.end - S.start || 1);
   document.querySelector(".scrub .progress").style.width = `${f * 100}%`;
   document.querySelector(".scrub .head").style.left = `${f * 100}%`;
@@ -440,8 +454,8 @@ const KEYS = [
   { keys: ["Shift+T"], group: "View", label: "Padlock: automatic target", when: () => S.view === "3d", run: () => setPadlock(null) },
   { keys: ["f"], group: "View", label: "Follow the selected aircraft", run: () => setFollow(!S.follow) },
   { keys: ["m"], group: "View", label: "Measuring tape (or Shift-drag)", run: () => setMeasure(map.tool !== "measure") },
-  { keys: ["Escape"], group: "View", label: "Clear tapes, leave the measure tool", when: () => S.tapes.length > 0 || map.tool === "measure",
-    run: () => { setMeasure(false); S.tapes = []; renderTapeHud(); map.invalidate(); } },
+  { keys: ["Escape"], group: "View", label: "Clear tapes, leave the measure tool", when: () => S.tapes.length > 0 || !!S.tapeDraft || map.tool === "measure",
+    run: () => { setMeasure(false); S.tapes = []; S.tapeDraft = null; map.cancelMeasure(); renderTapeHud(); map.invalidate(); } },
   { keys: ["j", "k"], group: "Selection", label: "Next / previous aircraft", run: (e) => stepAircraft(e.key.toLowerCase() === "j" ? 1 : -1) },
   { keys: ["/"], group: "Selection", label: "Filter objects", run: () => $("objFilter").focus() },
   ...TABS_KEYS(),
@@ -478,10 +492,14 @@ function eventStops() {
 function stepEvent(dir) {
   if (!S.analysis) return;
   const stops = eventStops();
-  const stop = dir > 0 ? stops.find((x) => x.time > S.t + 3.5) : [...stops].reverse().find((x) => x.time < S.t + 2.5);
+  // Right after a step the playhead sits 3 s before that event: step from
+  // the event itself.  Anywhere else, step from the playhead.
+  const at = S.lastStop !== null && S.lastStop !== undefined && Math.abs(S.t - Math.max(S.start, S.lastStop - 3)) < 0.05 ? S.lastStop : S.t;
+  const stop = dir > 0 ? stops.find((x) => x.time > at + 0.01) : [...stops].reverse().find((x) => x.time < at - 0.01);
   togglePlay(false);
   if (!stop) { showChip(null); return; }
   seek(stop.time - 3);
+  S.lastStop = stop.time;
   showChip(stop);
 }
 
@@ -501,16 +519,18 @@ function showChip(stop) {
 }
 function hideChip() { clearTimeout(chipTimer); chipTimer = null; $("evChip").classList.add("hidden"); }
 
+const MIN_LOOP = 0.5; // s: shorter loops would freeze playback
 function setLoop(a, b, on) {
   const cl = (x) => (isNum(x) ? Math.max(S.start, Math.min(S.end, x)) : null);
   S.loop = { a: cl(a), b: cl(b), on: !!on };
   if (isNum(S.loop.a) && isNum(S.loop.b) && S.loop.a > S.loop.b) [S.loop.a, S.loop.b] = [S.loop.b, S.loop.a];
+  if (S.loop.on && !(S.loop.b - S.loop.a >= MIN_LOOP)) S.loop.on = false;
   updateLoopBand();
 }
 function setLoopPoint(which) {
   if (!S.analysis) return;
   const l = { ...S.loop, [which]: S.t };
-  setLoop(l.a, l.b, isNum(l.a) && isNum(l.b) ? true : l.on);
+  setLoop(l.a, l.b, isNum(l.a) && isNum(l.b) && Math.abs(l.b - l.a) >= MIN_LOOP ? true : l.on);
 }
 function toggleLoop() {
   if (!S.analysis) return;
@@ -754,14 +774,30 @@ function tapeNear(px, py) {
 
 function renderTapeHud() {
   const hud = $("tapeHud");
-  hud.innerHTML = "";
   hud.classList.toggle("hidden", !S.tapes.length);
-  S.tapes.forEach((tape, i) => {
-    const L = S.analysis ? tapeLabel(tape, S.t) : null;
-    hud.append(el("div", { class: "row" }, el("span", { class: "sw", style: { background: tape.color } }),
-      el("span", {}, L?.short || "tape"),
-      el("button", { class: "ghost", title: "Delete this tape", onclick: () => { S.tapes.splice(i, 1); renderTapeHud(); map.invalidate(); } }, "×")));
-  });
+  const rows = [...hud.querySelectorAll(".row")];
+  // Rebuild only when the set of tapes changed, so the × buttons are not
+  // replaced mid-click while the labels update during playback.
+  if (rows.length !== S.tapes.length || rows.some((r, i) => r._tape !== S.tapes[i])) {
+    hud.innerHTML = "";
+    for (const tape of S.tapes) {
+      const row = el("div", { class: "row" }, el("span", { class: "sw", style: { background: tape.color } }),
+        el("span", { class: "txt" }),
+        el("button", { class: "ghost", title: "Delete this tape", onclick: () => {
+          const i = S.tapes.indexOf(tape);
+          if (i >= 0) S.tapes.splice(i, 1);
+          renderTapeHud(); map.invalidate();
+        } }, "×"));
+      row._tape = tape;
+      hud.append(row);
+    }
+  }
+  for (const row of hud.querySelectorAll(".row")) {
+    const L = S.analysis ? tapeLabel(row._tape, S.t) : null;
+    const txt = L?.short || "tape";
+    const span = row.querySelector(".txt");
+    if (span.textContent !== txt) span.textContent = txt;
+  }
 }
 
 // -- trail colours ------------------------------------------------------------------------

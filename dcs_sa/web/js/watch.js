@@ -23,7 +23,7 @@ function dismiss(key) {
  * isIdle(): may a ready recording be opened without a click (auto-open)?
  * onNew(rec): called when a banner appears (e.g. to update a status line).
  */
-export function watchRecordings({ host, placement = "top", openHere, isIdle = () => false, onNew = () => {} }) {
+export function watchRecordings({ host, placement = "top", openHere, isIdle = () => false, onNew = () => {}, isOpen = () => false }) {
   let known = null;              // keys present at start (never announced)
   const pending = new Map();     // key -> size seen on the previous poll
   const banners = new Map();     // key -> banner element
@@ -39,6 +39,7 @@ export function watchRecordings({ host, placement = "top", openHere, isIdle = ()
       const gone = dismissed();
       for (const r of recs) {
         if (known.has(r.key) || r.sample || gone.has(r.key) || banners.has(r.key)) continue;
+        if (isOpen(r.key)) { known.add(r.key); continue; } // e.g. a file just dropped onto the page
         // Tacview may still be writing (or zipping) the file: wait until its
         // size is the same on two consecutive polls.
         const prev = pending.get(r.key);
@@ -78,6 +79,7 @@ export function watchRecordings({ host, placement = "top", openHere, isIdle = ()
       if (!banners.has(r.key)) return;
       title.textContent = `New recording: '${s.title || r.name}' · ${fmtClock(s.duration)} · ${s.aircraftCount} aircraft`;
       open.textContent = "Open debrief ✓";
+      if (isOpen(r.key)) { close(); return; }
       if (pref("autoOpenNew", "0") === "1" && isIdle()) { close(); openHere(r.key); }
     } catch { /* leave the banner as it is */ }
   }
@@ -86,5 +88,10 @@ export function watchRecordings({ host, placement = "top", openHere, isIdle = ()
   const timer = setInterval(poll, POLL_MS);
   window.addEventListener("focus", poll);
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") poll(); });
-  return { poll, stop: () => clearInterval(timer) };
+  return {
+    poll,
+    stop: () => clearInterval(timer),
+    /** Never announce this key (it was opened or uploaded here). */
+    markKnown: (key) => { known?.add(key); pending.delete(key); banners.get(key)?.remove(); banners.delete(key); },
+  };
 }

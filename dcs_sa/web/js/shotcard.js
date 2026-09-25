@@ -108,7 +108,8 @@ export function buildShotCard(shot, ctx) {
   // -- (1) launch diagram --------------------------------------------------------
   const diag = el("canvas", { class: "diagram" });
   card.append(diag);
-  requestAnimationFrame(() => drawDiagram(diag, shot, L, T));
+  // Redraw on every size change (panel resize, or first layout after insertion).
+  new ResizeObserver(() => drawDiagram(diag, shot, L, T)).observe(diag);
 
   // -- (2) fly-out charts ----------------------------------------------------------
   if (xs.length > 1) {

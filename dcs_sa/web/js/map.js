@@ -86,6 +86,8 @@ export class TacticalMap {
   }
 
   on(evt, fn) { (this.listeners[evt] ||= []).push(fn); }
+  /** Abandon a measurement drag in progress (its release then does nothing). */
+  cancelMeasure() { this._measure = null; }
   emit(evt, ...a) { (this.listeners[evt] || []).forEach((fn) => fn(...a)); }
   invalidate() { this.dirty = true; }
 

@@ -17,19 +17,22 @@ function parse(spec) {
   let key = parts.pop();
   if (key === "" && spec.endsWith("+")) { parts.pop(); key = "+"; } // "Shift++" / "+"
   const mods = new Set(parts.map((p) => p.toLowerCase()));
-  const letter = key.length === 1 && /[a-z0-9]/i.test(key);
+  const letter = key.length === 1 && /[a-z]/i.test(key);
   return {
     key: letter ? key.toLowerCase() : key,
     ctrl: mods.has("ctrl"),
     shift: mods.has("shift"),
-    printable: PRINTABLE.has(key),
+    // Digits and punctuation match on the character typed, whatever it took
+    // to type it (Shift on AZERTY digits, AltGr for brackets on many layouts).
+    printable: PRINTABLE.has(key) || /^[0-9]$/.test(key),
   };
 }
 
 function matches(p, e) {
-  if (p.ctrl !== (e.ctrlKey || e.metaKey)) return false;
-  if (e.altKey) return false;
+  const altGr = e.ctrlKey && e.altKey; // Windows reports AltGr as Ctrl+Alt
+  if (p.ctrl !== ((e.ctrlKey || e.metaKey) && !altGr)) return false;
   if (p.printable) return e.key === p.key;
+  if (e.altKey) return false;
   if (p.shift !== e.shiftKey) return false;
   const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
   return k === p.key;
