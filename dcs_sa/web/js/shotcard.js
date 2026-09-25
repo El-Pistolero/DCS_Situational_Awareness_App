@@ -3,7 +3,7 @@
 
 import { LineChart } from "./charts.js";
 import {
-  el, fmtAlt, fmtDeg, fmtDist, fmtRel, isNum, sampleTrack, sideColor, speedOfSound, units, wrap180,
+  el, fmtAlt, fmtDeg, fmtDist, fmtRel, fmtShort, isNum, sampleTrack, sideColor, speedOfSound, units, wrap180,
   M_TO_FT, M_TO_NM,
 } from "./util.js";
 
@@ -49,7 +49,10 @@ export function buildShotCard(shot, ctx) {
   let peak = null;
   if (W) {
     const wp = [];
-    for (let t = t0; t <= t1 + 1e-6; t += STEP) wp.push([t, sampleTrack(W.pb, t)]);
+    // Past the last recorded sample the position is only held, not flown:
+    // no speed there (the weapon is deleted a frame after its last sample).
+    const lastT = W.pb.t[W.pb.t.length - 1];
+    for (let t = t0; t <= t1 + 1e-6; t += STEP) wp.push([t, t <= lastT + 1e-6 ? sampleTrack(W.pb, t) : null]);
     const spd = [];
     for (let i = 0; i < wp.length; i++) {
       const [t, p] = wp[i];
@@ -61,7 +64,7 @@ export function buildShotCard(shot, ctx) {
       }
       spd.push(v);
       xs.push(t - t0);
-      const tp = T && sampleTrack(T.pb, t);
+      const tp = p && T && sampleTrack(T.pb, t);
       if (p && tp) {
         const d = enu(tp, p);
         range.push(Math.hypot(...d));
@@ -154,11 +157,12 @@ export function buildShotCard(shot, ctx) {
   if (isNum(shot.closestTime) && xs.length) {
     let i = 0;
     for (let k = 0; k < xs.length; k++) if (Math.abs(xs[k] - (shot.closestTime - t0)) < Math.abs(xs[i] - (shot.closestTime - t0))) i = k;
+    while (i > 0 && !isNum(mach[i])) i--; // last recorded speed before the closest point
     if (isNum(mach[i])) chip(`Arrived at Mach ${mach[i].toFixed(1)}`, mach[i] < 1 ? "warn" : "");
   }
   if (cms.length) chip(`Chaff/flares ×${cms.length} (${cms.filter((x) => x >= xs[xs.length - 1] - 5).length} in the last 5 s)`);
   if (isNum(shot.closestApproach)) {
-    chip(`Closest approach ${fmtDist(shot.closestApproach)}${isNum(shot.closestTime) ? ` at ${fmtRel(shot.closestTime - t0)}` : ""}`);
+    chip(`Closest approach ${shot.closestApproach < 1852 ? fmtShort(shot.closestApproach) : fmtDist(shot.closestApproach)}${isNum(shot.closestTime) ? ` at ${fmtRel(shot.closestTime - t0)}` : ""}`);
   }
   card.append(chips);
 
