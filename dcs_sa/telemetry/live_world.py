@@ -14,6 +14,7 @@ import time
 from collections import deque
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
+from .. import threatdb
 from ..acmi import types as T
 from ..acmi.model import Event
 from ..analysis import geo
@@ -103,6 +104,8 @@ class LiveWorld:
             self.focus_locked = getattr(self, "focus_locked", False)
             self.ownship: Dict[str, Any] = {}
             self.ownship_time = 0.0
+            self.scan_values: Dict[str, float] = {}
+            self.world_radar: List[Tuple[str, float, float, bool]] = []
             self.recently_destroyed: Deque[Dict[str, Any]] = deque(maxlen=50)
 
     def set_status(self, source: str, state: str, detail: str = "") -> None:
@@ -164,6 +167,53 @@ class LiveWorld:
                 "objectIds": event.object_ids, "names": names, "text": event.text,
             })
 
+    # -- DCS events (hook) ---------------------------------------------------------
+
+    def on_dcs_events(self, events: List[Dict[str, Any]]) -> None:
+        """Combat events as DCS reported them.  Runs of hits are collapsed."""
+        with self._lock:
+            for ev in events:
+                kind = str(ev.get("kind") or "")
+                ini, tgt = ev.get("initiator") or {}, ev.get("target") or {}
+                who = ini.get("player") or ini.get("name") or ini.get("type") or "?"
+                whom = tgt.get("player") or tgt.get("name") or tgt.get("type") or ""
+                weapon = ev.get("weapon") or ""
+                last = self.events[-1] if self.events else None
+                key = (kind, who, whom, weapon)
+                if (kind == "hit" and last is not None and last.get("_key") == key
+                        and abs((ev.get("t") or 0) - last["time"]) < 3.0):
+                    # Same shooter/target/weapon: count it instead of a new row
+                    # (a gun burst can land dozens of hits a second).
+                    last["count"] += 1
+                    last["text"] = f"{who} hit {whom} x{last['count']} ({weapon})"
+                    self.event_seq += 1
+                    last["seq"] = self.event_seq
+                    continue
+                self.event_seq += 1
+                text = {
+                    "hit": f"{who} hit {whom}" + (f" ({weapon})" if weapon else ""),
+                    "kill": f"{who} killed {whom}" + (f" with {weapon}" if weapon else ""),
+                    "shot": f"{who} fired {weapon}" + (f" at {whom}" if whom else ""),
+                    "shooting_start": f"{who} guns ({weapon})",
+                    "shooting_end": f"{who} guns stop",
+                    "takeoff": f"{who} took off", "land": f"{who} landed", "crash": f"{who} crashed",
+                    "ejection": f"{who} ejected", "dead": f"{who} destroyed", "pilot_dead": f"{who} pilot killed",
+                }.get(kind, f"{kind} {who} {whom}".strip())
+                self.events.append({
+                    "seq": self.event_seq, "time": ev.get("t") or self.time, "kind": f"DCS {kind}",
+                    "objectIds": [], "names": [], "text": text, "source": "dcs", "count": 1, "_key": key,
+                    "againstMe": self._is_me(tgt),
+                })
+
+    def _is_me(self, unit: Dict[str, Any]) -> bool:
+        focus = self.objects.get(self.focus_id) if self.focus_id else None
+        if not unit:
+            return False
+        names = {n for n in (unit.get("player"), unit.get("name")) if n}
+        if focus is not None and names & {focus.props.get("Pilot"), focus.name}:
+            return True
+        return bool(self.player_names) and (unit.get("player") or "").lower() in self.player_names
+
     # -- DCS Export.lua bridge ------------------------------------------------
 
     def ingest_bridge(self, payload: Dict[str, Any]) -> None:
@@ -171,6 +221,13 @@ class LiveWorld:
         with self._lock:
             self.ownship = payload
             self.ownship_time = time.time()
+            self.scan_values = scan_to_values(payload.get("scan"))
+            if payload.get("world") is not None:
+                self.world_radar = [
+                    (str(o.get("name") or ""), float(o["lat"]), float(o["lon"]), bool(o.get("radar")))
+                    for o in payload.get("world") or []
+                    if isinstance(o.get("lat"), (int, float)) and isinstance(o.get("lon"), (int, float)) and "radar" in o
+                ]
             self.bridge_status = {
                 "state": "receiving",
                 "packets": self.bridge_status.get("packets", 0) + 1,
@@ -217,6 +274,8 @@ class LiveWorld:
             "AOA": d.get("aoa"), "AOS": d.get("aos"), "AGL": d.get("agl"),
         }
         obj.values.update({k: float(v) for k, v in vals.items() if isinstance(v, (int, float))})
+        if "radar" in d:
+            obj.values["RadarActive"] = 1.0 if d.get("radar") else 0.0
         obj.last_update = t
         self._track_motion(obj, t)
         if is_self and not self.focus_locked:
@@ -286,6 +345,7 @@ class LiveWorld:
         with self._lock:
             objs = []
             rounds = []
+            bridge_fresh = (time.time() - self.ownship_time) < 3.0
             focus_obj = self.objects.get(self.focus_id) if self.focus_id else None
             fpos = focus_obj.position() if focus_obj else None
             for obj in self.objects.values():
@@ -321,9 +381,23 @@ class LiveWorld:
                     "v": {k: v[k] for k in _LIVE_CHANNELS if k in v},
                     "d": dict(obj.derived),
                 }
+                if "EngagementRange" not in row["v"]:
+                    db = _engagement_db(obj)
+                    if db:
+                        row["v"]["EngagementRange"] = db["range"]
+                        if db.get("vrange"):
+                            row["v"]["VerticalEngagementRange"] = db["vrange"]
+                        row["engSrc"] = db["source"]
                 lock = obj.props.get("LockedTarget")
                 if lock and v.get("LockedTargetMode", 1.0) > 0:
                     row["lock"] = lock
+                if bridge_fresh:
+                    if obj.id == self.focus_id and self.scan_values:
+                        row["v"].update(self.scan_values)
+                    elif obj.category in ("fixedwing", "rotorcraft", "air") and self.world_radar:
+                        flag = _radar_flag_for(obj, pos, self.world_radar)
+                        if flag is not None:
+                            row["v"]["RadarActive"] = 1.0 if flag else 0.0
                 if include_trails and obj.category in ("fixedwing", "rotorcraft", "air", "weapon"):
                     step = 1 if obj.category == "weapon" else 2
                     row["trail"] = [[p[1], p[2], p[3]] for p in list(obj.trail)[::step]]
@@ -344,7 +418,7 @@ class LiveWorld:
                 # Nearest rounds only: a gun fight can have hundreds in the air.
                 "rounds": [{k: v for k, v in rd.items() if k != "_d"}
                            for rd in sorted(rounds, key=lambda x: x["_d"])[:MAX_LIVE_ROUNDS]],
-                "events": [e for e in self.events if e["seq"] > since_event],
+                "events": [{k: v for k, v in e.items() if k != "_key"} for e in self.events if e["seq"] > since_event],
                 "eventSeq": self.event_seq,
                 "threats": self._threats(focus) if focus else [],
                 "ownship": self.ownship if (time.time() - self.ownship_time) < 3.0 else None,
@@ -397,7 +471,7 @@ class LiveWorld:
             if not _hostile(me, obj):
                 continue
             locked_me = obj.props.get("LockedTarget") == me.id and obj.values.get("LockedTargetMode", 1.0) > 0
-            eng = obj.values.get("EngagementRange")
+            eng = obj.values.get("EngagementRange") or (_engagement_db(obj) or {}).get("range")
             in_wez = bool(eng) and geo.ground_distance(mp[0], mp[1], op[0], op[1]) <= eng
             if obj.category in ("fixedwing", "rotorcraft", "air"):
                 if rng > THREAT_RANGE_AIR and not locked_me:
@@ -435,6 +509,42 @@ def _closure(a: LiveObject, b: LiveObject) -> Optional[float]:
     return (r_prev - r_now) / max(a1[0] - a0[0], b1[0] - b0[0], 1e-3)
 
 
+def scan_to_values(scan: Any) -> Dict[str, float]:
+    """Bridge scan zone -> the channel names radarVolume() understands."""
+    if not isinstance(scan, dict):
+        return {}
+    out: Dict[str, float] = {}
+    for src, dst in (("azHalf", "ScanAz"), ("elHalf", "ScanEl"), ("centerAz", "ScanCenterAz"),
+                     ("centerEl", "ScanCenterEl"), ("range", "RadarRange")):
+        v = scan.get(src)
+        if isinstance(v, (int, float)) and v == v:
+            out[dst] = float(v)
+    if isinstance(scan.get("on"), bool):
+        out["RadarActive"] = 1.0 if scan["on"] else 0.0
+        if not scan["on"]:
+            out.pop("ScanAz", None)  # radar off: no volume
+    return out
+
+
+def _radar_flag_for(obj: "LiveObject", pos, world: List[Tuple[str, float, float, bool]]) -> Optional[bool]:
+    """Match a Tacview object to DCS's per-unit radar flag by type and position."""
+    best, best_d = None, 2000.0
+    for name, lat, lon, radar in world:
+        if name and name != obj.name:
+            continue
+        d = geo.ground_distance(pos[0], pos[1], lon, lat)
+        if d < best_d:
+            best, best_d = radar, d
+    return best
+
+
+def _engagement_db(obj: "LiveObject") -> Optional[Dict[str, Any]]:
+    """Engagement range from Tacview's database, for SAM/AAA/ship types."""
+    if obj.category not in ("ground", "sea"):
+        return None
+    return threatdb.lookup(obj.name)
+
+
 def oid_is_world(oid: str) -> bool:
     return oid.startswith("w")
 
@@ -445,7 +555,7 @@ _LIVE_CHANNELS = (
     "FuelWeight", "FuelWeight2", "RadarMode", "RadarAzimuth", "RadarElevation", "RadarRange",
     "RadarHorizontalBeamwidth", "RadarVerticalBeamwidth", "LockedTargetMode",
     "LockedTargetAzimuth", "LockedTargetElevation", "LockedTargetRange", "EngagementRange",
-    "EngagementMode", "Health", "VerticalGForce", "PitchControlInput", "RollControlInput",
+    "VerticalEngagementRange", "EngagementMode", "Health", "VerticalGForce", "PitchControlInput", "RollControlInput",
     "YawControlInput", "PitchTrimTab", "TriggerPressed", "GlideslopeVerticalDeviation",
     "LocalizerLateralDeviation",
 )

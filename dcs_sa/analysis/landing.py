@@ -29,6 +29,10 @@ CARRIER_GLIDESLOPE = 3.5
 #: Approach gates, metres from touchdown along the final course.
 GATES_NM = (4.0, 3.0, 2.0, 1.0, 0.5, 0.25)
 STABLE_HEIGHT_M = 152.4  # 500 ft
+#: Glidepath origin past the threshold (the 1000 ft aiming-point markings).
+AIM_POINT_M = 305.0
+#: Touchdown zone: the first 3000 ft of runway.
+TDZ_M = 914.0
 AIRBORNE_MIN_S = 3.0
 GROUND_MIN_S = 1.0
 
@@ -67,6 +71,9 @@ class Landing:
     gates: List[ApproachGate] = field(default_factory=list)
     stabilized: Dict[str, object] = field(default_factory=dict)
     rollout: Dict[str, float] = field(default_factory=dict)
+    runway: Optional[Dict[str, object]] = None  # read from DCS, when available
+    touchdown_from_threshold: Optional[float] = None
+    runway_remaining: Optional[float] = None
     outcome: str = "landed"  # landed | touch-and-go | bolter | trap | bounced
     bounces: int = 0
     score: int = 100
@@ -322,6 +329,24 @@ def _grade(landing: Landing) -> None:
         score -= 10
         notes.append("Not stabilised by 500 ft: " + "; ".join(stab.get("reasons", [])) + ".")
 
+    tdft = landing.touchdown_from_threshold
+    if tdft is not None and not carrier:
+        if tdft < 0:
+            score -= 35
+            notes.append(f"Touched down {abs(tdft):.0f} m SHORT of the runway threshold.")
+        elif tdft > TDZ_M:
+            score -= 10
+            notes.append(f"Landed long: {tdft:.0f} m past the threshold (touchdown zone is the first {TDZ_M:.0f} m).")
+        else:
+            notes.append(f"Touched down {tdft:.0f} m past the threshold, in the touchdown zone.")
+    rem = landing.runway_remaining
+    if rem is not None and rem < 0:
+        score -= 40
+        notes.append(f"Ran {abs(rem):.0f} m off the end of the runway.")
+    elif rem is not None and rem < 300:
+        score -= 10
+        notes.append(f"Stopped with only {rem:.0f} m of runway left.")
+
     if landing.bounces:
         score -= 15
         notes.append(f"Bounced {landing.bounces} time(s).")
@@ -372,12 +397,58 @@ def _refine_touchdown(t: List[float], alt: List[float], idx: int) -> int:
     return idx
 
 
+def _designator(name: str, heading: float) -> str:
+    """Runway number for the landing direction, from DCS's name if possible."""
+    nums = [int(x) for x in "".join(c if c.isdigit() else " " for c in str(name or "")).split() if 1 <= int(x) <= 36]
+    for n in nums:
+        if abs(geo.wrap180(n * 10 - heading)) <= 30:
+            return f"{n:02d}"
+    if nums:
+        n = nums[0]
+        if abs(geo.wrap180(n * 10 - heading)) > 90:
+            n = (n + 17) % 36 + 1
+        return f"{n:02d}"
+    n = int(round(heading / 10.0)) % 36 or 36
+    return f"{n:02d}"
+
+
+def _match_runway(airbases: List[Dict], lon: float, lat: float, crs: float) -> Optional[Dict[str, object]]:
+    """The DCS runway this touchdown was on, and which end was landed on."""
+    best: Optional[Tuple[float, Dict[str, object]]] = None
+    for ab in airbases or []:
+        if ab.get("category") not in (0, None):
+            continue  # helipads and ships
+        for rw in ab.get("runways") or []:
+            h, length = rw.get("heading"), rw.get("length")
+            if not isinstance(h, (int, float)) or not isinstance(length, (int, float)) or length < 300:
+                continue
+            width = rw.get("width") if isinstance(rw.get("width"), (int, float)) and rw.get("width") > 0 else 45.0
+            e, n = geo.to_local(lon, lat, rw["lon"], rw["lat"])
+            hx, hy = math.sin(math.radians(h)), math.cos(math.radians(h))
+            along, cross = e * hx + n * hy, e * hy - n * hx
+            if abs(cross) > width / 2 + 60 or abs(along) > length / 2 + 400:
+                continue
+            hd = h if abs(geo.wrap180(crs - h)) <= 90 else (h + 180.0) % 360.0
+            if abs(geo.wrap180(crs - hd)) > 25:
+                continue
+            if best is None or abs(cross) < best[0]:
+                tlon, tlat = geo.destination(rw["lon"], rw["lat"], (hd + 180.0) % 360.0, length / 2)
+                best = (abs(cross), {
+                    "airbase": ab.get("name"), "name": _designator(rw.get("name", ""), hd), "heading": hd,
+                    "length": length, "width": width, "thresholdLon": tlon, "thresholdLat": tlat,
+                    "elevation": ab.get("alt") if isinstance(ab.get("alt"), (int, float)) else None,
+                    "source": "DCS",
+                })
+    return best[1] if best else None
+
+
 def _analyze_landing(
     rec: Recording,
     tr: Track,
     derived: Dict[str, List[float]],
     mask: List[bool],
     idx: int,
+    airbases: Optional[List[Dict]] = None,
 ) -> Landing:
     t = list(tr.t)
     n = len(t)
@@ -457,6 +528,23 @@ def _analyze_landing(
             k -= 1
         ke, kn = rel(k)
         crs = math.degrees(math.atan2(-ke, -kn)) % 360.0
+    # Real runway from DCS (via the hook's airbase data), if we have it:
+    # measure against the runway itself instead of the touchdown point.
+    aim_e = aim_n = 0.0  # glidepath origin, in the touchdown-centred frame
+    cl_e = cl_n = 0.0    # a point on the centreline
+    ref_alt = td_alt
+    runway = None if carrier is not None else _match_runway(airbases or [], lon[idx], lat[idx], crs)
+    if runway is not None:
+        crs = float(runway["heading"])
+        hx, hy = math.sin(math.radians(crs)), math.cos(math.radians(crs))
+        te, tn = geo.to_local(runway["thresholdLon"], runway["thresholdLat"], origin[0], origin[1])
+        aim_e, aim_n = te + hx * AIM_POINT_M, tn + hy * AIM_POINT_M
+        cl_e, cl_n = te, tn
+        if runway.get("elevation") is not None and abs(runway["elevation"] - td_alt) < 30:
+            ref_alt = float(runway["elevation"])
+        landing.runway = runway
+        landing.touchdown_from_threshold = -(te * hx + tn * hy)
+        landing.location = f"{runway['airbase']} RWY {runway['name']}"
     landing.approach_course = crs
     ux, uy = math.sin(math.radians(crs)), math.cos(math.radians(crs))
 
@@ -510,15 +598,15 @@ def _analyze_landing(
     # centreline, which is where the base turn / downwind begins.
     for i in range(idx, start - 1, -1):
         e, nn = rel(i)
-        along = -(e * ux + nn * uy)  # positive before touchdown
-        cross = e * uy - nn * ux  # positive right of course
+        along = -((e - aim_e) * ux + (nn - aim_n) * uy)  # positive before the glidepath origin
+        cross = (e - cl_e) * uy - (nn - cl_n) * ux  # positive right of the centreline
         if along > 20000.0 or abs(cross) > 400.0 + 0.3 * max(along, 0.0):
             break
         if along < 0:
             continue
         prof_t.append(t[i] - td_t)
         prof_d.append(along)
-        prof_h.append(alt[i] - td_alt)
+        prof_h.append(alt[i] - ref_alt)
         prof_x.append(cross)
     for series in (prof_t, prof_d, prof_h, prof_x):
         series.reverse()
@@ -569,7 +657,7 @@ def _analyze_landing(
             if sd > 4.0:
                 reasons.append(f"speed unstable (+/-{sd * geo.KT_PER_MPS:.0f} kt)")
         e, nn = rel(stab_i)
-        cross = e * uy - nn * ux
+        cross = (e - cl_e) * uy - (nn - cl_n) * ux
         if abs(cross) > (25.0 if carrier else 60.0):
             reasons.append(f"{abs(cross):.0f} m off centreline")
         landing.stabilized = {"time": t[stab_i], "stable": not reasons, "reasons": reasons}
@@ -601,6 +689,8 @@ def _analyze_landing(
         stop_e, stop_n = rel(j)
         roll_m = math.hypot(stop_e, stop_n)
         landing.rollout = {"distance": roll_m, "time": t[j] - td_t}
+        if runway is not None and landing.touchdown_from_threshold is not None:
+            landing.runway_remaining = float(runway["length"]) - landing.touchdown_from_threshold - roll_m
         if carrier:
             landing.outcome = "trap" if roll_m < 150.0 else "landed"
         elif bounces:
@@ -669,7 +759,8 @@ def _analyze_takeoff(
     return to
 
 
-def analyze_landings(rec: Recording, aircraft: Optional[List[Track]] = None) -> Dict[str, List]:
+def analyze_landings(rec: Recording, aircraft: Optional[List[Track]] = None,
+                     airbases: Optional[List[Dict]] = None) -> Dict[str, List]:
     """Find and analyse every takeoff and landing in the recording."""
     aircraft = aircraft if aircraft is not None else rec.aircraft()
     landings: List[Landing] = []
@@ -699,7 +790,7 @@ def analyze_landings(rec: Recording, aircraft: Optional[List[Track]] = None) -> 
 
         for i in kept_td:
             try:
-                landings.append(_analyze_landing(rec, tr, derived, mask, i))
+                landings.append(_analyze_landing(rec, tr, derived, mask, i, airbases))
             except (IndexError, ValueError, ZeroDivisionError):  # pragma: no cover - defensive
                 continue
         for j in kept_to:

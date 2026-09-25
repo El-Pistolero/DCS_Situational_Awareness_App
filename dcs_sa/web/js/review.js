@@ -355,7 +355,8 @@ function sceneObjects() {
     if (i > 0 && pb.t[i] > pb.t[i - 1]) {
       row.tas = distance(pb.lon[i - 1], pb.lat[i - 1], pb.lon[i], pb.lat[i]) / (pb.t[i] - pb.t[i - 1]);
     }
-    if (isNum(pb.eng)) row.v.EngagementRange = pb.eng;
+    if (isNum(pb.eng)) { row.v.EngagementRange = pb.eng; row.engSrc = pb.engSrc; }
+    if (isNum(pb.engV)) row.v.VerticalEngagementRange = pb.engV;
     if (locks.has(o.id)) row.lock = locks.get(o.id);
     if (S.trailSec > 0 && ["fixedwing", "rotorcraft", "air", "weapon"].includes(o.category)) {
       const t0 = t - S.trailSec;

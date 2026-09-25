@@ -179,11 +179,14 @@ export function bisectRight(arr, x) {
 /** Radar state (ACMI channel names) at playback index i, or null. */
 export function radarAt(pb, i) {
   const r = pb && pb.radar;
-  if (!r || !r.mode || i < 0) return null;
+  if (!r || i < 0) return null;
   const at = (a) => (a && isNum(a[i]) ? a[i] : undefined);
   return {
-    RadarMode: at(r.mode), RadarAzimuth: at(r.az), RadarElevation: at(r.el), RadarRange: at(r.range),
-    RadarHorizontalBeamwidth: at(r.hbw), RadarVerticalBeamwidth: at(r.vbw),
+    RadarMode: at(r.mode), RadarAzimuth: at(r.az), RadarElevation: at(r.el), RadarRoll: at(r.roll),
+    RadarRange: at(r.range), RadarHorizontalBeamwidth: at(r.hbw), RadarVerticalBeamwidth: at(r.vbw),
+    // From the DCS flight log (read in the cockpit), when one was merged.
+    ScanAz: at(r.scanAz), ScanEl: at(r.scanEl), ScanCenterAz: at(r.scanCAz), ScanCenterEl: at(r.scanCEl),
+    RadarActive: at(r.active),
   };
 }
 

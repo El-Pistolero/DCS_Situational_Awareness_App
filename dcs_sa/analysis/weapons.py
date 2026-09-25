@@ -29,10 +29,45 @@ NAN = float("nan")
 KILL_RADIUS = {"missile": 350.0, "rocket": 150.0, "bomb": 250.0, "torpedo": 150.0, "gun": 120.0}
 #: Max closest-approach distance for inferring what a weapon was aimed at.
 TARGET_RADIUS = {"missile": 6000.0, "rocket": 1500.0, "bomb": 1500.0, "torpedo": 1500.0, "gun": 400.0}
-#: Max distance from a weapon's first sample to its launcher.
+#: Max distance from a weapon's first sample to its launcher.  DCS writes
+#: no Parent at all (not even on missiles), so this is how every shot is
+#: attributed.  Gun rounds first appear ~20-60 m from the muzzle.
 LAUNCHER_RADIUS = 600.0
-#: Gun rounds further apart than this belong to separate bursts.
-BURST_GAP = 1.0
+ROUND_LAUNCHER_RADIUS = 300.0
+#: Rounds in one trigger pull spawn ~0.05 s apart at 100 rds/s; separate
+#: pulls are usually well over half a second apart.
+BURST_GAP = 0.4
+#: A recorded round "moving" faster than this is corrupt/obfuscated
+#: position data (seen in delayed multiplayer recordings) - never attribute it.
+MAX_ROUND_SPEED = 2000.0
+
+#: DCS ammunition name (after "weapons.shells.") -> gun, by prefix.
+GUN_BY_AMMO = (
+    ("M61_", "M61A1 Vulcan"), ("GAU8_", "GAU-8 Avenger"), ("GAU_12", "GAU-12 Equalizer"),
+    ("GSH301_", "GSh-30-1"), ("GSH23_", "GSh-23"), ("GSh_23", "GSh-23"), ("GSH_23", "GSh-23"),
+    ("GSH_30_2", "GSh-30-2"), ("GSh_30_2", "GSh-30-2"), ("DEFA55", "DEFA 554"), ("DEFA_", "DEFA"),
+    ("M39_", "M39"), ("ADEN_", "ADEN"), ("MAUSER27", "Mauser BK-27"), ("BK_27", "Mauser BK-27"),
+    ("M20_50", "M3 .50 cal"), ("M2_12_7", "M2 .50 cal"), ("2A42_", "2A42 30 mm"), ("2A38_", "2A38 30 mm"),
+    ("2A7_", "2A7 23 mm (ZSU-23)"), ("KDA_35", "Oerlikon KDA 35 mm"), ("KPVT_", "KPVT 14.5 mm"),
+    ("Utes_12_7", "NSV Utes 12.7 mm"), ("7_62", "7.62 mm MG"), ("M230_", "M230 30 mm"),
+    ("GSH_2_30", "GSh-2-30"), ("HISPANO", "Hispano 20 mm"),
+)
+
+
+def ammo_name(name: Optional[str]) -> str:
+    """Strip DCS's ``weapons.shells.`` / ``weapons.`` prefixes."""
+    n = (name or "").strip()
+    for prefix in ("weapons.shells.", "weapons.missiles.", "weapons.nurs.", "weapons.bombs.", "weapons."):
+        if n.startswith(prefix):
+            return n[len(prefix):]
+    return n
+
+
+def gun_name(ammo: str) -> Optional[str]:
+    for prefix, gun in GUN_BY_AMMO:
+        if ammo.startswith(prefix):
+            return gun
+    return None
 #: A round whose path passes this close to the target counts as on target
 #: (roughly a fighter's half-span; DCS resolves real hits on the airframe).
 ROUND_HIT_RADIUS = 12.0
@@ -101,6 +136,8 @@ class Shot:
     outcome_detail: str = ""
     killed_id: Optional[str] = None
     killed_name: Optional[str] = None
+    dcs_confirmed: Optional[bool] = None   # DCS reported the launch
+    dcs_hit: Optional[str] = None          # what DCS says this weapon hit
 
     def to_dict(self) -> Dict:
         return _clean(asdict(self))
@@ -122,10 +159,13 @@ class GunBurst:
     killed_id: Optional[str] = None
     source: str = "rounds"  # "rounds" (projectiles exported) or "trigger"
     weapon_name: Optional[str] = None
+    ammo: Optional[str] = None
     rounds_on_target: Optional[int] = None
     fire_rate: Optional[float] = None  # rounds per second, as recorded
     time_of_flight: Optional[float] = None  # mean, seconds
     round_ids: List[str] = field(default_factory=list)
+    dcs_hits: Optional[int] = None          # hits DCS itself reported for this burst
+    dcs_hit_targets: Dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> Dict:
         return _clean(asdict(self))
@@ -148,6 +188,8 @@ class Kill:
     weapon_name: Optional[str] = None
     weapon_kind: Optional[str] = None
     miss_distance: Optional[float] = None
+    confirmed_by: Optional[str] = None     # "DCS" when DCS reported the kill
+    note: Optional[str] = None
 
     def to_dict(self) -> Dict:
         return _clean(asdict(self))
@@ -160,6 +202,7 @@ class WeaponReport:
     kills: List[Kill]
     destructions: List[Destruction]
     by_shooter: Dict[str, Dict]
+    rounds: Dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> Dict:
         return {
@@ -167,6 +210,7 @@ class WeaponReport:
             "bursts": [b.to_dict() for b in self.bursts],
             "kills": [k.to_dict() for k in self.kills],
             "byShooter": self.by_shooter,
+            "rounds": self.rounds,
         }
 
 
@@ -258,6 +302,25 @@ def _weapon_samples(tr: Track) -> List[Tuple[float, float, float, float]]:
     return out
 
 
+def _same_side(weapon: Track, platform: Track) -> bool:
+    """Weapons carry their shooter's Country/Coalition; use it as a hard filter."""
+    wc, pc = weapon.props.get("Country"), platform.props.get("Country")
+    if wc and pc:
+        return wc == pc
+    wco, pco = weapon.props.get("Coalition"), platform.props.get("Coalition")
+    if wco and pco and wco not in ("Neutral", "Unknown"):
+        return wco == pco
+    return True
+
+
+def _implausible_round(samples: List[Tuple[float, float, float, float]]) -> bool:
+    for (t0, lo0, la0, a0), (t1, lo1, la1, a1) in zip(samples, samples[1:]):
+        dt = t1 - t0
+        if dt > 1e-3 and geo.slant_range(lo0, la0, a0, lo1, la1, a1) / dt > MAX_ROUND_SPEED:
+            return True
+    return False
+
+
 def _find_launcher(rec: Recording, weapon: Track, platforms: List[Track]) -> Tuple[Optional[Track], Optional[str]]:
     parent = weapon.props.get("Parent")
     if parent and parent in rec.tracks:
@@ -266,11 +329,12 @@ def _find_launcher(rec: Recording, weapon: Track, platforms: List[Track]) -> Tup
     if first is None:
         return None, None
     best: Optional[Track] = None
-    best_d = LAUNCHER_RADIUS
+    best_d = ROUND_LAUNCHER_RADIUS if weapon.category == "round" else LAUNCHER_RADIUS
     for tr in platforms:
-        if not tr.alive_at(weapon.first_seen, grace=0.5):
+        if not tr.alive_at(weapon.first_seen, grace=0.5) or not _same_side(weapon, tr):
             continue
-        pos = tr.position_at(weapon.first_seen)
+        # Interpolate: aircraft are sampled every ~0.2 s and move 50 m in that.
+        pos = tr.position_interp(weapon.first_seen)
         if pos is None:
             continue
         d = geo.slant_range(first[0], first[1], first[2], pos[0], pos[1], pos[2])
@@ -411,20 +475,27 @@ def analyze_weapons(rec: Recording, destructions: Optional[Dict[str, Destruction
 
     shots: List[Shot] = []
     gun_rounds: Dict[str, List[Tuple[Track, List]]] = {}
+    round_stats = {"total": 0, "attributed": 0, "implausible": 0}
 
     for w in weapons:
         kind = weapon_kind(w.tags)
-        launcher, launcher_src = _find_launcher(rec, w, platforms)
         samples = _weapon_samples(w)
         if kind == "gun":
+            round_stats["total"] += 1
+            if _implausible_round(samples):
+                round_stats["implausible"] += 1
+                continue
+            launcher, _src = _find_launcher(rec, w, platforms)
             if launcher is not None:
+                round_stats["attributed"] += 1
                 gun_rounds.setdefault(launcher.id, []).append((w, samples))
             continue
+        launcher, launcher_src = _find_launcher(rec, w, platforms)
 
         end_time = w.removed_at if w.removed_at is not None else w.last_seen
         shot = Shot(
             weapon_id=w.id,
-            weapon_name=w.name,
+            weapon_name=ammo_name(w.name),
             kind=kind,
             guided=T.is_guided(w.tags),
             launcher_id=launcher.id if launcher else None,
@@ -506,6 +577,7 @@ def analyze_weapons(rec: Recording, destructions: Optional[Dict[str, Destruction
         kills=sorted(kills, key=lambda k: k.time),
         destructions=sorted(destructions.values(), key=lambda d: d.time),
         by_shooter=_tally(shots, bursts, kills, rec),
+        rounds=round_stats,
     )
 
 
@@ -523,12 +595,20 @@ def _gun_bursts(
     for launcher_id, rounds in gun_rounds.items():
         launcher = rec.tracks[launcher_id]
         rounds.sort(key=lambda r: r[0].first_seen)
+        # A burst is one trigger pull of one gun: split on a gap between
+        # consecutive rounds, and never mix ammunition types.
         groups: List[List[Tuple[Track, List]]] = []
+        last_by_ammo: Dict[str, List[Tuple[Track, List]]] = {}
         for rnd in rounds:
-            if groups and rnd[0].first_seen - groups[-1][-1][0].first_seen <= BURST_GAP:
-                groups[-1].append(rnd)
+            ammo = ammo_name(rnd[0].name)
+            grp = last_by_ammo.get(ammo)
+            if grp is not None and rnd[0].first_seen - grp[-1][0].first_seen <= BURST_GAP:
+                grp.append(rnd)
             else:
-                groups.append([rnd])
+                grp = [rnd]
+                groups.append(grp)
+                last_by_ammo[ammo] = grp
+        groups.sort(key=lambda g: g[0][0].first_seen)
         hostile = [p for p in platforms if p.id != launcher_id and _hostile(launcher, p)]
         for grp in groups:
             start = grp[0][0].first_seen
@@ -541,7 +621,8 @@ def _gun_bursts(
                 start=start,
                 end=end,
                 rounds=len(grp),
-                weapon_name=grp[0][0].name,
+                weapon_name=gun_name(ammo_name(grp[0][0].name)) or ammo_name(grp[0][0].name),
+                ammo=ammo_name(grp[0][0].name),
                 round_ids=[r[0].id for r in grp],
             )
             # Rounds are first seen on recorder frames, so several share a
@@ -728,3 +809,96 @@ def _tally(shots: List[Shot], bursts: List[GunBurst], kills: List[Kill], rec: Re
         decided = e["shots"] - e["active"]
         e["pk"] = (sum(w["kills"] for w in e["byWeapon"].values()) / decided) if decided else None
     return out
+
+
+# ---------------------------------------------------------------------------
+# Events DCS itself reported (from a merged flight log)
+# ---------------------------------------------------------------------------
+
+
+def _norm(name: Optional[str]) -> str:
+    return "".join(ch for ch in ammo_name(name).lower() if ch.isalnum())
+
+
+def apply_dcs_events(rep: WeaponReport, rec: Recording, events: List[Dict]) -> Dict[str, int]:
+    """Replace inferred hits/kills with what DCS reported, where it reported them."""
+    hits = [e for e in events if e.get("kind") == "hit"]
+    kills = [e for e in events if e.get("kind") == "kill"]
+    shots = [e for e in events if e.get("kind") == "shot"]
+    stats = {"hits": len(hits), "kills": len(kills), "shots": len(shots), "killsCorrected": 0, "killsAdded": 0}
+
+    # Each DCS gun hit belongs to exactly one burst: the one whose rounds were
+    # in flight then (firing window shifted by the burst's time of flight).
+    def window(b: GunBurst) -> Tuple[float, float]:
+        ends = [(rec.tracks[r].removed_at or rec.tracks[r].last_seen) for r in b.round_ids if r in rec.tracks]
+        if ends:  # when the recorded rounds actually ended (impact or timeout)
+            return min(ends) - 0.3, max(ends) + 0.5
+        tof = b.time_of_flight or 0.0
+        fire_end = b.start + (b.rounds / b.fire_rate if b.fire_rate else 0.0)
+        return b.start + 0.5 * tof, fire_end + 1.5 * tof + 0.3
+
+    per_burst: Dict[int, List[Dict]] = {id(b): [] for b in rep.bursts}
+    for e in hits:
+        t = e["time"]
+        scored = []
+        for b in rep.bursts:
+            if e.get("initiatorId") != b.launcher_id:
+                continue
+            if not (e.get("weaponCategory") == 0 or (b.ammo and _norm(e.get("weapon")) == _norm(b.ammo))):
+                continue
+            lo, hi = window(b)
+            d = max(0.0, lo - t, t - hi)
+            # Overlapping windows: the latest burst whose rounds had arrived.
+            arrived = lo <= t
+            scored.append((d, 0 if arrived else 1, -b.start, id(b)))
+        if scored:
+            d, _, _, bid = min(scored)
+            if d < 1.0:
+                per_burst[bid].append(e)
+    for b in rep.bursts:
+        mine = per_burst[id(b)]
+        b.dcs_hits = len(mine)
+        counts: Dict[str, int] = {}
+        for e in mine:
+            tgt = rec.tracks.get(e.get("targetId") or "")
+            name = tgt.display_name if tgt else ((e.get("target") or {}).get("type") or "?")
+            counts[name] = counts.get(name, 0) + 1
+        b.dcs_hit_targets = counts
+
+    for s in rep.shots:
+        s.dcs_confirmed = any(e.get("initiatorId") == s.launcher_id and abs(e["time"] - s.launch_time) <= 1.5
+                              and _norm(e.get("weapon")) == _norm(s.weapon_name) for e in shots) if shots else None
+        for e in hits:
+            if (e.get("initiatorId") == s.launcher_id and s.launch_time <= e["time"] <= s.end_time + 2.0
+                    and _norm(e.get("weapon")) == _norm(s.weapon_name)):
+                tgt = rec.tracks.get(e.get("targetId") or "")
+                s.dcs_hit = tgt.display_name if tgt else ((e.get("target") or {}).get("type") or "?")
+                if s.outcome == "miss":
+                    s.outcome, s.outcome_detail = "damage", "DCS reported a hit"
+                break
+
+    for e in kills:
+        vid = e.get("targetId")
+        if not vid or vid not in rec.tracks:
+            continue
+        killer = rec.tracks.get(e.get("initiatorId") or "")
+        weapon = ammo_name(e.get("weapon")) or None
+        existing = next((k for k in rep.kills if k.victim_id == vid), None)
+        if existing is None:
+            victim = rec.tracks[vid]
+            existing = Kill(victim_id=vid, victim_name=victim.name, victim_pilot=victim.pilot,
+                            victim_coalition=victim.coalition, victim_category=victim.category,
+                            time=e["time"], cause="dcs", confidence="confirmed")
+            rep.kills.append(existing)
+            stats["killsAdded"] += 1
+        existing.confirmed_by = "DCS"
+        existing.confidence = "confirmed"
+        if killer is not None and existing.killer_id != killer.id:
+            if existing.killer_id:
+                existing.note = f"inferred {existing.killer_pilot or existing.killer_name}; DCS credits {killer.display_name}"
+                stats["killsCorrected"] += 1
+            existing.killer_id, existing.killer_name, existing.killer_pilot = killer.id, killer.name, killer.pilot
+            existing.weapon_name = gun_name(weapon or "") or weapon
+            existing.weapon_kind = "gun" if e.get("weaponCategory") == 0 else existing.weapon_kind
+    rep.kills.sort(key=lambda k: k.time)
+    return stats

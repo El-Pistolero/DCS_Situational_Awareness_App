@@ -400,8 +400,9 @@ def build_sample(duration: float = 1200.0, log: Optional[List[str]] = None) -> L
         ("301", "BTR-80", "Ground+Armor+Vehicle", "Enemies", "Red", 15000.0, 20000.0, 240.0, {}),
         ("302", "BTR-80", "Ground+Armor+Vehicle", "Enemies", "Red", 15180.0, 20110.0, 240.0, {}),
         ("303", "Ural-375", "Ground+Vehicle", "Enemies", "Red", 15360.0, 20220.0, 240.0, {}),
-        ("304", "SA-11 Buk SR", "Ground+AntiAircraft", "Enemies", "Red", 9000.0, 14000.0, 320.0,
-         {"EngagementRange": 35000.0, "VerticalEngagementRange": 20000.0, "RadarMode": 1.0, "RadarRange": 90000.0}),
+        ("304", "SA-11 Buk SR 9S18M1", "Ground+AntiAircraft", "Enemies", "Red", 9000.0, 14000.0, 320.0,
+         {"RadarMode": 1.0, "RadarRange": 90000.0,
+          "RadarHorizontalBeamwidth": 360.0, "RadarVerticalBeamwidth": 30.0, "RadarElevation": 15.0}),
         ("401", "CVN-75", "Sea+Watercraft+AircraftCarrier", "Allies", "Blue", -30000.0, 9000.0, 0.0, {}),
         ("501", "Bullseye", "Navaid+Static+Bullseye", "Allies", "Blue", 20000.0, 30000.0, 0.0, {}),
     ]
@@ -542,9 +543,10 @@ def build_sample(duration: float = 1200.0, log: Optional[List[str]] = None) -> L
             rng = _steer_to(player, 15000.0, 20000.0)
             player.cmd_alt = 700.0
             player.cmd_tas = 200.0
-            player.extra["TriggerPressed"] = 0.0
-            # Two ~1 s bursts from the M61 (100 rds/s; the recorder keeps
-            # about every other round, as Tacview does at its sampling rate).
+            # Two ~1 s bursts from the M61 at its real 100 rds/s.  Written the way
+            # DCS's Tacview exporter writes rounds: one object per round,
+            # Type=Projectile+Shell, Name=weapons.shells.<ammo>, no Parent,
+            # sampled at ~2 Hz after the spawn frame, no TriggerPressed.
             firing = False
             if burst_start is not None:
                 if t - burst_start < 1.0:
@@ -555,8 +557,7 @@ def build_sample(duration: float = 1200.0, log: Optional[List[str]] = None) -> L
             elif 1200.0 < rng < 3400.0 and gun_bursts < 2 and t - last_burst_end > 1.25:
                 burst_start, firing = t, True
             if firing:
-                player.extra["TriggerPressed"] = 1.0
-                round_accum += 50.0 * DT
+                round_accum += 100.0 * DT
                 n_rounds = int(round_accum)
                 round_accum -= n_rounds
                 tgt_e, tgt_n, tgt_a = 15000.0, 20000.0, 240.0
@@ -566,10 +567,10 @@ def build_sample(duration: float = 1200.0, log: Optional[List[str]] = None) -> L
                 for k in range(n_rounds):
                     rounds_fired += 1
                     sid = new_id()
-                    # Fired k*20 ms ago, so already k*20 ms down range when the
-                    # recorder first sees it - exactly how a 4 Hz sampler observes a
-                    # 50 rds/s stream.
-                    age = k * 0.02
+                    # Fired k*10 ms ago, so already k*10 ms down range when the
+                    # recorder first sees it - how a 4 Hz sampler observes a
+                    # 100 rds/s stream.
+                    age = k * 0.01
                     fire_e, fire_n = player.east - vel_e * age, player.north - vel_n * age
                     fire_a = player.alt - player.vs * age
                     # Dispersion ~5 mil, deterministic; burst 1 walks onto the
@@ -590,18 +591,14 @@ def build_sample(duration: float = 1200.0, log: Optional[List[str]] = None) -> L
                               (aim[2] - fire_a) / flight + 0.5 * G * flight),
                         "kills": gun_bursts == 1 and k == 0 and not any(r.get("kills") for r in shells),
                     }
+                    rnd["born"] = t
                     shells.append(rnd)
-                    # Burst 1 carries Parent; burst 2 is written the way some
-                    # exporters do it - "Bullet", no Parent - so the shooter has
-                    # to be inferred.
-                    text = ({"Name": "M61A1", "Type": "Weapon+Projectile+Shell", "Parent": player.obj_id,
-                             "Coalition": "Allies", "Color": "Blue"} if gun_bursts == 0 else
-                            {"Name": "M61A1", "Type": "Projectile+Bullet", "Coalition": "Allies", "Color": "Blue"})
+                    text = {"Name": "weapons.shells.M61_20_HE", "Type": "Projectile+Shell",
+                            "Coalition": "Allies", "Color": "Blue", "Country": "us"}
                     pe, pn, pa = _round_pos(rnd, t)
                     lon, lat = geo.to_lonlat(pe, pn, FIELD_LON, FIELD_LAT)
                     em.update(sid, (lon, lat, pa, None, None, None), {}, text)
             if rng < 1100.0 or t - state_t > 70.0:
-                player.extra["TriggerPressed"] = 0.0
                 state, state_t = "RTB", t
 
         elif state == "RTB":
@@ -679,25 +676,24 @@ def build_sample(duration: float = 1200.0, log: Optional[List[str]] = None) -> L
             bandit.cmd_tas = 330.0
             bandit.cmd_alt = 7000.0
 
-        # ---- radar antennas ---------------------------------------------------
-        for ent, tgt in ((player, bandit), (bandit, player)):
+        # ---- radar: ACMI semantics - the "beamwidths" are the size of the
+        # volume Tacview draws, centred on RadarAzimuth/RadarElevation (both
+        # relative to the airframe).  Search = the scan volume; single-target
+        # track = a narrow cone on the target.
+        for ent, tgt, half_az in ((player, bandit, 60.0), (bandit, player, 30.0)):
             if ent.extra.get("RadarMode", 0.0) <= 0 or not ent.alive:
                 continue
-            ent.extra["RadarHorizontalBeamwidth"] = 3.5
-            ent.extra["RadarVerticalBeamwidth"] = 3.5
             if ent.extra.get("LockedTargetMode", 0.0) > 0 and tgt.alive:
                 _point_radar(ent, tgt, ent.extra)
+                ent.extra["RadarHorizontalBeamwidth"] = 3.3
+                ent.extra["RadarVerticalBeamwidth"] = 3.3
             else:
-                # Search: +/-60 deg sweep, alternating between two elevation bars.
-                ent.extra["RadarAzimuth"] = _scan(t)
-                ent.extra["RadarElevation"] = 1.75 if int(t / 4.0) % 2 else -1.75
+                ent.extra["RadarAzimuth"] = 0.0
+                ent.extra["RadarElevation"] = -ent.pitch  # level scan centre
+                ent.extra["RadarHorizontalBeamwidth"] = 2 * half_az
+                ent.extra["RadarVerticalBeamwidth"] = 10.0
                 for k in ("LockedTargetAzimuth", "LockedTargetElevation", "LockedTargetRange"):
                     ent.extra.pop(k, None)
-        # SA-11 search radar rotates at 10 rpm.
-        if int(t * 4) % 2 == 0:
-            em.update("304", (None, None, None, None, None, None),
-                      {"RadarAzimuth": ((t * 60.0) % 360.0) - 180.0, "RadarElevation": 8.0,
-                       "RadarHorizontalBeamwidth": 2.0, "RadarVerticalBeamwidth": 20.0}, {})
 
         # ---- wingman: formation takeoff/landing, 250 m line abreast up high --
         blend = min(1.0, player.agl / 300.0)
@@ -779,6 +775,8 @@ def build_sample(duration: float = 1200.0, log: Optional[List[str]] = None) -> L
             if sh.get("seen") is None:
                 sh["seen"] = t  # emitted at spawn this frame
                 continue
+            if round((t - sh["born"]) / DT) % 2:
+                continue  # rounds are sampled at ~2 Hz after spawning
             pe, pn, pa = _round_pos(sh, t)
             lon, lat = geo.to_lonlat(pe, pn, FIELD_LON, FIELD_LAT)
             em.update(sh["id"], (lon, lat, pa, None, None, None), {}, {})

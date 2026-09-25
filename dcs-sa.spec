@@ -8,9 +8,11 @@ a = Analysis(
     pathex=["."],
     datas=[
         ("dcs_sa/web", "dcs_sa/web"),
+        ("dcs_sa/data", "dcs_sa/data"),
         ("dcs-scripts/DCS-SA-Export.lua", "dcs-scripts"),
         ("dcs-scripts/DCS-SA-Hook.lua", "dcs-scripts"),
         ("samples/sample_sortie.acmi", "samples"),
+        ("packaging/dcs-sa.ico", "packaging"),
     ],
     hiddenimports=["webview", "clr_loader", "pythonnet"],
     excludes=["tkinter", "unittest", "pydoc"],

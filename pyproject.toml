@@ -20,4 +20,4 @@ dcs-sa = "dcs_sa.cli:main"
 include = ["dcs_sa*"]
 
 [tool.setuptools.package-data]
-dcs_sa = ["web/*.html", "web/css/*.css", "web/js/*.js"]
+dcs_sa = ["web/*.html", "web/*.png", "web/css/*.css", "web/js/*.js", "web/vendor/**/*", "data/*.json"]

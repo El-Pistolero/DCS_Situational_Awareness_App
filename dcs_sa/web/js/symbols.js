@@ -156,67 +156,106 @@ function drawBullseye(ctx, map, obj) {
 }
 
 /**
- * Default radar search volume when a recording says only "radar on".
- * ACMI carries the antenna direction and beam width but not the scan limits,
- * so airborne radars get a typical fighter search of +/-60 deg azimuth and a
- * few bars of elevation; surface search radars rotate through 360 deg.
+ * Radar search volumes by DCS type name (ACMI Name=): half-angles in degrees.
+ * From DCS's own sensor data and the module manuals: F-16C APG-68 A6 = +/-60,
+ * F/A-18C APG-73 +/-70, FC3 Russian radars scan 60 deg wide, 4 bars ~ +/-5 deg.
+ * Real DCS recordings carry no radar properties, so for other jets this table
+ * is what an "assumed" cone is drawn from.
  */
-export const RADAR_DEFAULTS = {
-  air: { az: 60, el: 6.5, range: 74000, beam: 3.5 },
-  surface: { az: 180, el: 15, range: 90000, beam: 2 },
-};
+const RADAR_TYPES = [
+  [/^F-16/, { az: 60, el: 5 }], [/^FA-18|^F\/A-18/, { az: 70, el: 3.6 }], [/^F-15/, { az: 60, el: 5 }],
+  [/^F-14/, { az: 65, el: 5 }], [/^MiG-29/, { az: 30, el: 5 }], [/^(Su-27|Su-33|J-11)/, { az: 30, el: 5 }],
+  [/^Su-30/, { az: 60, el: 5 }], [/^JF-17/, { az: 60, el: 5 }], [/^M-2000/, { az: 60, el: 5 }],
+  [/^Mirage-F1/, { az: 60, el: 5 }], [/^F-5E/, { az: 45, el: 5 }], [/^MiG-21/, { az: 30, el: 5 }],
+  [/^AJS37/, { az: 60, el: 5 }], [/^MiG-31/, { az: 70, el: 5, range: 200000 }], [/^MiG-25/, { az: 30, el: 5 }],
+  [/^(E-3|A-50|KJ-2000|E-2)/, { az: 180, el: 10, range: 400000, surface: true }],
+];
+const DEFAULT_AIR_RANGE = 74000; // 40 nm display range
 
-export function radarVolume(o) {
-  const v = o.v || {};
-  const surface = !["fixedwing", "rotorcraft", "air"].includes(o.category);
-  const d = surface ? RADAR_DEFAULTS.surface : RADAR_DEFAULTS.air;
-  return {
-    surface,
-    on: isNum(v.RadarMode) && v.RadarMode > 0,
-    range: isNum(v.RadarRange) && v.RadarRange > 0 ? v.RadarRange : d.range,
-    az: d.az,
-    el: d.el,
-    beamAz: isNum(v.RadarAzimuth) ? v.RadarAzimuth : null,
-    beamEl: isNum(v.RadarElevation) ? v.RadarElevation : 0,
-    hbw: isNum(v.RadarHorizontalBeamwidth) && v.RadarHorizontalBeamwidth > 0 ? v.RadarHorizontalBeamwidth : d.beam,
-    vbw: isNum(v.RadarVerticalBeamwidth) && v.RadarVerticalBeamwidth > 0 ? v.RadarVerticalBeamwidth : d.beam,
-  };
+export function radarType(name) {
+  for (const [re, spec] of RADAR_TYPES) if (re.test(name || "")) return spec;
+  return null;
 }
 
-/** Radar search wedge (or ring, for surface radars) and antenna beam. */
-export function drawRadar(ctx, map, obj) {
-  const r = radarVolume(obj);
-  if (!r.on) return;
+/**
+ * The radar volume to draw for an object, from the best source available:
+ *   recorded  - Radar* properties in the recording (ACMI: the beamwidths are the
+ *               volume's full size, angles relative to the airframe)
+ *   dcs       - read live from DCS (your scan zone; every unit's radar on/off)
+ *   assumed   - per-type table, for radar-equipped aircraft in flight
+ * Returns null when nothing should be drawn.
+ */
+export function radarVolume(o, { assumed = true } = {}) {
+  const v = o.v || {};
+  const air = ["fixedwing", "rotorcraft", "air"].includes(o.category);
+  const spec = air ? radarType(o.name) : null;
+  const surfaceSpec = !air;
+  const range = (isNum(v.RadarRange) && v.RadarRange > 0) ? v.RadarRange : (spec && spec.range) || (air ? DEFAULT_AIR_RANGE : 90000);
+
+  if (isNum(v.RadarMode)) {
+    if (v.RadarMode <= 0) return null;
+    const H = v.RadarHorizontalBeamwidth, V = v.RadarVerticalBeamwidth;
+    if (isNum(H) && H > 0) {
+      return {
+        source: "recorded", surface: surfaceSpec || H >= 359, range,
+        az: Math.min(H / 2, 180), el: Math.max((isNum(V) && V > 0 ? V : H) / 2, 0.5),
+        centerAz: isNum(v.RadarAzimuth) ? v.RadarAzimuth : 0, centerEl: isNum(v.RadarElevation) ? v.RadarElevation : 0,
+        roll: isNum(v.RadarRoll) ? v.RadarRoll : 0, bodyFrame: air,
+      };
+    }
+  }
+  if (isNum(v.ScanAz) && v.ScanAz > 0) {
+    return {
+      source: "dcs", surface: false, range, az: v.ScanAz, el: isNum(v.ScanEl) && v.ScanEl > 0 ? v.ScanEl : 5,
+      centerAz: isNum(v.ScanCenterAz) ? v.ScanCenterAz : 0, centerEl: isNum(v.ScanCenterEl) ? v.ScanCenterEl : 0,
+      roll: 0, bodyFrame: false, label: v.ScanLabel,
+    };
+  }
+  const on = isNum(v.RadarMode) ? v.RadarMode > 0 : isNum(v.RadarActive) ? v.RadarActive > 0 : null;
+  if (on === false) return null;
+  if (air && spec) {
+    if (on === null && !assumed) return null;
+    const airborne = !(isNum(o.agl) && o.agl < 20) && !(isNum(o.tas) && o.tas < 40);
+    if (!airborne && !spec.surface) return null;
+    return {
+      // Radar known to be on (recorded mode or DCS unit flag), volume from the type table.
+      source: on === null ? "assumed" : "type", surface: !!spec.surface, range,
+      az: spec.az, el: spec.el, centerAz: 0, centerEl: spec.surface ? spec.el : 0, roll: 0, bodyFrame: false,
+    };
+  }
+  if (!air && on) {
+    // Surface search radar reported on with no geometry: full circle up to 30 deg.
+    return { source: "recorded", surface: true, range, az: 180, el: 15, centerAz: 0, centerEl: 15, roll: 0, bodyFrame: false };
+  }
+  return null;
+}
+
+/** Radar search volume footprint: wedge (air) or ring (surface / 360 deg). */
+export function drawRadar(ctx, map, obj, { assumed = true } = {}) {
+  const r = radarVolume(obj, { assumed });
+  if (!r) return;
   const hdg = isNum(obj.hdg) ? obj.hdg : 0;
-  if (!r.surface && !isNum(obj.hdg)) return;
   const color = sideColor(obj);
   const mpp = map.metersPerPixel();
   const rpx = Math.min(r.range / mpp, 4000);
   const [x, y] = map.project(obj.lon, obj.lat);
+  const guess = r.source === "assumed";
   ctx.save();
-  ctx.fillStyle = withAlpha(color, r.surface ? 0.03 : 0.06);
-  ctx.strokeStyle = withAlpha(color, 0.25);
+  ctx.fillStyle = withAlpha(color, r.surface ? 0.03 : guess ? 0.035 : 0.07);
+  ctx.strokeStyle = withAlpha(color, guess ? 0.3 : 0.45);
   ctx.lineWidth = 1;
+  if (guess) ctx.setLineDash([5, 5]);
   ctx.beginPath();
-  if (r.surface) {
+  if (r.surface || r.az >= 180) {
     ctx.arc(x, y, rpx, 0, TAU);
   } else {
+    const c = hdg + r.centerAz;
     ctx.moveTo(x, y);
-    ctx.arc(x, y, rpx, map.screenAngle(hdg - r.az), map.screenAngle(hdg + r.az));
+    ctx.arc(x, y, rpx, map.screenAngle(c - r.az), map.screenAngle(c + r.az));
     ctx.closePath();
   }
   ctx.fill();
-  if (!r.surface) ctx.stroke();
-  if (r.beamAz !== null) {
-    const az = hdg + r.beamAz;
-    const bw = Math.max(r.hbw, 1.5);
-    ctx.fillStyle = withAlpha(color, 0.28);
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-    ctx.arc(x, y, rpx, map.screenAngle(az - bw / 2), map.screenAngle(az + bw / 2));
-    ctx.closePath();
-    ctx.fill();
-  }
+  ctx.stroke();
   ctx.restore();
 }
 
@@ -289,8 +328,8 @@ export function drawScene(ctx, map, objects, opts = {}) {
     if (o.category === "bullseye") { drawBullseye(ctx, map, o); continue; }
     if (opts.showRings !== false) drawEngagementRing(ctx, map, o);
     const radarMode = opts.showRadar || "focus";
-    if (radarMode === "all" || (radarMode === "focus" && (o.id === opts.focusId || o.id === opts.selectedId))) {
-      drawRadar(ctx, map, o);
+    if (radarMode === "all" || radarMode === "known" || (radarMode === "focus" && (o.id === opts.focusId || o.id === opts.selectedId))) {
+      drawRadar(ctx, map, o, { assumed: radarMode !== "known" });
     }
   }
   if (opts.showTrails !== false) {

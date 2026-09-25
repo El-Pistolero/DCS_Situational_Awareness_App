@@ -1,0 +1,941 @@
+{
+"source": "Tacview object database (github.com/Vyrtuoz/Tacview, Database/Default Properties, commit e9e00a2)",
+"units": "metres",
+"entries": [
+{
+"name": "M163",
+"range": 2600,
+"role": "AAA"
+},
+{
+"name": "Vulcan",
+"range": 2600,
+"role": "AAA"
+},
+{
+"name": "K200-AD",
+"range": 2600,
+"role": "AAA"
+},
+{
+"name": "M1 37mm",
+"range": 4800,
+"role": "AAA"
+},
+{
+"name": "M45 Quadmount",
+"range": 1800,
+"role": "AAA"
+},
+{
+"name": "Bofors 40",
+"range": 7160,
+"role": "AAA"
+},
+{
+"name": "Gepard",
+"range": 3500,
+"role": "AAA"
+},
+{
+"name": "ZPU-2",
+"range": 1400,
+"role": "AAA"
+},
+{
+"name": "ZU-23",
+"range": 2500,
+"role": "AAA"
+},
+{
+"name": "tt_ZU-23",
+"range": 2500,
+"role": "AAA"
+},
+{
+"name": "ZU-23-2",
+"range": 2500,
+"role": "AAA"
+},
+{
+"name": "ZU-23 Closed",
+"range": 2500,
+"role": "AAA"
+},
+{
+"name": "ZU-23 Emplacement",
+"range": 2500,
+"role": "AAA"
+},
+{
+"name": "ZU-23 Closed Insurgent",
+"range": 2500,
+"role": "AAA"
+},
+{
+"name": "Sparka",
+"range": 3500,
+"role": "AAA",
+"vrange": 2500
+},
+{
+"name": "ZSU-57-2",
+"range": 3500,
+"role": "AAA",
+"vrange": 2500
+},
+{
+"name": "Shilka",
+"range": 3500,
+"role": "AAA",
+"vrange": 2500
+},
+{
+"name": "ZSU-23-4",
+"range": 3500,
+"role": "AAA",
+"vrange": 2500
+},
+{
+"name": "ZSU-23-4 Shilka",
+"range": 3500,
+"role": "AAA",
+"vrange": 2500
+},
+{
+"name": "Ural ZU-23",
+"range": 2500,
+"role": "AAA"
+},
+{
+"name": "Ural ZU-23-2",
+"range": 2500,
+"role": "AAA"
+},
+{
+"name": "Ural-375 ZU-23",
+"range": 2500,
+"role": "AAA"
+},
+{
+"name": "Ural-375 ZU-23-2",
+"range": 2500,
+"role": "AAA"
+},
+{
+"name": "ZU-23 Insurgent",
+"range": 2500,
+"role": "AAA"
+},
+{
+"name": "HL_ZU-23",
+"range": 2500,
+"role": "AAA"
+},
+{
+"name": "KS-12",
+"range": 4000,
+"role": "AAA"
+},
+{
+"name": "Type-72",
+"range": 4000,
+"role": "AAA"
+},
+{
+"name": "KS-19",
+"range": 4000,
+"role": "AAA"
+},
+{
+"name": "S-60",
+"range": 4000,
+"role": "AAA"
+},
+{
+"name": "M1939",
+"range": 2500,
+"role": "AAA"
+},
+{
+"name": "M-1939",
+"range": 2500,
+"role": "AAA"
+},
+{
+"name": "Flak 18",
+"range": 14700,
+"role": "AAA (WWII flak)"
+},
+{
+"name": "Flak 30",
+"range": 2000,
+"role": "AAA (WWII flak)"
+},
+{
+"name": "Flak 36",
+"range": 14700,
+"role": "AAA (WWII flak)"
+},
+{
+"name": "Flak 37",
+"range": 14000,
+"role": "AAA (WWII flak)"
+},
+{
+"name": "Flak 38",
+"range": 2000,
+"role": "AAA (WWII flak)"
+},
+{
+"name": "Flakvierling 38",
+"range": 2000,
+"role": "AAA (WWII flak)"
+},
+{
+"name": "Flak 41",
+"range": 2000,
+"role": "AAA (WWII flak)"
+},
+{
+"name": "QF_37_AA",
+"range": 4000,
+"role": "AAA (WWII flak)"
+},
+{
+"name": "Avenger",
+"range": 7000,
+"role": "SAM launcher"
+},
+{
+"name": "M1097 Avenger",
+"range": 7000,
+"role": "SAM launcher"
+},
+{
+"name": "M6 Linebacker",
+"range": 4250,
+"role": "SAM launcher"
+},
+{
+"name": "M48 Chaparral",
+"range": 5750,
+"role": "SAM launcher"
+},
+{
+"name": "Soldier stinger",
+"range": 4200,
+"role": "MANPADS"
+},
+{
+"name": "FIM-92",
+"range": 4200,
+"role": "MANPADS"
+},
+{
+"name": "Patriot str",
+"range": 58000,
+"role": "SAM search and tracking radar"
+},
+{
+"name": "Hawk tr",
+"range": 45000,
+"role": "SAM tracking radar"
+},
+{
+"name": "NASAMS_Radar_MPQ64F1",
+"range": 10000,
+"role": "SAM search and tracking radar"
+},
+{
+"name": "rapier_fsa_optical_tracker_unit",
+"range": 8000,
+"role": "SAM tracking radar"
+},
+{
+"name": "Roland ADS",
+"range": 5500,
+"role": "SAM launcher"
+},
+{
+"name": "Aster 30 (STR)",
+"range": 65000,
+"role": "SAM search and tracking radar"
+},
+{
+"name": "SAMP/T (STR)",
+"range": 65000,
+"role": "SAM search and tracking radar"
+},
+{
+"name": "Mamba (STR)",
+"range": 65000,
+"role": "SAM search and tracking radar"
+},
+{
+"name": "Crotale",
+"range": 8000,
+"role": "SAM launcher"
+},
+{
+"name": "Crotale NG",
+"range": 8000,
+"role": "SAM launcher"
+},
+{
+"name": "SNR-75",
+"range": 33000,
+"role": "SAM tracking radar"
+},
+{
+"name": "SA-2 TR",
+"range": 33000,
+"role": "SAM tracking radar"
+},
+{
+"name": "snr s-125 tr",
+"range": 14000,
+"role": "SAM tracking radar"
+},
+{
+"name": "Low Blow",
+"range": 14000,
+"role": "SAM tracking radar"
+},
+{
+"name": "SA-3 TR",
+"range": 14000,
+"role": "SAM tracking radar"
+},
+{
+"name": "1S32",
+"range": 34000,
+"role": "SAM search and tracking radar"
+},
+{
+"name": "Pat Hand",
+"range": 34000,
+"role": "SAM search and tracking radar"
+},
+{
+"name": "SA-4 TR",
+"range": 34000,
+"role": "SAM search and tracking radar"
+},
+{
+"name": "5N62",
+"range": 180000,
+"role": "SAM tracking radar"
+},
+{
+"name": "SA-5 TR",
+"range": 180000,
+"role": "SAM tracking radar"
+},
+{
+"name": "1S91",
+"range": 20000,
+"role": "SAM search and tracking radar"
+},
+{
+"name": "Kub 1S91 str",
+"range": 20000,
+"role": "SAM search and tracking radar"
+},
+{
+"name": "SA-6 STR",
+"range": 20000,
+"role": "SAM search and tracking radar"
+},
+{
+"name": "SA-7",
+"range": 4200,
+"role": "MANPADS"
+},
+{
+"name": "9K32",
+"range": 4200,
+"role": "MANPADS"
+},
+{
+"name": "Strela-2",
+"range": 4200,
+"role": "MANPADS"
+},
+{
+"name": "SA-8",
+"range": 16000,
+"role": "SAM launcher"
+},
+{
+"name": "SA-8 Gecko",
+"range": 16000,
+"role": "SAM launcher"
+},
+{
+"name": "Osa 9A33",
+"range": 16000,
+"role": "SAM launcher"
+},
+{
+"name": "9P31",
+"range": 4200,
+"role": "SAM launcher"
+},
+{
+"name": "Strela-1 9P31",
+"range": 4200,
+"role": "SAM launcher"
+},
+{
+"name": "9K31",
+"range": 4200,
+"role": "SAM launcher"
+},
+{
+"name": "S-300PS 40B6M tr",
+"range": 55000,
+"role": "SAM tracking radar"
+},
+{
+"name": "SA-10 TR",
+"range": 55000,
+"role": "SAM tracking radar"
+},
+{
+"name": "Flap Lid",
+"range": 55000,
+"role": "SAM tracking radar"
+},
+{
+"name": "30N6",
+"range": 55000,
+"role": "SAM tracking radar"
+},
+{
+"name": "SA-11 Buk SR 9S18M1",
+"range": 50000,
+"role": "SAM search radar"
+},
+{
+"name": "SA-11 SR",
+"range": 50000,
+"role": "SAM search radar"
+},
+{
+"name": "SA-13",
+"range": 4200,
+"role": "SAM launcher"
+},
+{
+"name": "Strela-10",
+"range": 4200,
+"role": "SAM launcher"
+},
+{
+"name": "Strela-10M3",
+"range": 4200,
+"role": "SAM launcher"
+},
+{
+"name": "SA-14",
+"range": 5500,
+"role": "MANPADS"
+},
+{
+"name": "9K34",
+"range": 5500,
+"role": "MANPADS"
+},
+{
+"name": "Strela-3",
+"range": 5500,
+"role": "MANPADS"
+},
+{
+"name": "Tor 9A331",
+"range": 13000,
+"role": "SAM launcher"
+},
+{
+"name": "Gimlet",
+"range": 3000,
+"role": "MANPADS"
+},
+{
+"name": "SA-16",
+"range": 3000,
+"role": "MANPADS"
+},
+{
+"name": "SA-16 Gimlet",
+"range": 3000,
+"role": "MANPADS"
+},
+{
+"name": "Grouse",
+"range": 4000,
+"role": "MANPADS"
+},
+{
+"name": "SA-18",
+"range": 4000,
+"role": "MANPADS"
+},
+{
+"name": "SA-18 Grouse",
+"range": 4000,
+"role": "MANPADS"
+},
+{
+"name": "Igla manpad INS",
+"range": 4000,
+"role": "MANPADS"
+},
+{
+"name": "SA-19",
+"range": 7000,
+"role": "SAM/AAA gun-missile system"
+},
+{
+"name": "SA-19 Grison",
+"range": 7000,
+"role": "SAM/AAA gun-missile system"
+},
+{
+"name": "2S6 Tunguska",
+"range": 7000,
+"role": "SAM/AAA gun-missile system"
+},
+{
+"name": "2K22 Tunguska",
+"range": 7000,
+"role": "SAM/AAA gun-missile system"
+},
+{
+"name": "Tunguska",
+"range": 7000,
+"role": "SAM/AAA gun-missile system"
+},
+{
+"name": "Grinch",
+"range": 4000,
+"role": "MANPADS"
+},
+{
+"name": "SA-24",
+"range": 4000,
+"role": "MANPADS"
+},
+{
+"name": "SA-24 Grinch",
+"range": 4000,
+"role": "MANPADS"
+},
+{
+"name": "HQ-7 LN EO",
+"range": 5000,
+"role": "SAM launcher"
+},
+{
+"name": "HQ-7 STR",
+"range": 10200,
+"role": "SAM search and tracking radar"
+},
+{
+"name": "HQ-9 STR",
+"range": 200000,
+"role": "SAM search and tracking radar"
+},
+{
+"name": "HQ-9A STR",
+"range": 250000,
+"role": "SAM search and tracking radar"
+},
+{
+"name": "HQ-9B STR",
+"range": 300000,
+"role": "SAM search and tracking radar"
+},
+{
+"name": "LST Mk2",
+"range": 6000,
+"role": "Naval ship"
+},
+{
+"name": "FFG-7",
+"range": 45000,
+"role": "Naval ship"
+},
+{
+"name": "Oliver Hazard Perry",
+"range": 45000,
+"role": "Naval ship"
+},
+{
+"name": "Perry",
+"range": 45000,
+"role": "Naval ship"
+},
+{
+"name": "CG-47",
+"range": 52000,
+"role": "Naval ship"
+},
+{
+"name": "Ticonderoga",
+"range": 52000,
+"role": "Naval ship"
+},
+{
+"name": "TICONDEROG",
+"range": 52000,
+"role": "Naval ship"
+},
+{
+"name": "Burke",
+"range": 55000,
+"role": "Naval ship"
+},
+{
+"name": "CVN-70",
+"range": 13000,
+"role": "Naval ship"
+},
+{
+"name": "Vinson",
+"range": 13000,
+"role": "Naval ship"
+},
+{
+"name": "CVN-71",
+"range": 13000,
+"role": "Naval ship"
+},
+{
+"name": "Roosevelt",
+"range": 13000,
+"role": "Naval ship"
+},
+{
+"name": "CVN-72",
+"range": 13000,
+"role": "Naval ship"
+},
+{
+"name": "Lincoln",
+"range": 13000,
+"role": "Naval ship"
+},
+{
+"name": "CVN-73",
+"range": 13000,
+"role": "Naval ship"
+},
+{
+"name": "Washington",
+"range": 13000,
+"role": "Naval ship"
+},
+{
+"name": "CVN-74",
+"range": 26000,
+"role": "Naval ship"
+},
+{
+"name": "Stennis",
+"range": 26000,
+"role": "Naval ship"
+},
+{
+"name": "CVN-75",
+"range": 26000,
+"role": "Naval ship"
+},
+{
+"name": "Truman",
+"range": 26000,
+"role": "Naval ship"
+},
+{
+"name": "CVN-76",
+"range": 26000,
+"role": "Naval ship"
+},
+{
+"name": "Reagan",
+"range": 26000,
+"role": "Naval ship"
+},
+{
+"name": "CVN-77",
+"range": 26000,
+"role": "Naval ship"
+},
+{
+"name": "Bush",
+"range": 26000,
+"role": "Naval ship"
+},
+{
+"name": "Admiral Kuznetsov",
+"range": 11000,
+"role": "Naval ship"
+},
+{
+"name": "Kuznetsov",
+"range": 11000,
+"role": "Naval ship"
+},
+{
+"name": "KUZNECOW",
+"range": 11000,
+"role": "Naval ship"
+},
+{
+"name": "CV_1143_5",
+"range": 11000,
+"role": "Naval ship"
+},
+{
+"name": "Varyag",
+"range": 11000,
+"role": "Naval ship"
+},
+{
+"name": "Liaoning",
+"range": 11000,
+"role": "Naval ship"
+},
+{
+"name": "La Combattante II",
+"range": 3300,
+"role": "Naval ship"
+},
+{
+"name": "P265",
+"range": 2300,
+"role": "Naval ship"
+},
+{
+"name": "Dumbarton Castle",
+"range": 2300,
+"role": "Naval ship"
+},
+{
+"name": "Castle",
+"range": 2300,
+"role": "Naval ship"
+},
+{
+"name": "F12",
+"range": 7500,
+"role": "Naval ship"
+},
+{
+"name": "Achilles",
+"range": 7500,
+"role": "Naval ship"
+},
+{
+"name": "F57",
+"range": 7500,
+"role": "Naval ship"
+},
+{
+"name": "Andromeda",
+"range": 7500,
+"role": "Naval ship"
+},
+{
+"name": "F72",
+"range": 7500,
+"role": "Naval ship"
+},
+{
+"name": "Ariadne",
+"range": 7500,
+"role": "Naval ship"
+},
+{
+"name": "Type 23",
+"range": 50000,
+"role": "Naval ship"
+},
+{
+"name": "Duke Class",
+"range": 50000,
+"role": "Naval ship"
+},
+{
+"name": "Norfolk",
+"range": 50000,
+"role": "Naval ship"
+},
+{
+"name": "Ropucha",
+"range": 5500,
+"role": "Naval ship"
+},
+{
+"name": "Project 775",
+"range": 5500,
+"role": "Naval ship"
+},
+{
+"name": "BDK 775",
+"range": 5500,
+"role": "Naval ship"
+},
+{
+"name": "Grisha",
+"range": 12000,
+"role": "Naval ship"
+},
+{
+"name": "Project 1124",
+"range": 12000,
+"role": "Naval ship"
+},
+{
+"name": "Albatros",
+"range": 12000,
+"role": "Naval ship"
+},
+{
+"name": "Molniya",
+"range": 4200,
+"role": "Naval ship"
+},
+{
+"name": "Project 1242",
+"range": 4200,
+"role": "Naval ship"
+},
+{
+"name": "Project 1241",
+"range": 4200,
+"role": "Naval ship"
+},
+{
+"name": "Rezkiy",
+"range": 13500,
+"role": "Naval ship"
+},
+{
+"name": "Rezky",
+"range": 13500,
+"role": "Naval ship"
+},
+{
+"name": "Krivak II",
+"range": 13500,
+"role": "Naval ship"
+},
+{
+"name": "Project 1135M",
+"range": 13500,
+"role": "Naval ship"
+},
+{
+"name": "Neustrashimy",
+"range": 15500,
+"role": "Naval ship"
+},
+{
+"name": "Neustrashimyy",
+"range": 15500,
+"role": "Naval ship"
+},
+{
+"name": "Neustrash",
+"range": 15500,
+"role": "Naval ship"
+},
+{
+"name": "Pyotr",
+"range": 95000,
+"role": "Naval ship"
+},
+{
+"name": "Piotr",
+"range": 95000,
+"role": "Naval ship"
+},
+{
+"name": "Moskva",
+"range": 48000,
+"role": "Naval ship"
+},
+{
+"name": "Moscow",
+"range": 48000,
+"role": "Naval ship"
+},
+{
+"name": "HMS Invincible",
+"range": 35000,
+"role": "Naval ship"
+},
+{
+"name": "Invincible",
+"range": 35000,
+"role": "Naval ship"
+},
+{
+"name": "R05",
+"range": 35000,
+"role": "Naval ship"
+},
+{
+"name": "052B",
+"range": 35000,
+"role": "Naval ship"
+},
+{
+"name": "Luyang I",
+"range": 35000,
+"role": "Naval ship"
+},
+{
+"name": "052C",
+"range": 86000,
+"role": "Naval ship"
+},
+{
+"name": "Luyang II",
+"range": 86000,
+"role": "Naval ship"
+},
+{
+"name": "052D",
+"range": 86000,
+"role": "Naval ship"
+},
+{
+"name": "Luyang III",
+"range": 86000,
+"role": "Naval ship"
+},
+{
+"name": "054A",
+"range": 49000,
+"role": "Naval ship"
+},
+{
+"name": "Jiangkai II",
+"range": 49000,
+"role": "Naval ship"
+},
+{
+"name": "071",
+"range": 3000,
+"role": "Naval ship"
+},
+{
+"name": "Yuzhao",
+"range": 3000,
+"role": "Naval ship"
+}
+]
+}

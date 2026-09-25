@@ -243,10 +243,64 @@ local function build_lock()
   local locked = call("LoGetLockedTargetInformation")
   if type(locked) ~= "table" or not locked[1] then return nil end
   local t = locked[1]
+  -- fim/fin are the horizontal/vertical viewing angles in own body axes;
+  -- delta_psi is the target's aspect, not where it is.
   return {
     id = t.ID, distance = num(t.distance), closure = num(t.convergence_velocity),
-    mach = num(t.mach), azimuth = deg(t.delta_psi),
+    mach = num(t.mach), azimuth = deg(t.fim), elevation = deg(t.fin), aspect = deg(t.delta_psi),
   }
+end
+
+-- F-16C: the FCR's scan width (A6/A3/A2/A1) and bars (4B/3B/2B/1B) as shown
+-- on the MFDs.  Clickable modules do not fill LoGetSightingSystemInfo, but the
+-- MFD text is exported; node names change between patches, so match loosely.
+local F16_AZ = { A6 = 60, A3 = 30, A2 = 25, A1 = 10 }
+local function f16_fcr()
+  if type(list_indication) ~= "function" then return nil end
+  local az, bars, standby, seen = nil, nil, false, false
+  for _, mfd in ipairs({ 4, 5 }) do
+    local ok, text = pcall(list_indication, mfd)
+    if ok and type(text) == "string" and string.find(text, "FCR", 1, true) then
+      seen = true
+      for piece in string.gmatch(text, "[^\n]+") do
+        local v = string.match(piece, "^%s*(A[1236])%s*$")
+        if v and not az then az = F16_AZ[v] end
+        local b = string.match(piece, "^%s*([1-4])B%s*$")
+        if b and not bars then bars = tonumber(b) end
+        if string.find(piece, "STBY", 1, true) or string.find(piece, "OFF", 1, true) == 1 then standby = true end
+      end
+    end
+  end
+  if not seen or not az then return nil end
+  bars = bars or 4
+  -- Elevation half-angle from the bar pattern: 2.2 deg bar spacing, 3.2 deg beam.
+  return { source = "F-16C FCR", azHalf = az, elHalf = ((bars - 1) * 2.2 + 3.2) / 2,
+    centerAz = 0, centerEl = 0, bars = bars, on = not standby, label = "A" .. (az == 60 and 6 or az == 30 and 3 or az == 25 and 2 or 1) .. " " .. bars .. "B" }
+end
+
+-- Your radar's actual scan zone.  FC3 aircraft export it through
+-- LoGetSightingSystemInfo (angles in radians; size taken as the full extent).
+local function build_scan(me)
+  if type(LoIsSensorExportAllowed) == "function" then
+    local ok, allowed = pcall(LoIsSensorExportAllowed)
+    if ok and allowed == false then return nil end
+  end
+  local s = call("LoGetSightingSystemInfo")
+  if type(s) == "table" and type(s.ScanZone) == "table" then
+    local size, pos = s.ScanZone.size or {}, s.ScanZone.position or {}
+    local az = num(size.azimuth)
+    if az and az > 0 then
+      local el = num(size.elevation)
+      return {
+        source = "ScanZone", azHalf = deg(az) / 2, elHalf = el and deg(el) / 2 or nil,
+        centerAz = deg(pos.azimuth) or 0, centerEl = deg(pos.elevation) or 0,
+        range = num(pick(s, "scale", "distance")), on = s.radar_on,
+        covMin = num(pick(s.ScanZone, "coverage_H", "min")), covMax = num(pick(s.ScanZone, "coverage_H", "max")),
+      }
+    end
+  end
+  if me and type(me.name) == "string" and string.find(me.name, "F-16", 1, true) then return f16_fcr() end
+  return nil
 end
 
 local function build_world(me)
@@ -262,11 +316,14 @@ local function build_world(me)
       if dlat * dlat + dlon * dlon < DCSSA.world_range * DCSSA.world_range then
         local hdg = deg(o.Heading)
         if hdg and hdg < 0 then hdg = hdg + 360 end
+        local flags = type(o.Flags) == "table" and o.Flags or {}
         out[#out + 1] = {
           id = id, name = o.Name, pilot = o.UnitName, group = o.GroupName,
           coalition = COALITION[o.CoalitionID] or o.Coalition,
           type = o.Type, lat = o.LatLongAlt.Lat, lon = o.LatLongAlt.Long, alt = o.LatLongAlt.Alt,
           hdg = hdg, pitch = deg(o.Pitch), bank = deg(o.Bank),
+          -- DCS's own "radar is on" flag for this unit (pointing is not exported).
+          radar = flags.RadarActive, jamming = flags.Jamming, human = flags.Human,
         }
         if #out >= DCSSA.world_max then break end
       end
@@ -290,6 +347,7 @@ function DCSSA.snapshot(t)
     cm = call("LoGetSnares"),
     rwr = build_rwr(),
     lock = build_lock(),
+    scan = build_scan(me),
   }
   if t >= next_world then
     next_world = t + DCSSA.world_every

@@ -5,14 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DCS SA Debrief</title>
 <meta name="description" content="Tacview / ACMI flight recording debrief for DCS World">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='none' stroke='%23ffd166' stroke-width='2'/%3E%3Cpath d='M16 5 L19 17 L27 20 L27 22 L18 20 L17 26 L20 28 L20 29 L16 28 L12 29 L12 28 L15 26 L14 20 L5 22 L5 20 L13 17 Z' fill='%234ea8ff'/%3E%3C/svg%3E">
+<link rel="icon" type="image/png" href="/static/favicon-32.png">
 <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body>
 <div class="app" id="app">
   <header class="topbar">
     <div class="brand">
-      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="none" stroke="#ffd166" stroke-width="2"/><path d="M16 5 L19 17 L27 20 L27 22 L18 20 L17 26 L20 28 L20 29 L16 28 L12 29 L12 28 L15 26 L14 20 L5 22 L5 20 L13 17 Z" fill="#4ea8ff"/></svg>
+      <img class="logo" src="/static/icon.png" alt="">
       DCS SA
     </div>
     <button id="btnLibrary" title="Open another recording">Recordings</button>
@@ -70,8 +70,9 @@
       </div>
       <div class="row">
         <select id="radarSel" title="Radar cones">
-          <option value="all">Radar: all jets</option>
-          <option value="focus">Radar: selected</option>
+          <option value="all">Radars: all (incl. assumed)</option>
+          <option value="known">Radars: known only</option>
+          <option value="focus">Radar: selected jet</option>
           <option value="none">Radar: off</option>
         </select>
       </div>

@@ -40,12 +40,27 @@ jobs:
           Start-Sleep -Seconds 8
           if ($p.HasExited) { throw "DCS-SA.exe exited early with code $($p.ExitCode)" }
           Stop-Process $p
+      - name: Build installer (desktop + Start menu icons)
+        shell: pwsh
+        run: |
+          $iscc = Get-Command iscc -ErrorAction SilentlyContinue
+          if (-not $iscc) {
+            choco install innosetup -y --no-progress
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          } else { $iscc = $iscc.Source }
+          $version = (python -c "import dcs_sa; print(dcs_sa.__version__)")
+          & $iscc "/DAppVersion=$version" packaging\installer.iss
+          if (-not (Test-Path dist\DCS-SA-Setup.exe)) { throw "installer was not built" }
       - uses: actions/upload-artifact@v4
         with:
           name: DCS-SA-windows
-          path: dist/DCS-SA.exe
+          path: |
+            dist/DCS-SA-Setup.exe
+            dist/DCS-SA.exe
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/DCS-SA.exe
+          files: |
+            dist/DCS-SA-Setup.exe
+            dist/DCS-SA.exe

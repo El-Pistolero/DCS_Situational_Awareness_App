@@ -157,9 +157,6 @@ function radarGeometry(azDeg, elDeg) {
   return g;
 }
 
-/** Unit beam: cone of radius 1 at distance 1 along -Z, apex at the origin. */
-const BEAM_GEOM = new THREE.ConeGeometry(1, 1, 16, 1, true).translate(0, -0.5, 0).rotateX(Math.PI / 2);
-
 // ---------------------------------------------------------------------------
 
 export class Scene3D {
@@ -585,7 +582,7 @@ export class Scene3D {
     e.label.remove();
     this._pickables = this._pickables.filter((m) => m.userData.id !== id);
     const rd = this.radars.get(id);
-    if (rd) { this.scene.remove(rd.vol, rd.beamGroup); rd.mats.forEach((m) => m.dispose()); this.radars.delete(id); }
+    if (rd) { this.scene.remove(rd.outer); rd.mats.forEach((m) => m.dispose()); this.radars.delete(id); }
     this.objects.delete(id);
   }
 
@@ -695,52 +692,47 @@ export class Scene3D {
         if (mode === "focus" && o.id !== focusId && o.id !== selectedId) continue;
         const e = this.objects.get(o.id);
         if (!e?.pos || o.dead) continue;
-        const r = radarVolume(o);
-        if (!r.on) continue;
-        if (!r.surface && !isNum(o.hdg)) continue;
+        const r = radarVolume(o, { assumed: mode !== "known" });
+        if (!r) continue;
         shown.add(o.id);
+        const guess = r.source === "assumed";
         let rd = this.radars.get(o.id);
-        const key = `${r.az}/${r.el}`;
+        const key = `${r.az}/${r.el}/${guess}`;
         if (!rd || rd.key !== key) {
-          if (rd) { this.scene.remove(rd.vol, rd.beamGroup); rd.mats.forEach((m) => m.dispose()); }
+          if (rd) { this.scene.remove(rd.outer); rd.mats.forEach((m) => m.dispose()); }
           const color = new THREE.Color(e.color);
           const g = radarGeometry(r.az, r.el);
-          const fillMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: r.surface ? 0.015 : 0.06, depthWrite: false, side: THREE.DoubleSide });
-          const edgeMat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: r.surface ? 0.18 : 0.35, depthWrite: false });
-          // A surface search radar's fan beam sweeps 360 deg out to ~90 km; keep it a
-          // quiet sweep so it does not drown out the fighters' beams.
-          const beamMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: r.surface ? 0.06 : 0.2, depthWrite: false, side: THREE.DoubleSide });
-          const vol = new THREE.Group();
-          vol.add(new THREE.Mesh(g.fill, fillMat), new THREE.LineSegments(g.edges, edgeMat));
-          const beamGroup = new THREE.Group();
-          const beam = new THREE.Mesh(BEAM_GEOM, beamMat);
-          beamGroup.add(beam);
-          this.scene.add(vol, beamGroup);
-          rd = { key, vol, beamGroup, beam, mats: [fillMat, edgeMat, beamMat] };
+          const fillMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: r.surface ? 0.015 : guess ? 0.03 : 0.07, depthWrite: false, side: THREE.DoubleSide });
+          // Assumed volumes get dashed outlines so they never pass for data.
+          const edgeMat = guess
+            ? new THREE.LineDashedMaterial({ color, transparent: true, opacity: 0.35, depthWrite: false, dashSize: 0.025, gapSize: 0.02 })
+            : new THREE.LineBasicMaterial({ color, transparent: true, opacity: r.surface ? 0.18 : 0.45, depthWrite: false });
+          const outer = new THREE.Group();
+          const inner = new THREE.Group();
+          const edges = new THREE.LineSegments(g.edges, edgeMat);
+          if (guess) edges.computeLineDistances();
+          inner.add(new THREE.Mesh(g.fill, fillMat), edges);
+          outer.add(inner);
+          this.scene.add(outer);
+          rd = { key, outer, inner, mats: [fillMat, edgeMat] };
           this.radars.set(o.id, rd);
         }
-        const hdg = (isNum(o.hdg) ? o.hdg : 0) * D2R;
-        // Scan volume: heading-referenced, horizon-stabilised (surface search
-        // radars cover 0..2*el above the horizon).
-        rd.vol.position.copy(e.pos);
-        rd.vol.rotation.set(r.surface ? r.el * D2R : 0, -hdg, 0, "YXZ");
-        rd.vol.scale.setScalar(r.range);
-        rd.vol.visible = true;
-        // Antenna beam: azimuth/elevation relative to the airframe.
-        if (r.beamAz !== null) {
-          const pitch = r.surface || !isNum(o.pitch) ? 0 : o.pitch;
-          rd.beamGroup.position.copy(e.pos);
-          rd.beamGroup.rotation.set((pitch + r.beamEl) * D2R, -(hdg + r.beamAz * D2R), 0, "YXZ");
-          rd.beam.scale.set(Math.tan((r.hbw / 2) * D2R) * r.range, Math.tan((r.vbw / 2) * D2R) * r.range, r.range);
-          rd.beamGroup.visible = true;
+        const hdg = isNum(o.hdg) ? o.hdg : 0;
+        rd.outer.position.copy(e.pos);
+        if (r.bodyFrame) {
+          // ACMI radar angles are relative to the airframe: aircraft attitude
+          // first, then the radar's own azimuth/elevation/roll.
+          rd.outer.rotation.set((isNum(o.pitch) ? o.pitch : 0) * D2R, -hdg * D2R, -(isNum(o.roll) ? o.roll : 0) * D2R, "YXZ");
         } else {
-          rd.beamGroup.visible = false;
+          // Search volumes are roll/pitch stabilised: heading only.
+          rd.outer.rotation.set(0, -hdg * D2R, 0, "YXZ");
         }
+        rd.inner.rotation.set(r.centerEl * D2R, -r.centerAz * D2R, -(r.roll || 0) * D2R, "YXZ");
+        rd.outer.scale.setScalar(r.range);
+        rd.outer.visible = true;
       }
     }
-    for (const [id, rd] of this.radars) {
-      if (!shown.has(id)) { rd.vol.visible = false; rd.beamGroup.visible = false; }
-    }
+    for (const [id, rd] of this.radars) if (!shown.has(id)) rd.outer.visible = false;
   }
 
   // -- gun rounds ----------------------------------------------------------------------

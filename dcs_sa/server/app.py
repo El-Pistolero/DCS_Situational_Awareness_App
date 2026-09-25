@@ -29,6 +29,7 @@ from ..telemetry.replay import ReplaySource
 from .store import RecordingStore
 from .tiles import TileCache
 from ..dcsmap import DcsMapStore
+from ..flightlog import FlightRecorder
 
 log = logging.getLogger(__name__)
 
@@ -51,10 +52,22 @@ class LiveManager:
         if not self.cfg.bridge_enabled:
             return None
         def on_packet(p):
+            kind = p.get("type")
+            rec = getattr(self, "recorder", None)
+            if kind == "dcs-events":
+                events = [e for e in (p.get("events") or []) if isinstance(e, dict)]
+                self.world.on_dcs_events(events)
+                if rec is not None:
+                    rec.on_events(events)
+                return
             dcsmap = getattr(self, "dcsmap", None)
+            if kind == "dcs-hook" and rec is not None:
+                rec.on_hook_hello(p)
             if dcsmap is not None and dcsmap.on_packet(p):
                 return
             self.world.ingest_bridge(p)
+            if rec is not None:
+                rec.on_bridge(p)
 
         try:
             self.bridge = DcsBridgeListener(on_packet, self.cfg.bridge_host, self.cfg.bridge_port)
@@ -106,6 +119,9 @@ class LiveManager:
         self._stop_source()
         if self.bridge:
             self.bridge.stop()
+        rec = getattr(self, "recorder", None)
+        if rec is not None:
+            rec.close()
 
 
 class App:
@@ -119,7 +135,10 @@ class App:
         self.profile = read_profile()
         self.tiles = TileCache(str(Path(cfg.upload_dir).parent / "tilecache"))
         self.dcsmap = DcsMapStore(str(Path(cfg.upload_dir).parent / "tilecache" / "dcs"))
+        self.store.extras = lambda: {"flightlog_dir": self.flightlog_dir, "airbases": self.dcsmap.airbases}
         self.live.dcsmap = self.dcsmap
+        self.flightlog_dir = str(Path(cfg.upload_dir).parent / "flightlogs")
+        self.live.recorder = FlightRecorder(self.flightlog_dir)
         # No name configured: use the active DCS logbook pilot.
         if not cfg.player_names and self.profile.get("player"):
             cfg.player_names = [str(self.profile["player"])]
@@ -247,6 +266,13 @@ def make_handler(app: App):
                         app.open_live_window()
                         return self._json({"ok": True})
                     return self._json({"ok": False})
+                if path == "/api/shortcut":
+                    from ..shortcut import install_shortcuts
+
+                    try:
+                        return self._json({"ok": True, "created": install_shortcuts()})
+                    except (OSError, ValueError) as exc:
+                        return self._json({"ok": False, "error": str(exc)}, 500)
                 if path == "/api/install-bridge":
                     from ..dcs_profile import install_bridge
 

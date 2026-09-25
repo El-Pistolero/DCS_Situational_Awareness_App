@@ -45,12 +45,14 @@ class SampleStrafe(unittest.TestCase):
 
     def test_bursts_grouped_and_attributed(self):
         bursts = self.report.bursts
-        self.assertEqual([b.rounds for b in bursts], [50, 50])
-        # Burst 2 was written without Parent (the "Bullet" style); the shooter
-        # must still be the F-16 that was there when the rounds appeared.
+        self.assertEqual([b.rounds for b in bursts], [100, 100])
+        # Like real DCS output, no round carries Parent: the shooter is the
+        # F-16 that was there when each round appeared.
+        self.assertFalse(any(t.props.get("Parent") for t in self.rec.tracks.values() if t.category == "round"))
         self.assertTrue(all(b.launcher_id == "101" for b in bursts))
         for b in bursts:
-            self.assertAlmostEqual(b.fire_rate, 50.0, delta=3.0)
+            self.assertAlmostEqual(b.fire_rate, 100.0, delta=5.0)
+            self.assertEqual(b.weapon_name, "M61A1 Vulcan")
 
     def test_kill_and_rounds_on_target(self):
         walk, kill = self.report.bursts
@@ -83,32 +85,43 @@ class SampleStrafe(unittest.TestCase):
 
 
 class AirToAirGunKill(unittest.TestCase):
-    """Rounds sampled only every 0.5 s (500 m apart) must still hit their target."""
+    """A guns pass written the way DCS writes it: one object per round,
+    Type=Projectile+Shell, Name=weapons.shells.*, no Parent, rounds sampled
+    only every 0.5 s (500 m apart) - they must still be matched to the jet
+    that fired them and to the target they passed within a metre of."""
 
-    def build(self, parent=True):
+    def build(self, parent=False, rival=False):
         lines = ["FileType=text/acmi/tacview", "FileVersion=2.2", "0,ReferenceLongitude=40", "0,ReferenceLatitude=40"]
         deg = lambda m: m / M_PER_DEG  # noqa: E731
         lon_m = lambda m: m / (M_PER_DEG * math.cos(math.radians(40)))  # noqa: E731
-        # Target flies east at 200 m/s, 5000 m; shooter trails 700 m behind.
-        for i in range(0, 13):
-            t = i * 0.5
+        spawns = [1.0 + 0.05 * k for k in range(7)]  # one 0.3 s trigger pull, 3 rounds per frame
+        rounds = {}
+        frames = sorted({round(0.05 * i, 2) for i in range(0, 81)})
+        for t in frames:
             lines.append(f"#{t}")
-            lines.append(f"A,T={lon_m(200 * t):.8f}|0|5000|0|0|90,Type=Air+FixedWing,Name=MiG-29S,Coalition=Enemies")
-            lines.append(f"B,T={lon_m(200 * t - 700):.8f}|{deg(3):.8f}|5000|0|0|90,Type=Air+FixedWing,Name=F-16C_50,Pilot=Gunner,Coalition=Allies")
-            if 1.0 <= t <= 2.0:
-                # Rounds fired at t, 1000 m/s east, timed to cross the target's path.
+            # Target flies east at 200 m/s at 5000 m; shooter trails 700 m behind.
+            lines.append(f"A,T={lon_m(200 * t):.8f}|0|5000|0|0|90,Type=Air+FixedWing,Name=MiG-29S,Coalition=Enemies,Country=ru")
+            lines.append(f"B,T={lon_m(200 * t - 700):.8f}|{deg(3):.8f}|5000|0|0|90,Type=Air+FixedWing,Name=F-16C_50,Pilot=Gunner,Coalition=Allies,Country=us")
+            if rival:
+                # A friendly of the target flying 40 m from the shooter: must not be credited.
+                lines.append(f"C,T={lon_m(200 * t - 700):.8f}|{deg(43):.8f}|5000|0|0|90,Type=Air+FixedWing,Name=MiG-29S,Coalition=Enemies,Country=ru")
+            for ts in spawns:
                 for k in range(3):
-                    rid = f"R{int(t * 10)}{k}"
-                    text = ",Type=Weapon+Projectile+Shell,Name=M61" + (",Parent=B" if parent else "")
-                    lines.append(f"{rid},T={lon_m(200 * t - 700 + k):.8f}|{deg(3):.8f}|5000{text}")
-            for rid_t in (1.0, 1.5, 2.0):
-                if rid_t < t <= rid_t + 1.5:
-                    tau = t - rid_t
-                    for k in range(3):
-                        rid = f"R{int(rid_t * 10)}{k}"
-                        lines.append(f"{rid},T={lon_m(200 * rid_t - 700 + k + 1000 * tau):.8f}|{deg(3 - 2 * tau):.8f}|5000")
-                if t == rid_t + 1.5:
-                    lines.extend(f"-R{int(rid_t * 10)}{k}" for k in range(3))
+                    rid = f"R{int(round(ts * 100))}{k}"
+                    tau = round(t - ts, 3)
+                    if tau < 0 or tau > 1.5:
+                        continue
+                    first = rid not in rounds
+                    # Sampled at the spawn frame, then every 0.5 s.
+                    if not first and abs((tau / 0.5) - round(tau / 0.5)) > 1e-6:
+                        continue
+                    rounds[rid] = True
+                    x = 200 * ts - 700 + k + 1000 * tau
+                    y = 3 - 2 * tau
+                    text = ",Type=Projectile+Shell,Name=weapons.shells.M61_20_HE,Coalition=Allies,Country=us" + (",Parent=B" if parent else "") if first else ""
+                    lines.append(f"{rid},T={lon_m(x):.8f}|{deg(y):.8f}|5000{text}")
+                    if tau >= 1.5 - 1e-9:
+                        lines.append(f"-{rid}")
             if t == 3.0:
                 lines.append("0,Event=Destroyed|A|")
             if t == 3.5:
@@ -119,16 +132,40 @@ class AirToAirGunKill(unittest.TestCase):
         rep = analyze_weapons(self.build(parent=True))
         self.assertEqual(len(rep.bursts), 1)
         b = rep.bursts[0]
-        self.assertEqual((b.target_id, b.launcher_id, b.rounds), ("A", "B", 9))
+        self.assertEqual((b.target_id, b.launcher_id, b.rounds), ("A", "B", 21))
+        self.assertEqual((b.ammo, b.weapon_name), ("M61_20_HE", "M61A1 Vulcan"))
         self.assertTrue(b.kill)
-        self.assertGreater(b.rounds_on_target, 0)
+        self.assertEqual(b.rounds_on_target, 21)
         self.assertLess(b.closest_approach, ROUND_HIT_RADIUS)
         self.assertEqual(rep.kills[0].killer_pilot, "Gunner")
 
     def test_shooter_inferred_without_parent(self):
         rep = analyze_weapons(self.build(parent=False))
+        self.assertEqual(len(rep.bursts), 1)
         self.assertEqual(rep.bursts[0].launcher_id, "B")
         self.assertTrue(rep.bursts[0].kill)
+        self.assertAlmostEqual(rep.bursts[0].fire_rate, 21 / 0.35, delta=1.0)
+
+    def test_enemy_next_to_shooter_is_not_credited(self):
+        rep = analyze_weapons(self.build(parent=False, rival=True))
+        self.assertEqual(rep.bursts[0].launcher_id, "B")
+
+    def test_scrambled_positions_are_not_attributed(self):
+        rec = self.build(parent=False)
+        tr = next(t for t in rec.tracks.values() if t.category == "round")
+        tr.channels["Longitude"][1] += 1.0  # ~85 km jump in half a second
+        rep = analyze_weapons(rec)
+        self.assertEqual(rep.rounds["implausible"], 1)
+        self.assertEqual(rep.bursts[0].rounds, 20)
+
+
+class TriggerFallback(unittest.TestCase):
+    def test_trigger_only_burst(self):
+        rec = parse_lines(["FileType=text/acmi/tacview", "FileVersion=2.2", "#0",
+                           "1,T=41|41|1000,Type=Air+FixedWing,Name=F-16C_50,TriggerPressed=0",
+                           "#1", "1,TriggerPressed=1", "#2.5", "1,TriggerPressed=0", "#3", "1,T=41.01|41|1000"])
+        rep = analyze_weapons(rec)
+        self.assertEqual([(b.source, b.start, b.end) for b in rep.bursts], [("trigger", 1.0, 2.5)])
 
 
 if __name__ == "__main__":

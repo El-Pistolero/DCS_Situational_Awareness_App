@@ -15,12 +15,14 @@ import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..acmi.model import Recording
 from ..acmi.parser import parse_file
 from ..analysis.kinematics import derive
-from ..analysis.report import analyze, to_markdown
+from .. import threatdb
+from ..analysis.dcsmerge import find_and_merge
+from ..analysis.report import analyze, guess_player, to_markdown
 
 log = logging.getLogger(__name__)
 
@@ -58,7 +60,11 @@ class Job:
 
 
 class RecordingStore:
-    def __init__(self, dirs: List[str], upload_dir: str, player_names: List[str]) -> None:
+    def __init__(self, dirs: List[str], upload_dir: str, player_names: List[str],
+                 extras: Optional[Callable[[], Dict[str, Any]]] = None) -> None:
+        # extras() -> {"flightlog_dir": str, "airbases": [...]}: what DCS itself
+        # reported, merged into each analysis.
+        self.extras = extras or (lambda: {})
         self.dirs = dirs
         self.upload_dir = upload_dir
         self.player_names = player_names
@@ -191,7 +197,14 @@ class RecordingStore:
             rec = parse_file(path, progress)
             log.info("parsed %s in %.1fs (%d objects)", path, time.time() - t0, len(rec.tracks))
             job.state, job.progress = "analyzing", 0.95
-            report = analyze(rec, self.player_names)
+            extras = self.extras() or {}
+            dcs = None
+            if extras.get("flightlog_dir"):
+                try:
+                    dcs = find_and_merge(rec, extras["flightlog_dir"], guess_player(rec, self.player_names))
+                except (OSError, ValueError, KeyError) as exc:  # never fail a debrief over a bad log
+                    log.warning("flight log merge failed: %s", exc)
+            report = analyze(rec, self.player_names, dcs=dcs, airbases=extras.get("airbases"))
             with self._lock:
                 self._parsed[key] = (self._stamp(path), rec, report)
                 self._parsed.move_to_end(key)
@@ -278,20 +291,31 @@ class RecordingStore:
                 if roll is not None:
                     out[tr.id]["roll"] = [r(roll[i], 1) for i in idx]
             radar = tr.channel("RadarMode")
-            if radar is not None and any(v == v and v > 0 for v in radar):
+            scan = tr.channel("ScanAz")
+            active = tr.channel("RadarActive")
+            if (radar is not None and any(v == v and v > 0 for v in radar)) or scan is not None or active is not None:
                 block = {}
                 for key, ch, nd in (("mode", "RadarMode", 0), ("az", "RadarAzimuth", 1), ("el", "RadarElevation", 1),
-                                    ("range", "RadarRange", 0), ("hbw", "RadarHorizontalBeamwidth", 1),
-                                    ("vbw", "RadarVerticalBeamwidth", 1)):
+                                    ("roll", "RadarRoll", 1), ("range", "RadarRange", 0),
+                                    ("hbw", "RadarHorizontalBeamwidth", 1), ("vbw", "RadarVerticalBeamwidth", 1),
+                                    ("scanAz", "ScanAz", 1), ("scanEl", "ScanEl", 1), ("scanCAz", "ScanCenterAz", 1),
+                                    ("scanCEl", "ScanCenterEl", 1), ("active", "RadarActive", 0)):
                     col = tr.channel(ch)
                     if col is not None:
                         block[key] = [r(col[i], nd) for i in idx]
                 out[tr.id]["radar"] = block
             eng = tr.channel("EngagementRange")
-            if eng is not None:
-                vals = [v for v in eng if v == v and v > 0]
-                if vals:
-                    out[tr.id]["eng"] = round(max(vals), 0)
+            vals = [v for v in eng if v == v and v > 0] if eng is not None else []
+            if vals:
+                out[tr.id]["eng"] = round(max(vals), 0)
+                out[tr.id]["engSrc"] = "recorded"
+            elif tr.category in ("ground", "sea"):
+                db = threatdb.lookup(tr.name)
+                if db:
+                    out[tr.id]["eng"] = db["range"]
+                    out[tr.id]["engSrc"] = db["source"]
+                    if db.get("vrange"):
+                        out[tr.id]["engV"] = db["vrange"]
         rounds.sort(key=lambda x: x["t"][0])
         total = sum(1 for tr in rec.tracks.values() if tr.category == "round")
         return {"start": rec.start_time, "end": rec.end_time, "objects": out, "rounds": rounds,

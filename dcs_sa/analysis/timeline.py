@@ -56,12 +56,16 @@ def build_timeline(rec: Recording, weapons, landings: Dict, radar: Dict) -> List
         who = b.launcher_pilot or b.launcher_name
         tgt = f" at {b.target_name}" if b.target_name else ""
         rounds = f"{b.rounds} rds" if b.rounds else "trigger"
+        if b.dcs_hits is not None:
+            rounds += f", {b.dcs_hits} hits (DCS)"
         items.append(_item(b.start, "gun", f"{who} gun burst{tgt} ({rounds})", [b.launcher_id]))
     for k in weapons.kills:
         victim = f"{k.victim_pilot} ({k.victim_name})" if k.victim_pilot else k.victim_name
         if k.killer_id:
             killer = k.killer_pilot or k.killer_name
             text = f"{killer} killed {victim} with {k.weapon_name}"
+            if k.confirmed_by:
+                text += f" ({k.confirmed_by} confirmed)"
         else:
             text = f"{victim} destroyed" + (" (probable)" if k.confidence == "probable" else "")
         items.append(_item(k.time, "kill", text, [i for i in (k.victim_id, k.killer_id) if i]))

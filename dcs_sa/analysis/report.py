@@ -15,7 +15,7 @@ from .kinematics import derive, flight_stats
 from .landing import analyze_landings
 from .radar import analyze_radar
 from .timeline import build_timeline
-from .weapons import analyze_weapons, find_destructions
+from .weapons import analyze_weapons, apply_dcs_events, find_destructions
 
 
 def _json_safe(obj):
@@ -51,12 +51,18 @@ def guess_player(rec: Recording, player_names: Iterable[str] = ()) -> Optional[T
     return max(aircraft, key=score)
 
 
-def analyze(rec: Recording, player_names: Iterable[str] = ()) -> Dict:
+def analyze(rec: Recording, player_names: Iterable[str] = (), dcs: Optional[Dict] = None,
+            airbases: Optional[List[Dict]] = None) -> Dict:
+    """Full debrief.  *dcs* is a merged flight log (values DCS reported while
+    flying, see :mod:`dcsmerge`); *airbases* are runways read from DCS."""
     destructions = find_destructions(rec)
     weapons = analyze_weapons(rec, destructions)
-    landings = analyze_landings(rec)
+    dcs_stats = apply_dcs_events(weapons, rec, dcs["events"]) if dcs else None
+    landings = analyze_landings(rec, airbases=airbases)
     radar = analyze_radar(rec, {k: v.time for k, v in destructions.items()}, weapons.shots)
     timeline = build_timeline(rec, weapons, landings, radar)
+    if dcs:
+        timeline = _add_dcs_timeline(timeline, rec, dcs)
 
     aircraft = []
     for tr in rec.aircraft():
@@ -96,7 +102,42 @@ def analyze(rec: Recording, player_names: Iterable[str] = ()) -> Dict:
             "spikes": radar["spikes"],
         },
         "timeline": timeline,
+        "dcs": ({"log": dcs["log"], "offset": dcs["offset"], "medianError": dcs["medianError"],
+                 "channels": len(dcs["channels"]), "events": len(dcs["events"]), "theatre": dcs.get("theatre"),
+                 **(dcs_stats or {})} if dcs else None),
+        "runways": bool(airbases),
     })
+
+
+def _add_dcs_timeline(items: List[Dict], rec: Recording, dcs: Dict) -> List[Dict]:
+    """DCS-reported hits (grouped per shooter/target) as timeline entries."""
+    out = list(items)
+    groups: Dict[tuple, Dict] = {}
+    for e in dcs["events"]:
+        if e.get("kind") != "hit":
+            continue
+        who = rec.tracks.get(e.get("initiatorId") or "")
+        whom = rec.tracks.get(e.get("targetId") or "")
+        key = (e.get("initiatorId"), e.get("targetId"), e.get("weapon"))
+        g = groups.get(key)
+        if g is not None and e["time"] - g["last"] < 3.0:
+            g["count"] += 1
+            g["last"] = e["time"]
+            continue
+        wname = e.get("weapon") or "?"
+        g = groups[key] = {"count": 1, "last": e["time"], "item": {
+            "time": e["time"], "kind": "hit", "severity": "high",
+            "objectIds": [i for i in (e.get("initiatorId"), e.get("targetId")) if i],
+            "who": (who.pilot or who.name) if who else ((e.get("initiator") or {}).get("type") or "?"),
+            "whom": (whom.pilot or whom.name) if whom else ((e.get("target") or {}).get("type") or "?"),
+            "weapon": wname, "source": "DCS"}}
+        out.append(g["item"])
+    for g in groups.values():
+        it = g["item"]
+        n = g["count"]
+        it["text"] = f"DCS: {it.pop('who')} hit {it.pop('whom')}" + (f" x{n}" if n > 1 else "") + f" ({it.pop('weapon')})"
+    out.sort(key=lambda d: (d["time"], d["kind"]))
+    return out
 
 
 # ---------------------------------------------------------------------------

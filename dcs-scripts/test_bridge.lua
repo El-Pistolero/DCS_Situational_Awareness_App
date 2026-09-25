@@ -25,6 +25,12 @@ function LoGetSnares() return { chaff = 60, flare = 60 } end
 function LoGetTWSInfo() return { Mode = 0, Emitters = { { ID = 7, Power = 0.8, Azimuth = 0.5, SignalType = "lock", Type = { level1 = 1 } } } } end
 function LoGetNameByType() return "MiG-29S" end
 function LoGetEngineInfo() error("simulated module without engine data") end
+function LoGetSightingSystemInfo() return { radar_on = true, ScanZone = { size = { azimuth = 1.0472, elevation = 0.1745 },
+  position = { azimuth = 0.1, elevation = 0 }, coverage_H = { min = 0, max = 20000 } }, scale = { distance = 74080 } } end
+function LoGetLockedTargetInformation() return { { ID = 7, distance = 30000, fim = 0.2, fin = -0.05, delta_psi = 2.9 } } end
+function LoGetWorldObjects() return { [7] = { Name = "MiG-29S", CoalitionID = 1, LatLongAlt = { Lat = 41.7, Long = 41.7, Alt = 6000 },
+  Heading = 3.3, Flags = { RadarActive = true, Jamming = false } } } end
+function LoGetPlayerPlaneId() return 1 end
 dofile("dcs-scripts/DCS-SA-Export.lua")
 LuaExportStart()
 for i = 1, 30 do t = i * 0.05; LuaExportAfterNextFrame() end
@@ -32,5 +38,25 @@ LuaExportStop()
 assert(chained == 30, "previous export hook must be chained")
 assert(#sent >= 14 and #sent <= 16, "expected ~10 Hz, got " .. #sent)
 assert(sent[1][2] == "127.0.0.1" and sent[1][3] == 42680)
+local last = sent[#sent][1]
+assert(string.find(last, '"scan":{', 1, true), "scan zone must be exported")
+assert(string.find(last, '"source":"ScanZone"', 1, true))
+assert(string.find(last, '"radar":true', 1, true), "world radar flag must be exported")
 print("packets:", #sent, "chained:", chained)
 print(sent[#sent][1])
+
+-- F-16C: no ScanZone, read the FCR's A/B settings from the MFD text instead.
+LoGetSightingSystemInfo = function() return nil end
+LoGetSelfData = function() return { Name = "F-16C_50", LatLongAlt = { Lat = 41.6, Long = 41.6, Alt = 3000 }, Heading = 0 } end
+list_indication = function(n)
+  if n == 4 then
+    return "-----------------------------------------\nFCR_NotModeMenu_RootAA.2.Table. Root. Unic ID: _id:8.1.Text.1\n2B\n" ..
+           "-----------------------------------------\nFCR_NotModeMenu_RootAA.2.Table. Root. Unic ID: _id:9.1.Text.2\nA3\n"
+  end
+  return ""
+end
+local DCSSA = dofile("dcs-scripts/DCS-SA-Export.lua")
+local pkt = DCSSA.snapshot(5)
+assert(pkt.scan and pkt.scan.source == "F-16C FCR", "F-16 FCR scan must be parsed")
+assert(pkt.scan.azHalf == 30 and pkt.scan.bars == 2, "A3 2B -> +/-30 deg, 2 bars")
+print("f16 fcr:", DCSSA.encode(pkt.scan))

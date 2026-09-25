@@ -126,6 +126,11 @@ def run(cfg: Config, live_only: bool = False) -> int:
 def main() -> int:
     """Entry point for the frozen exe."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    from .shortcut import first_run
+
+    made = first_run()
+    if made:
+        log.info("created shortcuts: %s", ", ".join(made))
     cfg = Config.load()
     return run(cfg, live_only="--live" in sys.argv)
 

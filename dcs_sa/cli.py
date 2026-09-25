@@ -52,12 +52,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     pa.add_argument("--player", action="append", metavar="NAME")
     pa.add_argument("--focus", metavar="OBJECT_ID", help="aircraft id to write the debrief for")
 
+    sub.add_parser("install-shortcut", help="put a DCS SA icon on the desktop and in the Start menu")
+
     ps = sub.add_parser("sample", help="write the synthetic demo recording")
     ps.add_argument("--out", default=str(Path(__file__).resolve().parent.parent / "samples" / "sample_sortie.acmi"))
 
     # Bare `python -m dcs_sa --replay x` should still work.
     argv = list(sys.argv[1:] if argv is None else argv)
-    cmds = ("serve", "app", "analyze", "sample")
+    cmds = ("serve", "app", "analyze", "sample", "install-shortcut")
     if not argv or argv[0].startswith("-") and argv[0] not in ("-h", "--help", "--version", "-v", "--verbose", "--config"):
         argv = ["app", *argv]
     elif argv[0] in ("-v", "--verbose", "--config") and not any(a in cmds for a in argv):
@@ -72,6 +74,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.command == "analyze":
         return _analyze(args)
+    if args.command == "install-shortcut":
+        from .shortcut import install_shortcuts
+
+        for path in install_shortcuts():
+            print(f"created {path}")
+        return 0
     if args.command == "sample":
         from .samplegen import write_sample
 
