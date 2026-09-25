@@ -47,7 +47,13 @@ const missOf = (strike, geom) => (isNum(geom?.miss?.distance) ? geom.miss.distan
 const DIRECT_HIT = 1.0; // m: closer than this the direction of the miss is noise
 /** Miss lengths: a decimal for small metric values, where whole metres hide the answer. */
 const fmtMiss = (m) => (units.metric && isNum(m) && Math.abs(m) < 10 ? `${Math.abs(m).toFixed(1)} m` : fmtShort(Math.abs(m)));
-const signedSec = (s) => `${s >= 0 ? "+" : "−"}${Math.abs(s).toFixed(1)} s`;
+const signedSec = (s) => (isNum(s) ? `${s >= 0 ? "+" : "−"}${Math.abs(s).toFixed(1)} s` : "—");
+/**
+ * Battle-damage times count from the opening for a cluster weapon: its impactTime
+ * is the last bomblet (or the cloud centre) landing, so kills come before it.
+ */
+const fromOpening = (strike) => strike.submunitions > 0 && isNum(strike.dispense?.time);
+const damageT0 = (strike) => (fromOpening(strike) ? strike.dispense.time : strike.impactTime);
 
 /** Local metres (east, north) around a centre point. */
 function localFrame(c) {
@@ -136,12 +142,10 @@ export function strikeVerdicts(strike, geom) {
   // Result first: it is what the pilot wants to know.
   if (dmg.length) {
     const first = Math.min(...dmg.map((d) => d.time));
-    const dt = first - strike.impactTime;
-    // Bomblets land over a few seconds, some before the pattern's mean impact time.
-    const when = dt >= -1 || !isNum(strike.dispense?.time)
-      ? `${signedSec(Math.max(0, dt))} after impact`
-      : `${(first - strike.dispense.time).toFixed(1)} s after opening`;
-    add("good", `Destroyed ${countNames(dmg)} (${when})`);
+    const dt = first - damageT0(strike);
+    const when = !isNum(dt) ? ""
+      : fromOpening(strike) ? ` (${dt.toFixed(1)} s after opening)` : ` (${signedSec(Math.max(0, dt))} after impact)`;
+    add("good", `Destroyed ${countNames(dmg)}${when}`);
   } else if (strike.result === "damaged") {
     add("warn", "Hit recorded, but nothing destroyed");
   } else if (strike.result === "miss") {
@@ -165,7 +169,8 @@ export function strikeVerdicts(strike, geom) {
   // Coordinate-guided weapons fly to where the target was.
   const moved = geom?.target?.moved;
   if ((fam === "jsow" || fam === "jdam") && isNum(moved) && moved > 30) {
-    add("warn", `Target moved ${fmtShort(moved)} during ${Math.round(strike.timeOfFall)} s TOF: coordinate-guided weapons do not follow movers`);
+    const tof = isNum(strike.timeOfFall) ? `${Math.round(strike.timeOfFall)} s TOF` : "the fall";
+    add("warn", `Target moved ${fmtShort(moved)} during ${tof}: coordinate-guided weapons do not follow movers`);
   }
 
   // Release attitude matters for anything unguided.
@@ -223,9 +228,15 @@ export function buildStrikeCard(strike, ctx = {}) {
   card.append(tileSection("Result", resultTiles(strike, geom, objects)));
 
   // -- bomb plot + profile -------------------------------------------------------------
-  card._setTime = () => {};
-  if (geom) card.append(plots(strike, geom, objects, card));
-  else card.append(el("div", { class: "stk-note" }, "No impact recorded: nothing to plot."));
+  let setProfile = null;
+  if (geom) {
+    const p = plots(strike, geom, objects);
+    card.append(p.el);
+    setProfile = p.setTime;
+  } else card.append(el("div", { class: "stk-note" }, "No impact recorded: nothing to plot."));
+  // The owner calls this on playback. The time is kept for the attack-run charts,
+  // which arrive later and would otherwise show no playhead until the next seek.
+  card._setTime = (t) => { card._t = t; setProfile?.(t); };
 
   // -- fly-out and attack run --------------------------------------------------------------
   const fly = flyoutCharts(strike, geom, objects, ctx);
@@ -239,14 +250,15 @@ export function buildStrikeCard(strike, ctx = {}) {
   }
   if (strike.damage?.length) card.append(bdaList(strike, ctx));
   const btn = (text, fn, title) => (typeof fn === "function" ? el("button", { title, onclick: () => fn(strike) }, text) : null);
-  card.append(el("div", { class: "stk-actions" },
+  const acts = el("div", { class: "stk-actions" },
     btn("Replay pass", ctx.onReplay, "Replay the attack from before the release"),
     btn("Weapon cam", ctx.onWeaponCam, "Ride along with the weapon to impact"),
-    btn("Show on map", ctx.onShowOnMap, "Frame the release, flight path and impact on the map")));
+    btn("Show on map", ctx.onShowOnMap, "Frame the release, flight path and impact on the map"));
+  if (acts.childElementCount) card.append(acts);
   return card;
 }
 
-function plots(strike, geom, objects, card) {
+function plots(strike, geom, objects) {
   const bd = bombData(strike, geom, objects);
   const bomb = el("canvas", { class: "stk-bomb" });
   const flip = el("button", { class: "stk-frame", title: "Flip the bomb plot between run-in up and north up" });
@@ -265,20 +277,21 @@ function plots(strike, geom, objects, card) {
   const prof = el("canvas", { class: "stk-prof" });
   const pd = profileData(strike, geom, objects);
   let layer = null, lastT = null;
-  const drawProfile = (full) => {
-    if (full || !layer) layer = renderProfile(prof, pd);
+  // Only the ResizeObserver renders the static layer: it fires once the canvas
+  // has a size, so playback never forces a layout on a hidden card.
+  new ResizeObserver(() => {
+    layer = renderProfile(prof, pd);
     if (layer) blitProfile(prof, layer, pd, lastT);
-  };
-  new ResizeObserver(() => drawProfile(true)).observe(prof);
+  }).observe(prof);
   const live = (t) => pd && isNum(t) && t >= pd.rt - JET_BEFORE && t <= pd.tEnd + 1;
-  // The owner calls this on playback: only the playhead moves, the rest is cached.
-  card._setTime = (t) => {
+  // Only the playhead moves; the rest is cached.
+  const setTime = (t) => {
     if (t === lastT) return;
     const was = live(lastT);
     lastT = t;
-    if (was || live(t)) drawProfile(false);
+    if (layer && (was || live(t))) blitProfile(prof, layer, pd, t);
   };
-  return el("div", { class: "stk-plots" }, el("div", { class: "stk-plot" }, bomb, flip), el("div", { class: "stk-plot" }, prof));
+  return { el: el("div", { class: "stk-plots" }, el("div", { class: "stk-plot" }, bomb, flip), el("div", { class: "stk-plot" }, prof)), setTime };
 }
 
 function header(strike, ctx) {
@@ -381,17 +394,19 @@ function resultTiles(strike, geom, objects) {
 
 function bdaList(strike, ctx) {
   const cluster = strike.submunitions > 0;
-  const list = el("div", { class: "stk-bda" }, el("div", { class: "stk-label" }, "Battle damage"));
+  const open = fromOpening(strike), t0 = damageT0(strike);
+  const list = el("div", { class: "stk-bda" }, el("div", { class: "stk-label" }, open ? "Battle damage · time from opening" : "Battle damage"));
   for (const r of strike.damage) {
     const dcs = r.cause === "event" || r.cause === "dcs";
+    const dt = signedSec(r.time - t0);
     list.append(el("div", {
       class: "stk-bda-row",
       title: "Jump to 3 s before and select the unit",
       onclick: () => { ctx.seek?.(r.time - 3); ctx.onSelect?.(r.id); },
     },
     el("span", { class: "stk-bda-name", title: r.name }, r.name),
-    el("span", { class: "stk-bda-meta", title: `Destroyed ${signedSec(r.time - strike.impactTime)} from the impact, ${fmtShort(r.distance)} from the ${cluster ? "pattern centre" : "impact point"}` },
-      `${signedSec(r.time - strike.impactTime)} · ${fmtShort(r.distance)} from ${cluster ? "centre" : "impact"}`),
+    el("span", { class: "stk-bda-meta", title: `Destroyed ${dt} ${open ? "after the dispenser opened" : "from the impact"}, ${fmtShort(r.distance)} from the ${cluster ? "pattern centre" : "impact point"}` },
+      `${dt} · ${fmtShort(r.distance)} from ${cluster ? "centre" : "impact"}`),
     dcs ? el("span", { class: "dcs-badge", title: "DCS recorded this unit's destruction" }, "DCS")
       : el("span", { class: "stk-inf", title: `Inferred from the recording (${r.cause || "near the impact"})` }, "inferred")));
   }
@@ -457,13 +472,14 @@ function drawBombPlot(canvas, d) {
   const off = (b) => Math.min(...[runScr, runScr + 180].map((r) => Math.abs(((b - r) % 360 + 540) % 360 - 180)));
   const diag = [45, 315, 135, 225].reduce((best, b) => (off(b) > off(best) + 1 ? b : best));
   const dx = Math.sin(diag * DEG), dy = -Math.cos(diag * DEG);
-  ctx.lineWidth = 1;
   ctx.font = "9px ui-monospace, monospace";
   ctx.textAlign = dx > 0 ? "left" : "right"; ctx.textBaseline = dy < 0 ? "bottom" : "top";
   let lastLbl = -Infinity;
   for (const r of RINGS) {
     const rr = r * s;
     if (r > d.view * 1.001 || rr < 4) continue;
+    // label() leaves a 3 px outline width behind: reset it for every ring.
+    ctx.lineWidth = 1;
     ctx.strokeStyle = r === 100 ? "rgba(140,155,175,0.34)" : "rgba(140,155,175,0.2)";
     ctx.beginPath(); ctx.arc(cx, cy, rr, 0, Math.PI * 2); ctx.stroke();
     if (rr >= 16 && rr - lastLbl >= 14) {
@@ -473,7 +489,7 @@ function drawBombPlot(canvas, d) {
   }
   // Run-in line through the target, with long / short at its ends.
   const ux = Math.sin(runScr * DEG), uy = -Math.cos(runScr * DEG);
-  ctx.strokeStyle = "rgba(140,155,175,0.22)";
+  ctx.strokeStyle = "rgba(140,155,175,0.22)"; ctx.lineWidth = 1;
   ctx.setLineDash([3, 4]);
   ctx.beginPath(); ctx.moveTo(cx - ux * rpx, cy - uy * rpx); ctx.lineTo(cx + ux * rpx, cy + uy * rpx); ctx.stroke();
   ctx.setLineDash([]);
@@ -496,14 +512,14 @@ function drawBombPlot(canvas, d) {
   }
   if (d.dispense) {
     const [x0, y0] = P(d.dispense), [x1, y1] = P(d.ellipse ? d.ellipse.c : d.impact);
-    ctx.strokeStyle = "rgba(255,159,67,0.45)"; ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = "rgba(255,159,67,0.45)"; ctx.lineWidth = 1.2; ctx.setLineDash([4, 4]);
     ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
     ctx.setLineDash([]);
   }
   // Where a moving target was at release.
   if (d.from) {
     const [x, y] = P(d.from);
-    ctx.strokeStyle = "rgba(255,209,102,0.55)"; ctx.setLineDash([2, 3]);
+    ctx.strokeStyle = "rgba(255,209,102,0.55)"; ctx.lineWidth = 1.2; ctx.setLineDash([2, 3]);
     ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(cx, cy); ctx.stroke();
     ctx.setLineDash([]);
     ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2); ctx.stroke();
@@ -766,7 +782,7 @@ function renderProfile(canvas, pd) {
   const ix = X(pd.impact.x), iy = Y(pd.impact.alt);
   ctx.fillStyle = pd.resColor; ctx.strokeStyle = "#0d141b"; ctx.lineWidth = 1.2;
   ctx.beginPath(); ctx.arc(ix, iy, 3.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-  return { layer, X, Y, dpr };
+  return { layer, X, Y, dpr, xMin: pad.l, xMax: w - pad.r };
 }
 
 function blitProfile(canvas, L, pd, t) {
@@ -779,8 +795,11 @@ function blitProfile(canvas, L, pd, t) {
   ctx.setTransform(L.dpr, 0, 0, L.dpr, 0, 0);
   const dot = (p, stroke) => {
     if (!p || !isNum(p.lon) || !isNum(p.alt)) return;
+    const x = L.X(pd.proj(p.lon, p.lat));
+    // The run-in is cut at the left edge: no dot over the axis labels.
+    if (!(x >= L.xMin && x <= L.xMax)) return;
     ctx.fillStyle = "#ffd166"; ctx.strokeStyle = stroke; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.arc(L.X(pd.proj(p.lon, p.lat)), L.Y(p.alt), 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(x, L.Y(p.alt), 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
   };
   if (pd.L?.pb && t >= pd.rt - JET_BEFORE && t <= pd.rt + JET_AFTER) dot(sampleTrack(pd.L.pb, t), pd.jetColor);
   if (pd.W?.pb) dot(sampleTrack(pd.W.pb, t), "#0d141b");
@@ -812,8 +831,9 @@ function flyoutCharts(strike, geom, objects, ctx) {
     const i = idx[k];
     xs.push(pb.t[i] - rt);
     alt.push(toAlt(pb.alt[i]));
-    // Central differences only: the first and last samples are the spawn and removal frames.
-    const a = idx[k - 1], b = idx[k + 1];
+    // Central differences that never touch the first sample: it is the spawn
+    // frame, still at the jet's position, and doubles the first step's speed.
+    const a = k >= 2 ? idx[k - 1] : null, b = idx[k + 1];
     const dt = isNum(a) && isNum(b) ? pb.t[b] - pb.t[a] : 0;
     const v = dt > 0 ? Math.hypot(distance(pb.lon[a], pb.lat[a], pb.lon[b], pb.lat[b]), pb.alt[b] - pb.alt[a]) / dt : null;
     spd.push(isNum(v) ? v / speedOfSound(pb.alt[i]) : null);
@@ -896,6 +916,7 @@ function attackRun(strike, ctx, card) {
       const lc = new LineChart(c, { title, yFormat, xFormat: (v) => fmtRel(v - rt), onSeek: (v) => ctx.seek?.(v) });
       lc.setData(series, { xMin: t0, xMax: t1, ...niceY(series.map((q) => q.y), minSpan, quantum) });
       lc.setMarks(marks);
+      if (isNum(card._t)) lc.setMarker(card._t);
       ctx.charts?.push(lc);
     };
     const altSeries = [msl && { name: "MSL", color: "#ffd166", x, y: msl }, agl && { name: "AGL", color: "#4dd8e6", x, y: agl }].filter(Boolean);
@@ -927,8 +948,12 @@ export function buildStrikeThumb(strike, objects, size = 64) {
   ctx.fillStyle = "#0d141b";
   ctx.fillRect(0, 0, size, size);
   const geom = strikeGeometry(strike, objects || new Map());
+  const m = geom?.miss;
+  c.title = [weaponLabel(strike.weaponName), strike.result,
+    isNum(missOf(strike, geom)) ? `miss ${fmtShort(missOf(strike, geom))}` : "",
+    m ? `${m.clock} o'clock` : ""].filter(Boolean).join(" · ");
   const centre = geom?.target || geom?.impact;
-  if (!centre) return c;
+  if (!centre || !isNum(centre.lon)) return c;
   const loc = localFrame(centre);
   const s = size / 1000, h = size / 2;
   const P = ([x, y]) => [h + x * s, h - y * s];
@@ -964,10 +989,6 @@ export function buildStrikeThumb(strike, objects, size = 64) {
     const brg = Math.atan2(ip[0], ip[1]) / DEG;
     arrow(ctx, h + Math.sin(brg * DEG) * (h - 5), h - Math.cos(brg * DEG) * (h - 5), brg, 7, col, 4);
   }
-  const m = geom.miss;
-  c.title = [weaponLabel(strike.weaponName), strike.result,
-    isNum(missOf(strike, geom)) ? `miss ${fmtShort(missOf(strike, geom))}` : "",
-    m ? `${m.clock} o'clock` : ""].filter(Boolean).join(" · ");
   return c;
 }
 
