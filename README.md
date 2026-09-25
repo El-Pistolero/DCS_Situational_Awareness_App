@@ -12,24 +12,29 @@ It reads **Tacview** data. Tacview is the program; **ACMI** (`.acmi`) is its fil
 
 | | Live (second screen) | Debrief (after the flight) |
 |---|---|---|
-| **Map** | **3D** (terrain + satellite imagery, chase or orbit camera) or heading-up 2D tactical map with range rings | Full replay in **3D** or 2D, play/pause/scrub at 0.5× to 64× |
-| **Your aircraft** | IAS, altitude, heading, Mach, AOA, G, V/S, fuel, gear/flaps | Attitude indicator, all flight data at any moment, charts over the whole flight |
+| **Map** | **3D** (terrain + satellite imagery; orbit, chase or **padlock** camera) or heading-up 2D tactical map with range rings; arrows on the edge point at off-screen threats | Full replay in **3D** or 2D at 0.1× to 64×, next/previous event, **A–B loop**, measuring tape, trails coloured by altitude / speed / G / energy / AOA |
+| **Your aircraft** | IAS and altitude with trend arrows, live **Ps**, heading, Mach, AOA, G, V/S, fuel with endurance, **bingo / joker** with bearing and range home; a big-number **Glance** layout | Attitude indicator, all flight data at any moment, charts over the whole flight |
 | **Your inputs** | Stick / rudder deflection (via the DCS bridge) | Stick & rudder display, throttle/afterburner, brakes, hook, trigger |
 | **Radar** | Your radar cone, lock lines, **RWR scope** | Lock episodes (who, range, how long, how it ended), who locked *you* |
 | **Threats** | Inbound missiles with **time-to-impact** and clock position, spikes, hot bandits, SAM rings you're inside, optional audio warning | — |
-| **Weapons** | Stores remaining, chaff/flare counts | Every shot: shooter, target, launch range, aspect, time of flight, **kill / miss**; gun bursts; kill list; Pk per pilot |
-| **Landing** | — | Approach glidepath and centreline charts, gates at 4 to 0.25 nm, touchdown sink rate / speed / AOA / crab, stabilised-approach check, **grade** (LSO-style on the carrier) |
+| **Weapons** | Stores remaining, chaff/flare counts, a **HIT** alert when DCS reports you were hit | Every shot: shooter, target, launch range, aspect, time of flight, **kill / miss**, and a **"why did it miss?"** card (launch geometry, missile Mach and range to target, when the target beamed or turned cold); gun bursts with bullet paths, rounds on target and **hits reported by DCS**; kills **confirmed by DCS**; Pk per pilot |
+| **Landing** | — | Approach glidepath and centreline charts, gates at 4 to 0.25 nm, touchdown sink rate / speed / AOA / crab, stabilised-approach check, the **real runway from DCS** (touchdown distance past the threshold, runway remaining), **grade** (LSO-style on the carrier) |
 | **All aircraft** | Every contact with labels | Stats for every aircraft; select any of them for full telemetry |
 
 ## Install (Windows)
 
-**Option A: the exe (recommended)**
-1. On GitHub open **Actions → Build Windows exe**, click the latest run, and download **DCS-SA-windows** (or grab `DCS-SA.exe` from a Release).
-2. Double-click `DCS-SA.exe`. It opens in its own window; close the window to quit.
+It's a normal desktop app: install it once, then open it from the **DCS SA** icon on your desktop.
 
-**Option B: run from source**
+**Option A: the installer (recommended)**
+1. On GitHub open **Actions → Build Windows exe**, click the latest run, and download **DCS-SA-windows** (or grab `DCS-SA-Setup.exe` from a Release).
+2. Run `DCS-SA-Setup.exe`. It installs for your Windows user only (no admin rights needed) and puts two icons on your desktop and in the Start menu: **DCS SA** (the debrief) and **DCS SA Live** (straight into the second-screen view).
+3. Double-click **DCS SA**. It opens in its own window; close the window to quit.
+
+**Option B: the single exe.** The same download has `DCS-SA.exe`. Put it anywhere and double-click it. The first time it runs, it adds the **DCS SA** icons to your desktop and Start menu.
+
+**Option C: run from source**
 1. Install [Python 3.10+](https://www.python.org/downloads/) (tick *Add to PATH*).
-2. Double-click `run.bat`. For native windows instead of an app-style browser window, also run `pip install pywebview`.
+2. Double-click `Create Desktop Shortcut.bat` once to get the desktop icon, or `run.bat` to just start it. For native windows instead of an app-style browser window, also run `pip install pywebview`.
 
 To build the exe yourself, double-click `build_exe.bat`; the result is `dist\DCS-SA.exe`.
 
@@ -51,8 +56,28 @@ Click **3D** in the top-right of either view.
 * **Otherwise** terrain is real elevation data (AWS open terrain tiles) draped with Esri satellite imagery: about 60 m/pixel out to ~100 km, and about 14 m/pixel within ~30 km of the selected aircraft. It streams in as you move. Tiles are cached in `Documents\DCS-SA\tilecache`, so areas you've flown before load instantly and work offline.
 * **Aircraft** are drawn as 3D models posed with their recorded heading, pitch and bank. At long range they're scaled up so you can still see them.
 * **Weapons** leave smoke trails. Lock lines are dashed yellow. SAM envelopes are domes.
-* **Orbit** camera: drag to rotate, scroll to zoom, right-drag to pan; it follows the selected aircraft. **Chase** puts you behind the aircraft. Click any aircraft to select it.
+* **Orbit** camera: drag to rotate, scroll to zoom, right-drag to pan; it follows the selected aircraft. **Chase** puts you behind the aircraft. **Padlock** sits behind your jet looking at its target (your radar lock, else the nearest bandit, or anything you Shift-click; **T** cycles through bandits and missiles aimed at you) with a range readout on the sightline. Click any aircraft to select it.
+* Threats you can't see get **arrows on the screen edge** (red: missile inbound with time to impact, orange: someone locked you, yellow: hot bandit).
 * **Terrain 2× / 3×** exaggerates relief when you want low-level terrain masking to stand out.
+
+## Read from DCS, not guessed
+
+A Tacview recording only has positions, so some things in a debrief have to be worked out from geometry: which round hit, whether a kill counted, which runway you landed on. When the DCS-SA scripts are installed, the app **reads these from DCS instead**:
+
+* **While you fly** the app keeps a small flight log (`Documents\DCS-SA\flightlogs`): DCS's own **shot / hit / kill** events, your control-surface deflections, your radar's **scan zone**, chaff/flare/gun counts, and which units have their **radar on**.
+* **When you open the Tacview recording afterwards** the app finds the matching flight log, lines the clocks up by matching your flight path (it refuses if the paths don't agree), and uses what DCS reported: hits per gun burst, confirmed kills (and corrected kill credit where the geometry guessed wrong), the real radar scan zone, and radar on/off for every emitter. A cyan **DCS** tag marks every value that came from the game.
+* **Landings** are graded against the runway DCS reports (position, heading and length): touchdown distance past the threshold, touchdown zone, runway remaining.
+* **SAM / AAA / ship threat rings**: DCS recordings don't carry engagement ranges (Tacview adds them from its database when it plays a file), so the app uses the same numbers from Tacview's public object database and labels them as such.
+* **Radar cones** say where they came from: *recorded* (the recording has radar data), *read from DCS*, or *assumed* for that aircraft type (drawn dashed; hide them with *Radars: known only*).
+
+## Handy controls
+
+Press **?** in either window for the full list.
+
+* **Debrief:** Space play/pause · ← → ±5 s (Shift ±30 s) · **N / P** next/previous event · **I / O / L** loop in/out/on (or Shift-drag the timeline) · **, .** step half a second · **V** 2D/3D · **C** camera (orbit → chase → padlock) · **T** padlock target · **M** measuring tape (or Shift-drag on the map) · **J / K** next/previous aircraft · **1–7** tabs · **Ctrl+O** recordings
+* **Live:** **G** Glance layout · **V** 2D/3D · **C** camera · **T** padlock the next threat · **H** heading-up/north-up · **+ / −** range · **N** re-centre · **S** sound · **Ctrl+,** connect
+
+When Tacview writes a new recording after a mission, a banner offers to open the debrief (tick *Auto-open* to skip the click).
 
 ## Try it without DCS
 
@@ -74,11 +99,14 @@ python -m unittest discover -s tests -t .               # run the tests
 ```
 DCS World ─ Tacview exporter ─┬─ .acmi file ────────────▶ parser ─▶ analysis ─▶ Debrief UI
                               └─ real-time TCP :42674 ─▶ parser ─▶ live world ─▶ Live UI
-          └ DCS-SA-Export.lua ── UDP :42680 (your jet) ───────────┘
+          ├ DCS-SA-Export.lua ── UDP :42680 (your jet) ───────────┤         ▲
+          └ DCS-SA-Hook.lua ──── UDP :42682 (terrain, airbases, ──┴─ flight log
+                                 shot/hit/kill events)
 ```
 
 * `dcs_sa/acmi/`: streaming ACMI 2.x parser (zip / plain / BOM, escaping, all transform variants, reference offsets).
-* `dcs_sa/analysis/`: kinematics (G, turn rate, energy), weapons & kill attribution, takeoff/landing grading, radar locks, timeline.
+* `dcs_sa/analysis/`: kinematics (G, turn rate, energy), weapons & kill attribution, takeoff/landing grading, radar locks, timeline; `dcsmerge.py` merges a flight log into a recording.
+* `dcs_sa/flightlog.py`: records what DCS reported during a flight; `dcs_sa/threatdb.py` + `dcs_sa/data/`: engagement ranges from Tacview's database.
 * `dcs_sa/telemetry/`: Tacview real-time client (handshake + CRC-64 password), DCS bridge receiver, live threat picture.
 * `dcs_sa/web/`: the UI (plain JavaScript, no build step; 3D via the bundled three.js). Map tiles are © Esri / OpenStreetMap / CARTO, and terrain comes from AWS Terrain Tiles. Offline, the map falls back to a grid.
 * `dcs-scripts/DCS-SA-Export.lua`: the in-game bridge (your aircraft).
@@ -88,6 +116,7 @@ The app is Python standard library only. Nothing is sent anywhere except map and
 
 ## Known limits
 
-* ACMI has no runway database, so landings are measured against the point where you actually touched down (3.0° reference, 3.5° on a carrier).
+* ACMI has no runway database. Without the DCS hook's airfield data, landings are measured against the point where you actually touched down (3.0° reference, 3.5° on a carrier).
+* The flight log only covers your own session, so DCS-confirmed hits and kills are available for flights you recorded with the scripts installed; other recordings fall back to geometry, and say so.
 * Stick input comes from control-surface deflection. On fly-by-wire jets (F-16, F/A-18) that's what the flight computer commanded, not raw stick position. A recording that carries Tacview's `PitchControlInput` etc. shows true inputs.
 * If a recording doesn't mark weapon parents or lock targets, the app infers them (nearest launcher, closest approach) and labels the source.
