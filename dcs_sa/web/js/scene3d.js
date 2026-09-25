@@ -3,9 +3,10 @@
 
 import * as THREE from "three";
 import { OrbitControls } from "/static/vendor/OrbitControls.js";
-import { fmtDist, isNum, sideColor, slantRange, units, M_TO_FT, MPS_TO_KT } from "./util.js";
+import { bisectRight, fmtDist, fmtShort, isHostile, isNum, sideColor, slantRange, units, M_TO_FT, MPS_TO_KT } from "./util.js";
 import { buildF16, isF16 } from "./f16.js";
 import { radarVolume } from "./symbols.js";
+import { tofTicks, weaponPath } from "./strikegeom.js";
 
 const R_LAT = 111320;
 const D2R = Math.PI / 180;
@@ -110,10 +111,28 @@ function heliGeometry() {
   return g;
 }
 
+function weaponGeometry() {
+  // ~4 m store pointing north: body, nose cone and cruciform tail fins, so the
+  // weapon cam shows its attitude from behind.
+  const body = new THREE.CylinderGeometry(0.25, 0.25, 3.3, 8).rotateX(Math.PI / 2).translate(0, 0, 0.35);
+  const nose = new THREE.ConeGeometry(0.25, 0.7, 8).rotateX(-Math.PI / 2).translate(0, 0, -1.65);
+  const v = [...body.toNonIndexed().attributes.position.array, ...nose.toNonIndexed().attributes.position.array];
+  for (let k = 0; k < 4; k++) {
+    const a = Math.PI / 4 + (k * Math.PI) / 2, c = Math.cos(a), s = Math.sin(a);
+    const p = (r, z) => [c * r, s * r, z];
+    v.push(...p(0.2, 1.1), ...p(0.75, 1.6), ...p(0.75, 2.0), ...p(0.2, 1.1), ...p(0.75, 2.0), ...p(0.2, 2.0));
+  }
+  body.dispose(); nose.dispose();
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(v, 3));
+  g.computeVertexNormals();
+  return g;
+}
+
 const GEOM = {
   jet: jetGeometry(),
   heli: heliGeometry(),
-  missile: new THREE.CylinderGeometry(0.25, 0.25, 4, 6).rotateX(Math.PI / 2),
+  missile: weaponGeometry(),
   ground: new THREE.BoxGeometry(7, 3, 10),
   sam: new THREE.CylinderGeometry(3, 4, 4, 8),
   ship: new THREE.BoxGeometry(16, 10, 110),
@@ -164,6 +183,66 @@ function radarGeometry(azDeg, elLoDeg, elHiDeg) {
 }
 
 // ---------------------------------------------------------------------------
+// Air-to-ground marks, stalks, lighting
+// ---------------------------------------------------------------------------
+
+const AIR_CATS = ["fixedwing", "rotorcraft", "air"];
+const STALK_CATS = new Set([...AIR_CATS, "weapon"]);
+const RESULT_COLOR = { destroyed: "#ff5c5c", damaged: "#ff9f43", miss: "#9aa4b1", unknown: "#c8cdd6" };
+const REL_COLOR = "#ffd166";
+const RING_SEGS = 48;
+const FOOT_SEGS = 48, FOOT_RINGS = 3; // concentric rings so the fill follows the terrain
+const DIM_OPACITY = 0.2;
+const LABEL_RANGE = 60000;
+
+// Scene background / fog, hemisphere and sun per lighting mode; `emissive` is
+// added to object materials so aircraft still read against a dark sky.
+const LIGHTING = {
+  day: { sky: 0x8fa9c4, hemiSky: 0xdfeaff, hemiGround: 0x3a3326, hemi: 1.1, sun: 0xffffff, sunI: 1.6, dir: [-0.6, 1, 0.4], emissive: 0 },
+  dusk: { sky: 0x5e5870, hemiSky: 0xffc9a6, hemiGround: 0x2a2430, hemi: 0.75, sun: 0xff9d5c, sunI: 1.3, dir: [-1, 0.22, 0.25], emissive: 0.12 },
+  night: { sky: 0x0b1120, hemiSky: 0x50608a, hemiGround: 0x0d1016, hemi: 0.5, sun: 0xa8bcff, sunI: 0.4, dir: [0.4, 1, -0.3], emissive: 0.35 },
+};
+
+// Fields that change a strike's geometry or labels: callers rebuild the list
+// ({...strike, pb}) every time, so compare these instead of identity.
+const STRIKE_KEYS = ["weaponId", "pb", "release", "impact", "footprint", "dispense", "damage", "releaseTime", "impactTime", "result", "missDistance"];
+const sameStrikes = (a, b) => !!b && a.length === b.length && a.every((s, i) => s === b[i] || STRIKE_KEYS.every((k) => s[k] === b[i][k]));
+
+/** The geometry's `name` attribute (3 floats per vertex) with room for n vertices; grows by doubling, keeps its data. */
+function growAttr(g, name, n) {
+  let a = g.attributes[name];
+  if (a && a.count >= n) return a;
+  let cap = a ? a.count : 64;
+  while (cap < n) cap *= 2;
+  const arr = new Float32Array(cap * 3);
+  if (a) arr.set(a.array);
+  a = new THREE.BufferAttribute(arr, 3);
+  g.setAttribute(name, a);
+  return a;
+}
+
+function dynamicGeometry(colors) {
+  const g = new THREE.BufferGeometry();
+  growAttr(g, "position", 64);
+  if (colors) growAttr(g, "color", 64);
+  g.setDrawRange(0, 0);
+  return g;
+}
+
+/** "REL 25.0k · M0.79": release altitude in thousands of ft (or m). */
+function releaseText(s) {
+  const r = s.release;
+  const alt = isNum(r.altitude) ? ` ${((units.metric ? r.altitude : r.altitude * M_TO_FT) / 1000).toFixed(1)}k` : "";
+  return `REL${alt}${isNum(r.mach) ? ` · M${r.mach.toFixed(2)}` : ""}`;
+}
+
+/** "19 m · DESTROYED" / "miss 44 m". */
+function impactText(s) {
+  const d = s.missDistance, res = s.result || "unknown";
+  if (res === "miss") return isNum(d) ? `miss ${fmtShort(d)}` : "miss";
+  if (res === "unknown") return isNum(d) ? fmtShort(d) : "impact";
+  return isNum(d) ? `${fmtShort(d)} · ${res.toUpperCase()}` : res.toUpperCase();
+}
 
 export class Scene3D {
   constructor(container) {
@@ -194,10 +273,14 @@ export class Scene3D {
     this.controls.minDistance = 20;
     this.controls.maxDistance = 400000;
 
-    this.scene.add(new THREE.HemisphereLight(0xdfeaff, 0x3a3326, 1.1));
+    this.hemi = new THREE.HemisphereLight(0xdfeaff, 0x3a3326, 1.1);
+    this.scene.add(this.hemi);
     const sun = new THREE.DirectionalLight(0xffffff, 1.6);
     sun.position.set(-0.6, 1, 0.4);
     this.scene.add(sun);
+    this.sun = sun;
+    this.lighting = "day";
+    this._emissiveBoost = 0;
 
     // Fallback ground so there is always something under the aircraft.
     const base = new THREE.Mesh(new THREE.PlaneGeometry(2e6, 2e6).rotateX(-Math.PI / 2),
@@ -208,10 +291,17 @@ export class Scene3D {
     this.grid.position.y = -1;
     this.scene.add(this.grid);
     this._initRounds();
+    this._initOverlays();
 
     this.origin = null;
     this.exaggeration = 1;
     this.tiles = new Map(); // key -> {mesh, z, x, y}
+    this._terrainGen = 0; // bumped whenever a terrain mesh appears or goes, to re-drape ground marks
+    this._strikeList = [];
+    this._strikes = [];
+    this._tmpV = new THREE.Vector3();
+    this._want = new THREE.Vector3();
+    this._look = new THREE.Vector3();
     this.loader = new Loader(6);
     this.objects = new Map(); // id -> {group, model, trail, label}
     this.mode = "orbit";
@@ -220,6 +310,7 @@ export class Scene3D {
     this.lastFocusPos = null;
     this.visible = false;
     this.onPick = null;
+    this.onContext = null; // (id | null, {clientX, clientY, lon, lat}) on a right click
     this.tileCenter = null;
     this._pickables = [];
     this._bindPick();
@@ -262,15 +353,40 @@ export class Scene3D {
   setExaggeration(x) {
     this.exaggeration = x;
     for (const t of this.tiles.values()) if (t.mesh) t.mesh.scale.y = x; // tiles still loading pick it up when built
+    this._terrainGen++; // strike marks rebuild on the exaggeration change itself
+  }
+
+  /** "day" (default) | "dusk" | "night": sky, fog, lights and a little extra glow on the models. */
+  setLighting(mode) {
+    const L = LIGHTING[mode] || LIGHTING.day;
+    this.lighting = LIGHTING[mode] ? mode : "day";
+    this.scene.background.set(L.sky);
+    this.scene.fog.color.set(L.sky);
+    this.hemi.color.set(L.hemiSky);
+    this.hemi.groundColor.set(L.hemiGround);
+    this.hemi.intensity = L.hemi;
+    this.sun.color.set(L.sun);
+    this.sun.intensity = L.sunI;
+    this.sun.position.set(...L.dir);
+    this._emissiveBoost = L.emissive;
+    // Apply now too: update() may not run again until playback moves.
+    for (const e of this.objects.values()) if (isNum(e.emiss)) e.mat.emissiveIntensity = e.emiss + L.emissive;
+    for (const m of ["dusk", "night"]) this.labelLayer.classList.toggle(m, this.lighting === m);
   }
 
   // -- coordinates ------------------------------------------------------------
 
-  toLocal(lon, lat, alt = 0) {
+  toLocal(lon, lat, alt = 0, out = new THREE.Vector3()) {
     const [lon0, lat0] = this.origin;
     const x = (lon - lon0) * R_LAT * Math.cos(lat0 * D2R);
     const z = -(lat - lat0) * R_LAT;
-    return new THREE.Vector3(x, (alt || 0) * this.exaggeration, z);
+    return out.set(x, (alt || 0) * this.exaggeration, z);
+  }
+
+  /** Inverse of toLocal on the ground plane: local x/z -> [lon, lat]. */
+  fromLocal(x, z) {
+    const [lon0, lat0] = this.origin;
+    return [lon0 + x / (R_LAT * Math.cos(lat0 * D2R)), lat0 - z / R_LAT];
   }
 
   _ensureOrigin(lon, lat) {
@@ -389,6 +505,7 @@ export class Scene3D {
 
   _disposeTile(t) {
     if (!t.mesh) return; // still loading; _buildTile notices it was dropped
+    this._terrainGen++;
     this.scene.remove(t.mesh);
     t.mesh.geometry.dispose();
     t.mesh.material.map?.dispose();
@@ -476,6 +593,7 @@ export class Scene3D {
     if (this.tiles.get(k) !== entry) { g.dispose(); mat.dispose(); return; }
     this.scene.add(mesh);
     entry.mesh = mesh;
+    this._terrainGen++;
     entry.pending = false;
     entry.source = source;
     this.terrainSources[source] += 1;
@@ -597,22 +715,56 @@ export class Scene3D {
 
   /**
    * objects: [{id, category, type, lon, lat, alt, hdg, pitch, roll, trail, name, pilot,
-   *            coalition, color, dead, lock, v:{EngagementRange}}]
+   *            coalition, color, dead, lock, dispenser, v:{EngagementRange}}]
+   * Options beyond the original five all default to the old behaviour:
+   *   t: recording time for the strike marks (none = show them all);
+   *   strikeLayers: {release, paths, impacts, footprints} (each default true; future: whole paths ahead of time);
+   *   stalks: "off" | "selected" | "all"; rings: "all" | "hostile" | "off"; pinned: Set of ids whose dome always shows;
+   *   lockLines: false hides lock lines; dim: Set of ids to keep, the rest drawn faint;
+   *   weaponCamHoldAt: {lon, lat, alt} to look at from where the weapon cam is (after impact).
    */
-  update(objects, { focusId = null, selectedId = null, radar = "all", rounds = [], padlockId = null } = {}) {
-    const focus = objects.find((o) => o.id === focusId) || objects.find((o) => o.id === selectedId) ||
-      objects.find((o) => ["fixedwing", "rotorcraft"].includes(o.category)) || objects[0];
+  update(objects, {
+    focusId = null, selectedId = null, radar = "all", rounds = [], padlockId = null,
+    t = null, strikeLayers = null, stalks = "off", rings = "all", pinned = null, lockLines: showLocks = true,
+    dim = null, weaponCamHoldAt = null,
+  } = {}) {
+    const wanted = focusId != null ? objects.find((o) => o.id === focusId) : null;
+    const focus = wanted || objects.find((o) => o.id === selectedId) ||
+      objects.find((o) => ["fixedwing", "rotorcraft"].includes(o.category)) || objects.find((o) => typeof o.dispenser !== "string");
     if (!focus) return;
+    // Weapon cam hold: given (the impact point once the weapon is gone), or
+    // implied when the weapon being ridden leaves the recording early (a JSOW
+    // dispensing its bomblets): stay put and keep looking.
+    const cw = this._camWeapon;
+    let hold = null;
+    if (this.mode === "chase") {
+      if (weaponCamHoldAt && isNum(weaponCamHoldAt.lon) && isNum(weaponCamHoldAt.lat)) hold = weaponCamHoldAt;
+      else if (!wanted && focusId != null && cw?.id === focusId) hold = cw;
+    }
     this._ensureOrigin(focus.lon, focus.lat);
-    this._updateTerrain(focus.lon, focus.lat);
+    this._updateTerrain(hold ? hold.lon : focus.lon, hold ? hold.lat : focus.lat);
     this.focusId = focus.id;
     this.selectedId = selectedId;
+    const ringMode = rings || "all";
+    const boost = this._emissiveBoost;
 
     const seen = new Set();
+    const cloud = this.bombletCloud.geometry;
+    let nb = 0;
     for (const o of objects) {
       if (!isNum(o.lon) || !isNum(o.lat) || o.category === "bullseye" || o.category === "countermeasure") continue;
+      if (typeof o.dispenser === "string") {
+        // Bomblets (hundreds at once): one point cloud, no meshes, trails, labels or picking.
+        const arr = growAttr(cloud, "position", nb + 1).array;
+        const v = this.toLocal(o.lon, o.lat, o.alt, this._tmpV);
+        arr[nb * 3] = v.x; arr[nb * 3 + 1] = v.y; arr[nb * 3 + 2] = v.z;
+        nb++;
+        continue;
+      }
       seen.add(o.id);
       const e = this._entry(o);
+      const dimmed = !!dim && !dim.has(o.id);
+      if (!!e.dimmed !== dimmed) this._dimEntry(e, dimmed);
       const p = this.toLocal(o.lon, o.lat, o.alt);
       e.group.position.copy(p);
       e.group.rotation.set(
@@ -623,14 +775,21 @@ export class Scene3D {
       );
       if (o.dead) e.mat.color.set(0x555555); else e.mat.color.copy(e.baseColor);
       const hi = o.id === focus.id || o.id === selectedId;
-      e.mat.emissiveIntensity = e.f16 ? (hi ? 0.4 : e.baseEmissive) : (hi ? 0.8 : 0.35);
+      e.emiss = e.f16 ? (hi ? 0.4 : e.baseEmissive) : (hi ? 0.8 : 0.35);
+      e.mat.emissiveIntensity = e.emiss + boost;
       e.pos = p;
       e.obj = o;
       if (e.dome) {
-        const r = o.v.EngagementRange;
-        e.dome.position.set(p.x, 0, p.z);
-        e.dome.scale.set(r, (o.v.VerticalEngagementRange || r) * this.exaggeration, r);
+        const show = !!pinned?.has(o.id) ||
+          (!dimmed && (ringMode === "all" || (ringMode === "hostile" && isHostile(o, focus))));
+        e.dome.visible = show;
+        if (show) {
+          const r = o.v.EngagementRange;
+          e.dome.position.set(p.x, 0, p.z);
+          e.dome.scale.set(r, (o.v.VerticalEngagementRange || r) * this.exaggeration, r);
+        }
       }
+      if (dimmed) continue; // no trail while isolated away
       // Trail
       const tr = o.trail || [];
       const arr = e.trail.geometry.attributes.position.array;
@@ -660,8 +819,15 @@ export class Scene3D {
       e.trail.geometry.attributes.position.needsUpdate = true;
     }
     for (const id of [...this.objects.keys()]) if (!seen.has(id)) this._remove(id);
+    cloud.setDrawRange(0, nb);
+    if (nb) cloud.attributes.position.needsUpdate = true;
     this._updateRadars(objects, radar, focus.id, selectedId);
     this._updateRounds(rounds);
+    this._updateStalks(stalks, focus.id, selectedId);
+    this._strikeT = isNum(t) ? t : Infinity;
+    this._strikeLayers = strikeLayers;
+    this._syncStrikes();
+    this._strikeVisibility();
 
     // Lock lines.
     if (!this.lockLines) {
@@ -670,18 +836,41 @@ export class Scene3D {
       this.lockLines.frustumCulled = false;
       this.scene.add(this.lockLines);
     }
-    const lp = [];
-    for (const o of objects) {
-      if (!o.lock) continue;
-      const a = this.objects.get(o.id), b = this.objects.get(o.lock);
-      if (a?.pos && b?.pos) lp.push(a.pos.x, a.pos.y, a.pos.z, b.pos.x, b.pos.y, b.pos.z);
+    this.lockLines.visible = showLocks !== false;
+    if (this.lockLines.visible) {
+      const lp = [];
+      for (const o of objects) {
+        if (!o.lock) continue;
+        const a = this.objects.get(o.id), b = this.objects.get(o.lock);
+        if (a?.pos && b?.pos && !(a.dimmed && b.dimmed)) lp.push(a.pos.x, a.pos.y, a.pos.z, b.pos.x, b.pos.y, b.pos.z);
+      }
+      this.lockLines.geometry.setAttribute("position", new THREE.Float32BufferAttribute(lp, 3));
+      this.lockLines.computeLineDistances();
     }
-    this.lockLines.geometry.setAttribute("position", new THREE.Float32BufferAttribute(lp, 3));
-    this.lockLines.computeLineDistances();
 
     // Camera follow.
     const fp = this.objects.get(focus.id)?.pos;
-    if (fp) {
+    const smooth = (want) => {
+      const now = performance.now();
+      const dt = this._lastChase ? Math.min(1, (now - this._lastChase) / 1000) : 1;
+      this._lastChase = now;
+      const snap = !this.lastFocusPos || this._lastFocusId !== focus.id || this.camera.position.distanceTo(want) > 600;
+      this.camera.position.lerp(want, snap ? 1 : 1 - Math.exp(-dt / 0.08));
+      return dt;
+    };
+    if (hold) {
+      this._updatePadLine(null);
+      this._padTarget = null;
+      const target = hold === cw ? cw.look : this.toLocal(hold.lon, hold.lat, isNum(hold.alt) ? hold.alt : 0, this._want);
+      // Ease the view from where the weapon cam was looking onto the hold point.
+      const dt = this._lastChase ? Math.min(1, (performance.now() - this._lastChase) / 1000) : 1;
+      this._lastChase = performance.now();
+      if (!this._holdLook) this._holdLook = (cw && this._lastFocusId === cw.id ? cw.look : target).clone();
+      else this._holdLook.lerp(target, 1 - Math.exp(-dt / 0.35));
+      this.camera.lookAt(this._holdLook);
+      this._lastFocusId = null; // snap back onto whatever is followed once the hold ends
+    } else if (fp) {
+      this._holdLook = null;
       if (this.mode === "orbit" && this.follow && this.lastFocusPos) {
         const delta = fp.clone().sub(this.lastFocusPos);
         this.camera.position.add(delta);
@@ -697,13 +886,6 @@ export class Scene3D {
       if (tracking && this.lastFocusPos && this._lastFocusId === focus.id) {
         this.camera.position.add(fp.clone().sub(this.lastFocusPos));
       }
-      const smooth = (want) => {
-        const now = performance.now();
-        const dt = this._lastChase ? Math.min(1, (now - this._lastChase) / 1000) : 1;
-        this._lastChase = now;
-        const snap = !this.lastFocusPos || this._lastFocusId !== focus.id || this.camera.position.distanceTo(want) > 600;
-        this.camera.position.lerp(want, snap ? 1 : 1 - Math.exp(-dt / 0.08));
-      };
       const target = this.mode === "padlock" && padlockId && padlockId !== focus.id ? this.objects.get(padlockId) : null;
       this._padTarget = target?.pos ? { from: focus, to: target.obj } : null;
       if (this._padTarget) {
@@ -718,7 +900,18 @@ export class Scene3D {
         this.camera.lookAt(fp.clone().lerp(tp, 0.3));
         this._updatePadLine(fp, tp, slant);
       } else this._updatePadLine(null);
-      if (this.mode === "chase" || (this.mode === "padlock" && !this._padTarget)) {
+      if (this.mode === "chase" && focus.category === "weapon") {
+        // Weapon cam: tight behind the weapon along its heading and pitch, so
+        // a bomb or a JSOW fills the view.
+        const hdg = (isNum(focus.hdg) ? focus.hdg : 0) * D2R, pit = (isNum(focus.pitch) ? focus.pitch : 0) * D2R;
+        const dir = this._tmpV.set(Math.sin(hdg) * Math.cos(pit), Math.sin(pit) * this.exaggeration, -Math.cos(hdg) * Math.cos(pit)).normalize();
+        this._want.copy(fp).addScaledVector(dir, -14).y += 4;
+        smooth(this._want);
+        const c = this._camWeapon ||= { id: null, lon: 0, lat: 0, alt: 0, look: new THREE.Vector3() };
+        c.look.copy(fp).addScaledVector(dir, 30);
+        this.camera.lookAt(c.look);
+        c.id = focus.id; c.lon = focus.lon; c.lat = focus.lat; c.alt = focus.alt;
+      } else if (this.mode === "chase" || (this.mode === "padlock" && !this._padTarget)) {
         const hdg = (focus.hdg || 0) * D2R;
         const back = 42, up = 11; // close enough to see the jet's shape
         const want = fp.clone().add(new THREE.Vector3(Math.sin(hdg) * -back, up, Math.cos(hdg) * back));
@@ -727,6 +920,7 @@ export class Scene3D {
         smooth(want);
         this.camera.lookAt(fp.clone().add(new THREE.Vector3(Math.sin(hdg) * 40, 3, -Math.cos(hdg) * 40)));
       }
+      if (this._camWeapon && !(this.mode === "chase" && focus.category === "weapon")) this._camWeapon.id = null;
       this.lastFocusPos = fp.clone();
       this._lastFocusId = focus.id;
     }
@@ -798,6 +992,430 @@ export class Scene3D {
     });
   }
 
+  // -- isolate, stalks, bomblets ------------------------------------------------------
+
+  _initOverlays() {
+    // Bomblets in flight: one cloud for all of them.
+    this.bombletCloud = new THREE.Points(dynamicGeometry(false),
+      new THREE.PointsMaterial({ color: 0xd9c3a5, size: 3, sizeAttenuation: false }));
+    // Altitude stalks: one segment per object and a dot where it meets the ground.
+    this.stalks = new THREE.LineSegments(dynamicGeometry(true),
+      new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.55, depthWrite: false }));
+    this.stalkDots = new THREE.Points(dynamicGeometry(true),
+      new THREE.PointsMaterial({ vertexColors: true, size: 4, sizeAttenuation: false }));
+    for (const o of [this.bombletCloud, this.stalks, this.stalkDots]) {
+      o.frustumCulled = false;
+      this.scene.add(o);
+    }
+    this._stalkWhite = new THREE.Color(0xe8e8e8);
+  }
+
+  /** Isolate: draw an object faint (no label or trail); undo restores its materials exactly. */
+  _dimEntry(e, on) {
+    e.dimmed = on;
+    e.trail.visible = !on;
+    e.model.traverse((m) => {
+      if (!m.isMesh) return;
+      const mat = m.material, u = mat.userData;
+      if (on && !u.undim) {
+        u.undim = { transparent: mat.transparent, opacity: mat.opacity, depthWrite: mat.depthWrite };
+        mat.transparent = true;
+        mat.opacity = u.undim.opacity * DIM_OPACITY;
+        mat.depthWrite = false;
+        mat.needsUpdate = true;
+      } else if (!on && u.undim) {
+        Object.assign(mat, u.undim);
+        delete u.undim;
+        mat.needsUpdate = true;
+      }
+    });
+  }
+
+  _updateStalks(mode, focusId, selectedId) {
+    const g = this.stalks.geometry, dg = this.stalkDots.geometry;
+    const put = (arr, at, c) => { arr[at] = c.r; arr[at + 1] = c.g; arr[at + 2] = c.b; };
+    let n = 0;
+    if (mode === "all" || mode === "selected") {
+      for (const e of this.objects.values()) {
+        const o = e.obj;
+        if (!o || !e.pos || e.dimmed || !STALK_CATS.has(o.category)) continue;
+        if (mode === "selected" && o.id !== focusId && o.id !== selectedId) continue;
+        const pos = growAttr(g, "position", 2 * n + 2).array, col = growAttr(g, "color", 2 * n + 2).array;
+        const dot = growAttr(dg, "position", n + 1).array, dcol = growAttr(dg, "color", n + 1).array;
+        const gy = this._terrainAt(o.lon, o.lat) ?? 0;
+        const c = o.category === "weapon" ? this._stalkWhite : e.sideCol;
+        const k = n * 6, j = n * 3;
+        pos[k] = e.pos.x; pos[k + 1] = e.pos.y; pos[k + 2] = e.pos.z;
+        pos[k + 3] = e.pos.x; pos[k + 4] = gy; pos[k + 5] = e.pos.z;
+        dot[j] = e.pos.x; dot[j + 1] = gy + 1; dot[j + 2] = e.pos.z;
+        put(col, k, c); put(col, k + 3, c); put(dcol, j, c);
+        n++;
+      }
+    }
+    g.setDrawRange(0, 2 * n);
+    dg.setDrawRange(0, n);
+    this.stalks.visible = this.stalkDots.visible = n > 0;
+    if (!n) return;
+    g.attributes.position.needsUpdate = g.attributes.color.needsUpdate = true;
+    dg.attributes.position.needsUpdate = dg.attributes.color.needsUpdate = true;
+  }
+
+  // -- air-to-ground strikes -----------------------------------------------------------
+
+  /**
+   * Strike marks: analysis strikes, each with `pb` (the weapon's playback
+   * track), or null to clear.  Geometry is built once (again on an origin or
+   * exaggeration change) and update() shows each part from its time on.
+   */
+  setStrikes(list) {
+    const next = Array.isArray(list) ? list.filter((s) => s?.release && s.impact) : [];
+    if (sameStrikes(next, this._strikeList)) return;
+    this._strikeList = next;
+    this._clearStrikes();
+    this._syncStrikes();
+    this._strikeVisibility();
+  }
+
+  _clearStrikes() {
+    for (const st of this._strikes) {
+      this.scene.remove(st.group);
+      st.group.traverse((m) => { if (m.geometry && m.geometry !== this._strikeRes?.sphere) m.geometry.dispose(); });
+      st.relLabel.remove();
+      st.impLabel.remove();
+    }
+    this._strikes = [];
+    if (this._strikeRes) {
+      this._strikeRes.sphere.dispose();
+      for (const m of this._strikeRes.mats) m.dispose();
+      this._strikeRes = null;
+    }
+    this._builtOrigin = null;
+  }
+
+  /** Build the marks once the scene has an origin; rebuild on origin / exaggeration change, re-drape on new terrain. */
+  _syncStrikes() {
+    if (!this.origin || !this._strikeList.length) return;
+    if (this._builtOrigin !== this.origin || this._builtExag !== this.exaggeration) {
+      this._clearStrikes();
+      this._buildStrikes();
+      this._builtOrigin = this.origin;
+      this._builtExag = this.exaggeration;
+      this._strikeVisibility();
+    } else if (this._drapedGen !== this._terrainGen) this._drapeStrikes();
+  }
+
+  _buildStrikes() {
+    const mats = [];
+    const mk = (m) => { mats.push(m); return m; };
+    const res = this._strikeRes = { sphere: new THREE.SphereGeometry(1, 12, 8), mats, ring: {} };
+    res.post = mk(new THREE.LineBasicMaterial({ color: REL_COLOR, transparent: true, opacity: 0.75 }));
+    res.rel = mk(new THREE.MeshBasicMaterial({ color: REL_COLOR }));
+    res.path = mk(new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6 }));
+    res.tick = mk(new THREE.PointsMaterial({ color: 0xffffff, size: 5, sizeAttenuation: false }));
+    res.disp = mk(new THREE.MeshBasicMaterial({ color: 0xffb347 }));
+    res.footLine = mk(new THREE.LineBasicMaterial({ color: 0xf2c94c, transparent: true, opacity: 0.9 }));
+    res.footFill = mk(new THREE.MeshBasicMaterial({ color: 0xf2c94c, transparent: true, opacity: 0.14, depthWrite: false, side: THREE.DoubleSide }));
+    res.bomb = mk(new THREE.PointsMaterial({ color: 0xffe2b0, size: 3.5, sizeAttenuation: false }));
+    for (const [k, c] of Object.entries(RESULT_COLOR)) {
+      res.ring[k] = mk(new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide }));
+    }
+    for (const s of this._strikeList) {
+      const st = this._buildStrike(s, res);
+      if (st) this._strikes.push(st);
+    }
+    this._drapeStrikes();
+  }
+
+  _buildStrike(s, res) {
+    const rel = s.release, imp = s.impact;
+    if (!isNum(rel.longitude) || !isNum(rel.latitude) || !isNum(imp.longitude) || !isNum(imp.latitude)) return null;
+    const group = new THREE.Group();
+    const impAlt = isNum(imp.altitude) ? imp.altitude : 0;
+    const st = { s, group, impY: impAlt * this.exaggeration, ringBucket: null, relShow: false, impShow: false };
+    const add = (Ctor, verts, mat) => {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(verts, 3));
+      const o = new Ctor(g, mat);
+      o.frustumCulled = false; // draped later; the bounding sphere would go stale
+      group.add(o);
+      return o;
+    };
+
+    // Release post: terrain -> release point, a marker on top.
+    st.relPos = this.toLocal(rel.longitude, rel.latitude, rel.altitude);
+    st.post = add(THREE.Line, new Float32Array([st.relPos.x, st.impY, st.relPos.z, st.relPos.x, st.relPos.y, st.relPos.z]), res.post);
+    st.top = new THREE.Mesh(res.sphere, res.rel);
+    st.top.position.copy(st.relPos);
+    group.add(st.top);
+
+    // Weapon path, drawn up to "now" while the weapon flies, with time-of-fall ticks.
+    const objs = new Map([[s.weaponId, { id: s.weaponId, pb: s.pb }]]);
+    const pts = s.pb ? weaponPath(s, objs) : [];
+    if (pts.length >= 2) {
+      const verts = new Float32Array(pts.length * 3);
+      st.pathT = new Float64Array(pts.length);
+      pts.forEach((q, i) => {
+        const v = this.toLocal(q.lon, q.lat, q.alt, this._tmpV);
+        verts.set([v.x, v.y, v.z], i * 3);
+        st.pathT[i] = q.t;
+      });
+      st.path = add(THREE.Line, verts, res.path);
+      const ticks = tofTicks(s, objs);
+      if (ticks.length) {
+        const tv = new Float32Array(ticks.length * 3);
+        st.tickT = new Float64Array(ticks.length);
+        ticks.forEach((q, i) => {
+          const v = this.toLocal(q.lon, q.lat, q.alt, this._tmpV);
+          tv.set([v.x, v.y, v.z], i * 3);
+          st.tickT[i] = q.t;
+        });
+        st.ticks = add(THREE.Points, tv, res.tick);
+      }
+    }
+
+    // Impact ring (draped per camera-distance bucket in render()).
+    st.impPos = this.toLocal(imp.longitude, imp.latitude, impAlt);
+    const rg = new THREE.BufferGeometry();
+    rg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(RING_SEGS * 2 * 3), 3));
+    const ri = [];
+    for (let i = 0; i < RING_SEGS; i++) {
+      const a = i, b = (i + 1) % RING_SEGS, c = RING_SEGS + i, d = RING_SEGS + b;
+      ri.push(a, c, b, b, c, d);
+    }
+    rg.setIndex(ri);
+    st.color = RESULT_COLOR[s.result] || RESULT_COLOR.unknown;
+    st.ring = new THREE.Mesh(rg, res.ring[s.result] || res.ring.unknown);
+    st.ring.frustumCulled = false;
+    st.ring.renderOrder = 3;
+    group.add(st.ring);
+
+    // Cluster footprint: the 2-sigma ellipse and the recorded bomblet impacts.
+    const fpr = s.footprint;
+    if (fpr && isNum(fpr.major) && isNum(fpr.minor) && fpr.major > 0 && isNum(fpr.lon)) {
+      const c = this.toLocal(fpr.lon, fpr.lat, 0, this._tmpV);
+      const b = (isNum(fpr.bearing) ? fpr.bearing : 0) * D2R;
+      // Major axis along the bearing (x east, z south), minor across it.
+      const ax = Math.sin(b), az = -Math.cos(b), bx = Math.cos(b), bz = Math.sin(b);
+      const nv = 1 + FOOT_RINGS * FOOT_SEGS;
+      const xz = new Float32Array(nv * 2);
+      xz[0] = c.x; xz[1] = c.z;
+      for (let r = 1; r <= FOOT_RINGS; r++) {
+        const f = r / FOOT_RINGS;
+        for (let i = 0; i < FOOT_SEGS; i++) {
+          const th = (i / FOOT_SEGS) * Math.PI * 2;
+          const u = Math.cos(th) * fpr.major * f, w = Math.sin(th) * fpr.minor * f;
+          const k = (1 + (r - 1) * FOOT_SEGS + i) * 2;
+          xz[k] = c.x + u * ax + w * bx;
+          xz[k + 1] = c.z + u * az + w * bz;
+        }
+      }
+      const idx = [];
+      const at = (r, i) => (r === 0 ? 0 : 1 + (r - 1) * FOOT_SEGS + (i % FOOT_SEGS));
+      for (let i = 0; i < FOOT_SEGS; i++) idx.push(0, at(1, i), at(1, i + 1));
+      for (let r = 1; r < FOOT_RINGS; r++) {
+        for (let i = 0; i < FOOT_SEGS; i++) idx.push(at(r, i), at(r + 1, i), at(r, i + 1), at(r, i + 1), at(r + 1, i), at(r + 1, i + 1));
+      }
+      const fill = add(THREE.Mesh, new Float32Array(nv * 3), res.footFill);
+      fill.geometry.setIndex(idx);
+      fill.renderOrder = 2;
+      const outline = add(THREE.LineLoop, new Float32Array(FOOT_SEGS * 3), res.footLine);
+      st.foot = { xz, fill, outline };
+    }
+    const bp = (fpr?.points || []).filter((q) => isNum(q?.[0]) && isNum(q?.[1]));
+    if (bp.length) {
+      st.bombXZ = new Float32Array(bp.length * 2);
+      bp.forEach((q, i) => {
+        const v = this.toLocal(q[0], q[1], 0, this._tmpV);
+        st.bombXZ[i * 2] = v.x; st.bombXZ[i * 2 + 1] = v.z;
+      });
+      st.bombs = add(THREE.Points, new Float32Array(bp.length * 3), res.bomb);
+      // All at once, from the first hit or 10 s after the dispense, whichever is earlier.
+      const cand = [];
+      for (const d of s.damage || []) if (isNum(d.time)) cand.push(d.time);
+      if (isNum(s.dispense?.time)) cand.push(s.dispense.time + 10);
+      st.bombT = cand.length ? Math.min(...cand) : s.impactTime;
+    }
+
+    // Dispense point.
+    const dsp = s.dispense;
+    if (dsp && isNum(dsp.longitude) && isNum(dsp.latitude)) {
+      st.disp = new THREE.Mesh(res.sphere, res.disp);
+      this.toLocal(dsp.longitude, dsp.latitude, dsp.altitude, st.disp.position);
+      st.dispT = dsp.time;
+      group.add(st.disp);
+    }
+
+    st.relLabel = document.createElement("div");
+    st.relLabel.className = "lbl3d strike rel";
+    st.relLabel.style.color = REL_COLOR;
+    st.impLabel = document.createElement("div");
+    st.impLabel.className = "lbl3d strike imp";
+    st.impLabel.style.color = st.color;
+    st.relLabel.style.display = st.impLabel.style.display = "none";
+    this.labelLayer.append(st.relLabel, st.impLabel);
+    this.scene.add(group);
+    return st;
+  }
+
+  /** Put the ground ends of the marks on the terrain (or the impact altitude where no tile is loaded). */
+  _drapeStrikes() {
+    this._drapedGen = this._terrainGen;
+    for (const st of this._strikes) {
+      const ground = (x, z) => this._groundAtLocal(x, z) ?? st.impY;
+      const pa = st.post.geometry.attributes.position;
+      pa.array[1] = Math.min(ground(pa.array[0], pa.array[2]), pa.array[4]);
+      pa.needsUpdate = true;
+      st.impPos.y = ground(st.impPos.x, st.impPos.z);
+      st.ringBucket = null; // re-drape the ring on the next frame
+      if (st.foot) {
+        const { xz, fill, outline } = st.foot;
+        const fa = fill.geometry.attributes.position, oa = outline.geometry.attributes.position;
+        for (let i = 0; i < xz.length / 2; i++) {
+          const x = xz[i * 2], z = xz[i * 2 + 1];
+          fa.array[i * 3] = x; fa.array[i * 3 + 1] = ground(x, z) + 3; fa.array[i * 3 + 2] = z;
+        }
+        // Outline on the outer ring, a little above the fill.
+        const o0 = (1 + (FOOT_RINGS - 1) * FOOT_SEGS) * 3;
+        for (let i = 0; i < FOOT_SEGS * 3; i++) oa.array[i] = fa.array[o0 + i] + (i % 3 === 1 ? 1 : 0);
+        fa.needsUpdate = oa.needsUpdate = true;
+      }
+      if (st.bombs) {
+        const ba = st.bombs.geometry.attributes.position;
+        for (let i = 0; i < st.bombXZ.length / 2; i++) {
+          const x = st.bombXZ[i * 2], z = st.bombXZ[i * 2 + 1];
+          ba.array[i * 3] = x; ba.array[i * 3 + 1] = ground(x, z) + 2; ba.array[i * 3 + 2] = z;
+        }
+        ba.needsUpdate = true;
+      }
+    }
+  }
+
+  /** Impact ring of radius r (m) lying on the terrain. */
+  _drapeRing(st, r) {
+    const a = st.ring.geometry.attributes.position, arr = a.array;
+    const lift = 1.5 + r * 0.01;
+    for (let i = 0; i < RING_SEGS; i++) {
+      const th = (i / RING_SEGS) * Math.PI * 2, c = Math.cos(th), s = Math.sin(th);
+      for (let k = 0; k < 2; k++) {
+        const rr = k ? r : r * 0.78;
+        const x = st.impPos.x + c * rr, z = st.impPos.z + s * rr, j = (k * RING_SEGS + i) * 3;
+        arr[j] = x; arr[j + 1] = (this._groundAtLocal(x, z) ?? st.impY) + lift; arr[j + 2] = z;
+      }
+    }
+    a.needsUpdate = true;
+  }
+
+  /** Show each mark from its time on (no spoilers), per layer. */
+  _strikeVisibility() {
+    const T = this._strikeT ?? Infinity, L = this._strikeLayers || {};
+    const rel = L.release !== false, paths = L.paths !== false, imps = L.impacts !== false, foot = L.footprints !== false;
+    for (const st of this._strikes) {
+      const s = st.s;
+      // `!(T < x)` is true when x is missing too: no time, nothing to hide.
+      st.relShow = rel && !(T < s.releaseTime);
+      st.post.visible = st.top.visible = st.relShow;
+      if (st.path) {
+        const n = L.future === true ? st.pathT.length : Math.min(st.pathT.length, bisectRight(st.pathT, T) + 1);
+        st.path.geometry.setDrawRange(0, n);
+        st.path.visible = paths && n >= 2;
+        if (st.ticks) {
+          const m = L.future === true ? st.tickT.length : bisectRight(st.tickT, T) + 1;
+          st.ticks.geometry.setDrawRange(0, m);
+          st.ticks.visible = st.path.visible && m > 0;
+        }
+      }
+      if (st.disp) st.disp.visible = paths && !(T < st.dispT);
+      const hit = !(T < s.impactTime);
+      st.impShow = st.ring.visible = imps && hit;
+      if (st.foot) st.foot.fill.visible = st.foot.outline.visible = foot && hit;
+      if (st.bombs) st.bombs.visible = foot && !(T < st.bombT);
+    }
+  }
+
+  /** Per-frame: keep the markers a readable size, re-drape rings on scale change. */
+  _scaleStrikes() {
+    const cam = this.camera.position;
+    for (const st of this._strikes) {
+      if (st.top.visible) st.top.scale.setScalar(Math.max(3, cam.distanceTo(st.relPos) / 180));
+      if (st.disp?.visible) st.disp.scale.setScalar(Math.max(1.5, cam.distanceTo(st.disp.position) / 200));
+      if (st.ring.visible) {
+        // ~25 m, growing with distance like the models; quantised so the drape runs rarely.
+        const s = Math.min(60, Math.max(1, cam.distanceTo(st.impPos) / 2000));
+        const b = Math.round(Math.log(s) * 12);
+        if (b !== st.ringBucket) { st.ringBucket = b; st.ringR = 25 * Math.exp(b / 12); this._drapeRing(st, st.ringR); }
+      }
+    }
+  }
+
+  _strikeLabels(w, h, v) {
+    const cam = this.camera.position;
+    const pxPerRad = h / 2 / Math.tan((this.camera.fov * D2R) / 2);
+    const boxes = this._lblBoxes ||= []; // x, y, width of the labels placed this frame
+    boxes.length = 0;
+    // Only near the camera (a strike package would bury the view in text) and on screen.
+    const place = (el, show, pos, dx, dy, s, rel) => {
+      if (show) {
+        v.copy(pos).project(this.camera);
+        show = v.z < 1 && Math.abs(v.x) < 1.05 && Math.abs(v.y) < 1.05 && cam.distanceTo(pos) < LABEL_RANGE;
+      }
+      el.style.display = show ? "block" : "none";
+      if (!show) return;
+      const txt = rel ? releaseText(s) : impactText(s);
+      if (el.textContent !== txt) el.textContent = txt;
+      const x = ((v.x + 1) / 2) * w + dx, bw = txt.length * 6.7;
+      let y = ((1 - v.y) / 2) * h + dy;
+      // Stack instead of overprinting (a pair released together, neighbouring impacts).
+      for (let i = 0; i < boxes.length; i += 3) {
+        if (x < boxes[i] + boxes[i + 2] && boxes[i] < x + bw && Math.abs(y - boxes[i + 1]) < 13) { y = boxes[i + 1] + 13; i = -3; }
+      }
+      boxes.push(x, y, bw);
+      el.style.transform = `translate(${x}px, ${y}px)`;
+    };
+    for (const st of this._strikes) {
+      place(st.relLabel, st.relShow, st.relPos, 10, -16, st.s, true);
+      // Impact label just clear of the ring.
+      const ringPx = st.ringR ? (st.ringR / Math.max(1, cam.distanceTo(st.impPos))) * pxPerRad : 0;
+      place(st.impLabel, st.impShow, st.impPos, 6 + Math.min(ringPx, 60), 2, st.s, false);
+    }
+  }
+
+  // -- terrain lookup --------------------------------------------------------------------
+
+  /** Terrain height (scene units, exaggerated) at lon/lat from the loaded tiles, detail first; null if none. */
+  _terrainAt(lon, lat) {
+    return this._tileHeight(DETAIL_Z, lon, lat) ?? this._tileHeight(COARSE_Z, lon, lat);
+  }
+
+  _groundAtLocal(x, z) {
+    const [lon0, lat0] = this.origin;
+    return this._terrainAt(lon0 + x / (R_LAT * Math.cos(lat0 * D2R)), lat0 - z / R_LAT);
+  }
+
+  /**
+   * Height on a tile's grid, interpolated on the same triangles as the mesh:
+   * no raycast, so stalks and draped marks can ask hundreds of times a frame.
+   */
+  _tileHeight(z, lon, lat) {
+    const fx = lon2x(lon, z), fy = lat2y(lat, z);
+    const tx = Math.floor(fx), ty = Math.floor(fy);
+    // One cached tile per zoom level, valid until the terrain changes.
+    const c = (this._hCache ||= {})[z] ||= { gen: -1, tx: 0, ty: 0, mesh: null };
+    if (c.gen !== this._terrainGen || c.tx !== tx || c.ty !== ty) {
+      c.gen = this._terrainGen; c.tx = tx; c.ty = ty;
+      c.mesh = this.tiles.get(`${z}/${tx}/${ty}`)?.mesh || null;
+    }
+    if (!c.mesh) return null;
+    const n = MESH_SEGS, pos = c.mesh.geometry.attributes.position.array;
+    const gx = (fx - tx) * n, gy = (fy - ty) * n;
+    const i = Math.min(n - 1, Math.floor(gx)), j = Math.min(n - 1, Math.floor(gy));
+    const u = gx - i, w = gy - j;
+    const a = j * (n + 1) + i, b = a + 1, cc = a + n + 1, d = cc + 1;
+    const ha = pos[a * 3 + 1], hb = pos[b * 3 + 1], hc = pos[cc * 3 + 1], hd = pos[d * 3 + 1];
+    // The mesh splits each cell into (a, c, b) and (b, c, d).
+    const y = u + w <= 1 ? ha + (hb - ha) * u + (hc - ha) * w : hd + (hc - hd) * (1 - u) + (hb - hd) * (1 - w);
+    return y * c.mesh.scale.y;
+  }
+
   // -- radar -------------------------------------------------------------------------
 
   _updateRadars(objects, mode, focusId, selectedId) {
@@ -806,7 +1424,7 @@ export class Scene3D {
       for (const o of objects) {
         if (mode === "focus" && o.id !== focusId && o.id !== selectedId) continue;
         const e = this.objects.get(o.id);
-        if (!e?.pos || o.dead) continue;
+        if (!e?.pos || o.dead || e.dimmed) continue;
         const r = radarVolume(o, { assumed: mode !== "known" });
         if (!r) continue;
         shown.add(o.id);
@@ -955,6 +1573,8 @@ export class Scene3D {
       const floor = Math.max(g ?? 0, 0) + 15;
       if (cam.y < floor) cam.y = floor;
     }
+    this._syncStrikes(); // tiles keep arriving while playback is paused
+    this._scaleStrikes();
     const cam = this.camera.position;
     // Keep models visible at range: never smaller than ~1/150 of the distance.
     for (const e of this.objects.values()) {
@@ -982,7 +1602,7 @@ export class Scene3D {
     for (const e of this.objects.values()) {
       const o = e.obj;
       const air = o && ["fixedwing", "rotorcraft", "air"].includes(o.category);
-      if (!o || !e.pos || (!air && o.id !== this.selectedId && o.category !== "weapon")) { e.label.style.display = "none"; continue; }
+      if (!o || !e.pos || e.dimmed || (!air && o.id !== this.selectedId && o.category !== "weapon")) { e.label.style.display = "none"; continue; }
       v.copy(e.pos).project(this.camera);
       if (v.z > 1 || v.x < -1.1 || v.x > 1.1 || v.y < -1.1 || v.y > 1.1) { e.label.style.display = "none"; continue; }
       e.label.style.display = "block";
@@ -1000,6 +1620,7 @@ export class Scene3D {
       this.padLabel.style.display = show ? "block" : "none";
       if (show) this.padLabel.style.transform = `translate(${((v.x + 1) / 2) * w + 6}px, ${((1 - v.y) / 2) * h - 6}px)`;
     }
+    this._strikeLabels(w, h, v);
     this._pointers(w, h);
   }
 
@@ -1008,14 +1629,32 @@ export class Scene3D {
     let down = null;
     el.addEventListener("pointerdown", (e) => { down = [e.clientX, e.clientY]; });
     el.addEventListener("pointerup", (e) => {
+      // A click, not a drag (OrbitControls rotates / pans on drags).
       if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 4) return;
       const r = el.getBoundingClientRect();
       const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
       const ray = new THREE.Raycaster();
       ray.setFromCamera(ndc, this.camera);
       const hit = ray.intersectObjects(this._pickables, false)[0];
+      if (e.button === 2 && this.onContext) {
+        const ll = this._groundPick(ray);
+        this.onContext(hit ? hit.object.userData.id : null, { clientX: e.clientX, clientY: e.clientY, lon: ll?.[0] ?? null, lat: ll?.[1] ?? null });
+        return;
+      }
       if (hit && this.onPick) this.onPick(hit.object.userData.id, { shift: e.shiftKey });
     });
+    // The right button belongs to onContext and panning, never the browser menu.
+    el.addEventListener("contextmenu", (e) => e.preventDefault());
     el.addEventListener("pointerdown", () => { if (this.mode === "orbit") this.userMoved = true; });
+  }
+
+  /** [lon, lat] of the terrain under a pick ray (the y = 0 plane where no tile is loaded), or null. */
+  _groundPick(ray) {
+    if (!this.origin) return null;
+    const meshes = [];
+    for (const t of this.tiles.values()) if (t.mesh) meshes.push(t.mesh);
+    let p = ray.intersectObjects(meshes, false)[0]?.point;
+    if (!p) p = ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), new THREE.Vector3());
+    return p ? this.fromLocal(p.x, p.z) : null;
   }
 }
