@@ -52,6 +52,34 @@ def guess_player(rec: Recording, player_names: Iterable[str] = ()) -> Optional[T
     return max(aircraft, key=score)
 
 
+def _scramble_check(rec: Recording) -> Dict:
+    """Multiplayer-client recordings made with a playback delay have their
+    positions scrambled (DCS/Tacview do it on purpose; time, altitude and
+    names are intact).  Say so, rather than drawing nonsense.
+
+    Detected from the PlaybackDelay header, or from aircraft jumping more
+    than half a degree between most consecutive samples.
+    """
+    delay = rec.globals.get("PlaybackDelay")
+    jumps = total = 0
+    for tr in rec.aircraft():
+        lon, lat = tr.channel("Longitude"), tr.channel("Latitude")
+        if lon is None or lat is None:
+            continue
+        for i in range(1, min(len(tr), 400)):
+            if lon[i] == lon[i] and lon[i - 1] == lon[i - 1]:
+                total += 1
+                if abs(lon[i] - lon[i - 1]) + abs(lat[i] - lat[i - 1]) > 0.5:
+                    jumps += 1
+    scrambled = total >= 20 and jumps / total > 0.5
+    if not scrambled and delay in (None, "", 0, "0", 0.0):
+        return {}
+    note = ("Positions in this recording are scrambled (a multiplayer client recording with a playback delay): "
+            "the map, impact points and distance-based results are not reliable. Times, altitudes and names are.")
+    warnings = [note] + list(rec.parse_warnings[:49])
+    return {"scrambled": True, "playbackDelay": delay, "warnings": warnings}
+
+
 def analyze(rec: Recording, player_names: Iterable[str] = (), dcs: Optional[Dict] = None,
             airbases: Optional[List[Dict]] = None) -> Dict:
     """Full debrief.  *dcs* is a merged flight log (values DCS reported while
@@ -92,7 +120,7 @@ def analyze(rec: Recording, player_names: Iterable[str] = (), dcs: Optional[Dict
     box = geo.bounds(pts)
 
     return _json_safe({
-        "recording": rec.summary(),
+        "recording": {**rec.summary(), **_scramble_check(rec)},
         "player": player.id if player else None,
         "bullseye": {"id": bullseye.id, "longitude": bpos[0], "latitude": bpos[1]} if bpos else None,
         "bounds": list(box) if box else None,

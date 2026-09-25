@@ -121,7 +121,7 @@ class Strike:
     footprint: Dict[str, object] = field(default_factory=dict)  # centre, axes, angle, points; "estimated" when typical
     damage: List[Dict[str, object]] = field(default_factory=list)
     dcs_hits: Optional[int] = None
-    result: str = "unknown"                    # "destroyed" | "damaged" | "miss" | "in flight"
+    result: str = "unknown"                    # "destroyed" | "damaged" | "miss" | "intercepted" | "in flight"
     envelope: Dict[str, object] = field(default_factory=dict)  # JSOW: Rmax/Rmin/TOF at release (DCS table)
 
     def to_dict(self) -> Dict:
@@ -370,6 +370,8 @@ def analyze_strikes(rec: Recording, weapons: WeaponReport,
         st.damage.sort(key=lambda x: x["time"])
         if flying:
             st.result = "in flight"
+        elif not subs and _intercepted(rec, w, end_t, elon, elat, ealt, gnd):
+            st.result = "intercepted"
         elif st.damage:
             st.result = "destroyed"
         elif shot.outcome == "damage" or shot.dcs_hit:
@@ -379,6 +381,22 @@ def analyze_strikes(rec: Recording, weapons: WeaponReport,
         out.append(st)
     _share_damage(out)
     return out
+
+
+def _intercepted(rec: Recording, w: Track, t: float, lon: float, lat: float, alt: float, ground: Optional[float]) -> bool:
+    """Shot down: the weapon ended well above the ground, in the same moment
+    and place as another missile (a SAM that hit it)."""
+    # With no ground units nearby to tell the elevation, sea level; the
+    # coincidence with another missile is the real test.
+    if alt < (ground if ground is not None else 0.0) + 150.0:
+        return False
+    for tr in rec.tracks.values():
+        if tr is w or tr.category != "weapon" or tr.removed_at is None or abs(tr.removed_at - t) > 1.0:
+            continue
+        p = tr.position_interp(min(t, tr.ends_at))
+        if p is not None and geo.slant_range(lon, lat, alt, p[0], p[1], p[2]) < 500.0:
+            return True
+    return False
 
 
 def _final_heading(samples: List[Tuple[float, float, float, float]]) -> Optional[float]:

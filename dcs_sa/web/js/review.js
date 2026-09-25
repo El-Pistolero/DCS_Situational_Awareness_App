@@ -436,6 +436,8 @@ function renderMapChips() {
   const box = $("mapChips");
   box.innerHTML = "";
   const add = (txt, clear, cls = "") => box.append(el("button", { class: `mapchip ${cls}`, title: "Clear", onclick: clear }, txt, " ×"));
+  const rec = S.analysis?.recording;
+  if (rec?.scrambled) box.append(el("span", { class: "mapchip warn", title: rec.warnings?.[0] || "" }, "⚠ Positions scrambled (multiplayer playback delay)"));
   if (S.isolate) {
     const o = S.objects.get(S.isolate.id);
     add(`Isolated: ${S.isolate.group || o?.pilot || o?.name || "?"} + ${S.isolate.ids.size - 1} related · X`, () => setIsolate(null));

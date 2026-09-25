@@ -11,7 +11,7 @@ import { M_TO_FT, fmtClock, fmtDist, fmtShort, isNum, sideColor, units } from ".
 import { posAt, strikeGeometry, tofTicks, weaponLabel, weaponPath } from "./strikegeom.js";
 
 const TAU = Math.PI * 2;
-export const RESULT_COLOR = { destroyed: "#ff5c5c", damaged: "#ff9f43", miss: "#9aa4b1", unknown: "#9aa4b1" };
+export const RESULT_COLOR = { destroyed: "#ff5c5c", damaged: "#ff9f43", miss: "#9aa4b1", intercepted: "#b48cff", unknown: "#9aa4b1" };
 const FLYING = "#4dd8e6";
 const BOMBLET = "rgba(255,196,120,0.85)";
 

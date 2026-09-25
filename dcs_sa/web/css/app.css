@@ -545,3 +545,4 @@ body.mode-a2g .lv-map { box-shadow: inset 0 0 0 2px var(--orange); }
 .tile.wide .v { white-space: normal; font-size: 13px; }
 table.grid.targets td { vertical-align: middle; }
 table.grid.targets tr.tgroup td { background: #131d27; font-size: 12px; padding-top: 7px; }
+.mapchip.warn { color: var(--warn); border-color: #7a4d1f; cursor: help; }

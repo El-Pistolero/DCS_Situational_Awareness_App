@@ -146,3 +146,41 @@ class Envelope(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _parse(text):
+    from dcs_sa.acmi.parser import AcmiParser, RecordingBuilder
+    b = RecordingBuilder()
+    p = AcmiParser(b)
+    for line in ("FileType=text/acmi/tacview\nFileVersion=2.2\n" + text).splitlines():
+        p.feed(line)
+    return b.finish()
+
+
+class RealRecordingQuirks(unittest.TestCase):
+    def test_scrambled_multiplayer_positions_are_flagged(self):
+        lines = ["0,ReferenceLongitude=40", "0,ReferenceLatitude=40", "0,PlaybackDelay=600.000000"]
+        for k in range(60):
+            # Longitude digits scrambled: jumps of degrees between samples.
+            lines += [f"#{k}", f"1,T={(k * 7.3) % 5:.4f}|{(k * 3.1) % 4:.4f}|5000,Type=Air+FixedWing,Name=F-16C_50,Coalition=Allies"]
+        rep = analyze(_parse("\n".join(lines)), [])
+        self.assertTrue(rep["recording"]["scrambled"])
+        self.assertIn("scrambled", rep["recording"]["warnings"][0])
+        clean = analyze(_parse("\n".join(["#0", "1,T=1|1|5000,Type=Air+FixedWing,Name=F-16C_50", "#1", "1,T=1.001|1|5000"])), [])
+        self.assertNotIn("scrambled", clean["recording"])
+
+    def test_weapon_shot_down_by_a_sam_is_intercepted(self):
+        lines = ["0,ReferenceLongitude=40", "0,ReferenceLatitude=40",
+                 "#0", "a1,T=0|0|6000,Type=Air+FixedWing,Name=F/A-18C,Coalition=Allies,Color=Blue",
+                 "g1,T=0.3|0|150,Type=Ground+Heavy+AntiAircraft,Name=Tor 9A331,Coalition=Enemies,Color=Red",
+                 "g2,T=0.31|0.001|150,Type=Ground+Vehicle,Name=Ural-375,Coalition=Enemies,Color=Red"]
+        for k in range(1, 60):
+            lines += [f"#{k}", f"a1,T={k * 0.002:.4f}|0|6000",
+                      f"w1,T={0.001 + k * 0.003:.4f}|0|{6000 - k * 60},Type=Weapon+Missile,Name=AGM_154,Coalition=Allies,Color=Blue"]
+            if k >= 50:
+                f = (k - 50) / 9.0  # the SAM meets the JSOW at its last sample
+                lines.append(f"s1,T={0.3 - f * 0.122:.4f}|0|{150 + f * 2310:.0f},Type=Weapon+Missile,Name=9M330,Coalition=Enemies,Color=Red")
+        lines += ["#60", "-w1", "-s1", "#80"]
+        rec = _parse("\n".join(lines))
+        strikes = analyze_strikes(rec, analyze_weapons(rec))
+        self.assertEqual([s.result for s in strikes if s.weapon_name == "AGM_154"], ["intercepted"])
