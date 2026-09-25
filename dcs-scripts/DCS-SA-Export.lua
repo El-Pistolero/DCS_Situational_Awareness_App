@@ -307,27 +307,35 @@ local function build_world(me)
   if type(LoGetWorldObjects) ~= "function" or not me or not me.lat then return nil end
   local ok, objs = pcall(LoGetWorldObjects)
   if not ok or type(objs) ~= "table" then return nil end
-  local out, own = {}, call("LoGetPlayerPlaneId")
+  local near, own = {}, call("LoGetPlayerPlaneId")
   local cos_lat = math.cos(me.lat * math.pi / 180)
   for id, o in pairs(objs) do
     if id ~= own and type(o) == "table" and type(o.LatLongAlt) == "table" then
       local dlat = (o.LatLongAlt.Lat - me.lat) * 111320
       local dlon = (o.LatLongAlt.Long - me.lon) * 111320 * cos_lat
-      if dlat * dlat + dlon * dlon < DCSSA.world_range * DCSSA.world_range then
-        local hdg = deg(o.Heading)
-        if hdg and hdg < 0 then hdg = hdg + 360 end
-        local flags = type(o.Flags) == "table" and o.Flags or {}
-        out[#out + 1] = {
-          id = id, name = o.Name, pilot = o.UnitName, group = o.GroupName,
-          coalition = COALITION[o.CoalitionID] or o.Coalition,
-          type = o.Type, lat = o.LatLongAlt.Lat, lon = o.LatLongAlt.Long, alt = o.LatLongAlt.Alt,
-          hdg = hdg, pitch = deg(o.Pitch), bank = deg(o.Bank),
-          -- DCS's own "radar is on" flag for this unit (pointing is not exported).
-          radar = flags.RadarActive, jamming = flags.Jamming, human = flags.Human,
-        }
-        if #out >= DCSSA.world_max then break end
+      local d2 = dlat * dlat + dlon * dlon
+      if d2 < DCSSA.world_range * DCSSA.world_range then
+        -- Weapons in flight (Type.level1 == 4) first: a missile at me must never be cut.
+        local weapon = type(o.Type) == "table" and o.Type.level1 == 4
+        near[#near + 1] = { id = id, o = o, key = (weapon and 0 or 1e12) + d2 }
       end
     end
+  end
+  table.sort(near, function(a, b) return a.key < b.key end)
+  local out = {}
+  for i = 1, math.min(#near, DCSSA.world_max) do
+    local id, o = near[i].id, near[i].o
+    local hdg = deg(o.Heading)
+    if hdg and hdg < 0 then hdg = hdg + 360 end
+    local flags = type(o.Flags) == "table" and o.Flags or {}
+    out[#out + 1] = {
+      id = id, name = o.Name, pilot = o.UnitName, group = o.GroupName,
+      coalition = COALITION[o.CoalitionID] or o.Coalition,
+      type = o.Type, lat = o.LatLongAlt.Lat, lon = o.LatLongAlt.Long, alt = o.LatLongAlt.Alt,
+      hdg = hdg, pitch = deg(o.Pitch), bank = deg(o.Bank),
+      -- DCS's own "radar is on" flag for this unit (pointing is not exported).
+      radar = flags.RadarActive, jamming = flags.Jamming, human = flags.Human,
+    }
   end
   return out
 end
