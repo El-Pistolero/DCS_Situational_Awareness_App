@@ -359,7 +359,8 @@ class LiveWorld:
                         "id": obj.id, "parent": obj.props.get("Parent"), "color": obj.props.get("Color"),
                         "coalition": obj.coalition, "lon": pos[0], "lat": pos[1], "alt": pos[2],
                         "trail": [[p[1], p[2], p[3]] for p in list(obj.trail)[-12:]],
-                        "_d": geo.ground_distance(fpos[0], fpos[1], pos[0], pos[1]) if fpos else 0.0,
+                        # Nearest to me first; with no focus, the newest first.
+                        "_d": geo.ground_distance(fpos[0], fpos[1], pos[0], pos[1]) if fpos else -obj.first_seen,
                     })
                     continue
                 pos = obj.position()

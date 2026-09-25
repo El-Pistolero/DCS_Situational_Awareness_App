@@ -159,6 +159,99 @@ class AirToAirGunKill(unittest.TestCase):
         self.assertEqual(rep.bursts[0].rounds, 20)
 
 
+class RoundsDeletedOnImpact(unittest.TestCase):
+    """DCS deletes a round when it hits, so its last sample is up to a frame
+    short of the target and there is no impact sample."""
+
+    def build(self, frame=0.25, range_m=700.0, bursts=((1.0, 0.0),), kill_at=None, removal=True):
+        lines = ["FileType=text/acmi/tacview", "FileVersion=2.2", "0,ReferenceLongitude=40", "0,ReferenceLatitude=40"]
+        deg = lambda m: m / M_PER_DEG  # noqa: E731
+        lon_m = lambda m: m / (M_PER_DEG * math.cos(math.radians(40)))  # noqa: E731
+        spawn = {}
+        for b0, dy in bursts:
+            for k in range(8):  # 8 rounds per burst, 0.05 s apart
+                spawn[f"R{int(b0 * 100)}{k}"] = (b0 + 0.05 * k, dy)
+        alive = set()
+        steps = int(6.0 / 0.05)
+        for i in range(steps + 1):
+            t = round(i * 0.05, 2)
+            lines.append(f"#{t}")
+            lines.append(f"A,T={lon_m(200 * t):.8f}|0|5000|0|0|90,Type=Air+FixedWing,Name=MiG-29S,Coalition=Enemies,Country=ru")
+            lines.append(f"B,T={lon_m(200 * t - range_m):.8f}|0|5000|0|0|90,Type=Air+FixedWing,Name=F-16C_50,Pilot=Gunner,Coalition=Allies,Country=us")
+            for rid, (ts, dy) in spawn.items():
+                tau = t - ts
+                if tau < -1e-9:
+                    continue
+                x = 200 * ts - range_m + 1000 * tau
+                hit_tau = range_m / 800.0  # closes at 1000 - 200 m/s
+                if tau > hit_tau + 1e-9:
+                    if rid in alive:
+                        if removal:
+                            lines.append(f"-{rid}")
+                        alive.discard(rid)
+                        spawn[rid] = (ts, dy)
+                    continue
+                on_frame = abs(t / frame - round(t / frame)) < 1e-6
+                first = rid not in alive and tau < 0.05
+                if not (on_frame or first) or (rid not in alive and not first):
+                    continue
+                text = ",Type=Projectile+Shell,Name=weapons.shells.M61_20_HE,Coalition=Allies,Country=us" if first else ""
+                alive.add(rid)
+                lines.append(f"{rid},T={lon_m(x):.8f}|{deg(dy):.8f}|5000{text}")
+            if kill_at is not None and abs(t - kill_at) < 1e-6:
+                lines.append("0,Event=Destroyed|A|")
+        return parse_lines(lines)
+
+    def test_hits_count_although_last_sample_is_short(self):
+        rec = self.build(frame=0.25)
+        rep = analyze_weapons(rec)
+        self.assertEqual(len(rep.bursts), 1)
+        b = rep.bursts[0]
+        self.assertEqual((b.launcher_id, b.target_id), ("B", "A"))
+        self.assertEqual(b.rounds_on_target, 8)
+        self.assertLess(b.closest_approach, ROUND_HIT_RADIUS)
+
+    def test_close_range_rounds_not_credited_to_the_target(self):
+        # At 300 m, rounds first seen a frame late are nearer the target than
+        # the shooter; they must still belong to B.
+        rep = analyze_weapons(self.build(frame=0.25, range_m=300.0))
+        self.assertEqual({b.launcher_id for b in rep.bursts}, {"B"})
+
+    def test_kill_goes_to_the_burst_that_landed_last(self):
+        # Burst 1 passes 2 m from A (damage), burst 2 passes 8 m and A dies.
+        rec = self.build(bursts=((1.0, 2.0), (3.0, 8.0)), kill_at=4.2)
+        rep = analyze_weapons(rec)
+        self.assertEqual(len(rep.bursts), 2)
+        self.assertEqual([b.kill for b in rep.bursts], [False, True])
+
+
+class PlaybackShapes(unittest.TestCase):
+    def test_round_without_removal_ends_at_its_last_sample(self):
+        from dcs_sa.server.store import RecordingStore
+        rec = RoundsDeletedOnImpact().build(removal=False)
+        pb = RecordingStore.playback(rec)
+        for r in pb["rounds"]:
+            self.assertLessEqual(r["end"], r["t"][-1] + 1e-6)
+
+    def test_ground_radar_gets_its_own_times(self):
+        # A search radar sweeping at 60 deg/s: positions are sampled every
+        # 5 s for ground units, which would alias the sweep backwards.
+        from dcs_sa.server.store import RecordingStore
+        lines = ["FileType=text/acmi/tacview", "FileVersion=2.2", "0,ReferenceLongitude=40", "0,ReferenceLatitude=40",
+                 "#0", "S,T=0.1|0.1|100,Type=Ground+AntiAircraft,Name=SA-11 Buk SR 9S18M1,Coalition=Enemies,RadarMode=1,RadarHorizontalBeamwidth=3,RadarVerticalBeamwidth=30"]
+        for i in range(1, 81):
+            lines += [f"#{i * 0.25}", f"S,RadarAzimuth={((i * 15 + 180) % 360) - 180}"]
+        pb = RecordingStore.playback(parse_lines(lines))
+        rd = pb["objects"]["S"]["radar"]
+        self.assertIn("t", rd)
+        self.assertEqual(len(rd["t"]), len(rd["az"]))
+        steps = [b - a for a, b in zip(rd["t"], rd["t"][1:])]
+        self.assertLessEqual(max(steps), 0.5 + 1e-6)
+        # Consecutive samples turn the same way (clockwise), never 60 deg back.
+        turns = [((b - a + 180) % 360) - 180 for a, b in zip(rd["az"][1:], rd["az"][2:])]
+        self.assertTrue(all(x > 0 for x in turns), turns[:10])
+
+
 class TriggerFallback(unittest.TestCase):
     def test_trigger_only_burst(self):
         rec = parse_lines(["FileType=text/acmi/tacview", "FileVersion=2.2", "#0",

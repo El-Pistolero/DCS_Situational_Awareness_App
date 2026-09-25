@@ -140,9 +140,6 @@ class ServerTests(unittest.TestCase):
             stop(app, httpd)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class LiveSessionTests(unittest.TestCase):
     def test_reset_starts_a_new_session(self):
@@ -165,3 +162,7 @@ class LiveSessionTests(unittest.TestCase):
         self.assertEqual(len(snap["rounds"][0]["trail"]), 2)
         self.assertNotIn("R", {o["id"] for o in snap["objects"]})
         self.assertNotIn("R", {t["id"] for t in snap["threats"]})
+
+
+if __name__ == "__main__":
+    unittest.main()

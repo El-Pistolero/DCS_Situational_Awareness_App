@@ -182,9 +182,14 @@ export function bisectRight(arr, x) {
   return lo - 1;
 }
 
-/** Radar state (ACMI channel names) at playback index i, or null. */
-export function radarAt(pb, i) {
+/**
+ * Radar state (ACMI channel names) at playback index i, or null.  Emitters
+ * whose positions are sampled coarsely carry their own radar times (r.t);
+ * then time t picks the sample.
+ */
+export function radarAt(pb, i, t) {
   const r = pb && pb.radar;
+  if (r && r.t && isNum(t)) i = bisectRight(r.t, t);
   if (!r || i < 0) return null;
   const at = (a) => (a && isNum(a[i]) ? a[i] : undefined);
   return {
@@ -219,18 +224,25 @@ export function roundsAt(rounds, t, { mode = "paths", linger = 2.5, maxLife = 8 
     const n = r.t.length;
     let i = bisectRight(r.t, t);
     if (i < 0) i = 0;
+    // Position at any time inside the round's samples (linear).
+    const at = (tt) => {
+      let k = bisectRight(r.t, tt);
+      k = Math.max(0, Math.min(n - 2, k));
+      if (n < 2) return [r.lon[0], r.lat[0], r.alt[0]];
+      const f = Math.max(0, Math.min(1, (tt - r.t[k]) / Math.max(1e-6, r.t[k + 1] - r.t[k])));
+      return [r.lon[k] + (r.lon[k + 1] - r.lon[k]) * f, r.lat[k] + (r.lat[k + 1] - r.lat[k]) * f, r.alt[k] + (r.alt[k + 1] - r.alt[k]) * f];
+    };
+    const flying = t <= end && n > 1 && t <= r.t[n - 1];
+    const head = flying ? at(t) : [r.lon[n - 1], r.lat[n - 1], r.alt[n - 1]];
     const pts = [];
-    const tailFrom = mode === "tracers" ? t - 0.15 : -Infinity;
-    for (let j = 0; j <= Math.min(i, n - 1); j++) if (r.t[j] >= tailFrom) pts.push([r.lon[j], r.lat[j], r.alt[j]]);
-    let head;
-    if (i < n - 1 && t <= end) {
-      const f = (t - r.t[i]) / Math.max(1e-6, r.t[i + 1] - r.t[i]);
-      head = [r.lon[i] + (r.lon[i + 1] - r.lon[i]) * f, r.lat[i] + (r.lat[i + 1] - r.lat[i]) * f, r.alt[i] + (r.alt[i + 1] - r.alt[i]) * f];
-      pts.push(head);
+    if (mode === "tracers") {
+      // A streak of constant length: from 0.15 s back (never before the muzzle) to the head.
+      if (flying) pts.push(at(Math.max(t0, t - 0.15)), head);
+      else if (t <= end && n > 1) pts.push(at(Math.max(t0, r.t[n - 1] - 0.15)), head);
     } else {
-      head = [r.lon[n - 1], r.lat[n - 1], r.alt[n - 1]];
+      for (let j = 0; j <= Math.min(i, n - 1); j++) pts.push([r.lon[j], r.lat[j], r.alt[j]]);
+      if (flying && t > r.t[Math.min(i, n - 1)] + 1e-6) pts.push(head);
     }
-    if (mode === "tracers" && pts.length < 2 && i > 0) pts.unshift([r.lon[i - 1], r.lat[i - 1], r.alt[i - 1]]);
     const impacted = t > end;
     out.push({ id: r.id, shooter: r.shooter, color: r.color, coalition: r.coalition, pts, head, impacted,
       fade: impacted ? Math.max(0, 1 - (t - end) / Math.max(linger, 1e-6)) : 1 });

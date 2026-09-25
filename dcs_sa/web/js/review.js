@@ -927,7 +927,7 @@ function sceneObjects() {
       row.trail = trail;
       if (colors) row.trailColors = colors;
     }
-    const rad = S.radar !== "none" ? radarAt(pb, i) : null;
+    const rad = S.radar !== "none" ? radarAt(pb, i, t) : null;
     if (rad) Object.assign(row.v, rad);
     else if (o.id === S.selected) {
       const ser = S.series.get(o.id);
@@ -1265,8 +1265,11 @@ function renderCharts(panel) {
   for (const name of Object.keys(CHART_DEFS)) {
     if (!chartSel.has(name)) continue;
     const def = CHART_DEFS[name];
+    const lockMode = ser.channels.LockedTargetMode;
     const series = def.series.filter(([k]) => ser.channels[k]).map(([k, color]) => ({
-      name: k, color, x: ser.t, y: ser.channels[k].map((v) => (isNum(v) ? def.f(v) : null)),
+      name: k, color, x: ser.t,
+      // Locked-target values are held after the lock drops; show them only while locked.
+      y: ser.channels[k].map((v, i) => (isNum(v) && !(k.startsWith("LockedTarget") && lockMode && !(lockMode[i] > 0)) ? def.f(v) : null)),
     }));
     if (!series.length) continue;
     const canvas = el("canvas");
@@ -1347,7 +1350,7 @@ function renderWeapons(panel) {
       b.append(el("tr", {
         class: "click",
         title: [x.weaponName, isNum(x.fireRate) ? `${Math.round(x.fireRate)} rds/s recorded` : "", isNum(x.timeOfFlight) ? `mean time of flight ${x.timeOfFlight.toFixed(1)} s` : "",
-          isNum(x.closestApproach) ? `closest round ${x.closestApproach.toFixed(1)} m` : "", dcsTargets ? `DCS hits: ${dcsTargets}` : ""].filter(Boolean).join(" · "),
+          isNum(x.closestApproach) ? `closest round ${units.metric ? `${x.closestApproach.toFixed(1)} m` : `${Math.round(x.closestApproach * M_TO_FT)} ft`}` : "", dcsTargets ? `DCS hits: ${dcsTargets}` : ""].filter(Boolean).join(" · "),
         onclick: () => { seek(x.start - 1.5); select(x.launcherId); if (S.bullets === "off") { S.bullets = "paths"; $("bulletSel").value = "paths"; } },
       },
         el("td", { class: "num" }, fmtClock(x.start - S.start)), el("td", {}, x.launcherPilot || x.launcherName),

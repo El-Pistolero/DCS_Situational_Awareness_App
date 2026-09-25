@@ -126,20 +126,26 @@ const GEOM = {
 
 const radarGeomCache = new Map();
 
-/** Unit-radius search volume (spherical sector) centred on -Z, plus its outline. */
-function radarGeometry(azDeg, elDeg) {
-  const key = `${azDeg}/${elDeg}`;
+/**
+ * Unit-radius search volume centred on -Z: azimuth +-azDeg, elevation from
+ * elLoDeg to elHiDeg (a raster scan covers an az/el box, so the elevation
+ * band is built in, not produced by tilting), plus its outline.
+ */
+function radarGeometry(azDeg, elLoDeg, elHiDeg) {
+  const q = (x) => Math.round(x * 2) / 2; // cache on half degrees
+  const key = `${q(azDeg)}/${q(elLoDeg)}/${q(elHiDeg)}`;
   let g = radarGeomCache.get(key);
   if (g) return g;
-  const az = Math.min(azDeg, 180) * D2R, el = elDeg * D2R;
+  const az = Math.min(q(azDeg), 180) * D2R;
+  const lo = Math.max(-89.5, q(elLoDeg)) * D2R, hi = Math.min(89.5, Math.max(q(elHiDeg), q(elLoDeg) + 0.5)) * D2R;
   const full = azDeg >= 180;
-  const fill = new THREE.SphereGeometry(1, full ? 64 : 32, 6, 1.5 * Math.PI - az, 2 * az, Math.PI / 2 - el, 2 * el);
+  const fill = new THREE.SphereGeometry(1, full ? 64 : 32, 6, 1.5 * Math.PI - az, 2 * az, Math.PI / 2 - hi, hi - lo);
   // Outline: far-surface rims at the top and bottom of the volume, plus the
   // four radial edges for a sector.
   const pts = [];
   const dir = (a, e) => new THREE.Vector3(Math.sin(a) * Math.cos(e), Math.sin(e), -Math.cos(a) * Math.cos(e));
   const steps = full ? 72 : 24;
-  for (const e of [-el, el]) {
+  for (const e of [lo, hi]) {
     for (let i = 0; i < steps; i++) {
       const a0 = -az + (2 * az * i) / steps, a1 = -az + (2 * az * (i + 1)) / steps;
       pts.push(dir(a0, e), dir(a1, e));
@@ -147,8 +153,8 @@ function radarGeometry(azDeg, elDeg) {
   }
   if (!full) {
     for (const a of [-az, az]) {
-      for (const e of [-el, el]) pts.push(new THREE.Vector3(0, 0, 0), dir(a, e));
-      pts.push(dir(a, -el), dir(a, el));
+      for (const e of [lo, hi]) pts.push(new THREE.Vector3(0, 0, 0), dir(a, e));
+      pts.push(dir(a, lo), dir(a, hi));
     }
   }
   const edges = new THREE.BufferGeometry().setFromPoints(pts);
@@ -255,7 +261,7 @@ export class Scene3D {
 
   setExaggeration(x) {
     this.exaggeration = x;
-    for (const t of this.tiles.values()) t.mesh.scale.y = x;
+    for (const t of this.tiles.values()) if (t.mesh) t.mesh.scale.y = x; // tiles still loading pick it up when built
   }
 
   // -- coordinates ------------------------------------------------------------
@@ -585,7 +591,7 @@ export class Scene3D {
     e.label.remove();
     this._pickables = this._pickables.filter((m) => m.userData.id !== id);
     const rd = this.radars.get(id);
-    if (rd) { this.scene.remove(rd.outer); rd.mats.forEach((m) => m.dispose()); this.radars.delete(id); }
+    if (rd) { this.scene.remove(rd.root); rd.mats.forEach((m) => m.dispose()); this.radars.delete(id); }
     this.objects.delete(id);
   }
 
@@ -682,6 +688,20 @@ export class Scene3D {
         this.controls.target.copy(fp);
         this.camera.position.copy(fp).add(new THREE.Vector3(-4000, 2500, 6000));
       }
+      // Chase/padlock: carry the camera along with the jet first, then smooth
+      // only the change in offset (heading, target direction).  Smoothing the
+      // jet's own motion would make the lag grow with playback speed.
+      const tracking = this.mode === "chase" || this.mode === "padlock";
+      if (tracking && this.lastFocusPos && this._lastFocusId === focus.id) {
+        this.camera.position.add(fp.clone().sub(this.lastFocusPos));
+      }
+      const smooth = (want) => {
+        const now = performance.now();
+        const dt = this._lastChase ? Math.min(1, (now - this._lastChase) / 1000) : 1;
+        this._lastChase = now;
+        const snap = !this.lastFocusPos || this._lastFocusId !== focus.id || this.camera.position.distanceTo(want) > 600;
+        this.camera.position.lerp(want, snap ? 1 : 1 - Math.exp(-dt / 0.08));
+      };
       const target = this.mode === "padlock" && padlockId && padlockId !== focus.id ? this.objects.get(padlockId) : null;
       this._padTarget = target?.pos ? { from: focus, to: target.obj } : null;
       if (this._padTarget) {
@@ -692,11 +712,7 @@ export class Scene3D {
         const slant = slantRange(focus.lon, focus.lat, focus.alt, target.obj.lon, target.obj.lat, target.obj.alt);
         const back = slant < 1000 ? 120 : 60;
         const want = fp.clone().sub(dir.clone().multiplyScalar(back)).add(new THREE.Vector3(0, back * 0.3, 0));
-        const now = performance.now();
-        const dt = this._lastChase ? (now - this._lastChase) / 1000 : 1;
-        this._lastChase = now;
-        const snap = !this.lastFocusPos || this.camera.position.distanceTo(want) > 600;
-        this.camera.position.lerp(want, snap ? 1 : 1 - Math.exp(-dt / 0.08));
+        smooth(want);
         this.camera.lookAt(fp.clone().lerp(tp, 0.3));
         this._updatePadLine(fp, tp, slant);
       } else this._updatePadLine(null);
@@ -705,15 +721,12 @@ export class Scene3D {
         const back = 42, up = 11; // close enough to see the jet's shape
         const want = fp.clone().add(new THREE.Vector3(Math.sin(hdg) * -back, up, Math.cos(hdg) * back));
         // Time-based smoothing: the same feel at 60 Hz playback and 5 Hz live
-        // updates.  Snap after a seek or when first entering chase.
-        const now = performance.now();
-        const dt = this._lastChase ? (now - this._lastChase) / 1000 : 1;
-        this._lastChase = now;
-        const snap = !this.lastFocusPos || this.camera.position.distanceTo(want) > 600;
-        this.camera.position.lerp(want, snap ? 1 : 1 - Math.exp(-dt / 0.08));
+        // updates.  Snap after a seek, a focus change or when first entering chase.
+        smooth(want);
         this.camera.lookAt(fp.clone().add(new THREE.Vector3(Math.sin(hdg) * 40, 3, -Math.cos(hdg) * 40)));
       }
       this.lastFocusPos = fp.clone();
+      this._lastFocusId = focus.id;
     }
   }
 
@@ -797,28 +810,35 @@ export class Scene3D {
         shown.add(o.id);
         const guess = r.source === "assumed";
         let rd = this.radars.get(o.id);
-        const key = `${r.az}/${r.el}/${guess}`;
+        const elLo = r.centerEl - r.el, elHi = r.centerEl + r.el;
+        const key = `${Math.round(r.az * 2)}/${Math.round(elLo * 2)}/${Math.round(elHi * 2)}/${guess}`;
         if (!rd || rd.key !== key) {
-          if (rd) { this.scene.remove(rd.outer); rd.mats.forEach((m) => m.dispose()); }
+          if (rd) { this.scene.remove(rd.root); rd.mats.forEach((m) => m.dispose()); }
           const color = new THREE.Color(e.color);
-          const g = radarGeometry(r.az, r.el);
+          const g = radarGeometry(r.az, elLo, elHi);
           const fillMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: r.surface ? 0.015 : guess ? 0.03 : 0.07, depthWrite: false, side: THREE.DoubleSide });
           // Assumed volumes get dashed outlines so they never pass for data.
           const edgeMat = guess
             ? new THREE.LineDashedMaterial({ color, transparent: true, opacity: 0.35, depthWrite: false, dashSize: 0.025, gapSize: 0.02 })
             : new THREE.LineBasicMaterial({ color, transparent: true, opacity: r.surface ? 0.18 : 0.45, depthWrite: false });
+          // root: position + vertical terrain exaggeration (applied after the
+          // rotations, like every altitude in the scene); outer: attitude and
+          // range; inner: the radar's azimuth offset and roll.
+          const root = new THREE.Group();
           const outer = new THREE.Group();
           const inner = new THREE.Group();
           const edges = new THREE.LineSegments(g.edges, edgeMat);
           if (guess) edges.computeLineDistances();
           inner.add(new THREE.Mesh(g.fill, fillMat), edges);
           outer.add(inner);
-          this.scene.add(outer);
-          rd = { key, outer, inner, mats: [fillMat, edgeMat] };
+          root.add(outer);
+          this.scene.add(root);
+          rd = { key, root, outer, inner, mats: [fillMat, edgeMat] };
           this.radars.set(o.id, rd);
         }
         const hdg = isNum(o.hdg) ? o.hdg : 0;
-        rd.outer.position.copy(e.pos);
+        rd.root.position.copy(e.pos);
+        rd.root.scale.set(1, this.exaggeration, 1);
         if (r.bodyFrame) {
           // ACMI radar angles are relative to the airframe: aircraft attitude
           // first, then the radar's own azimuth/elevation/roll.
@@ -827,12 +847,13 @@ export class Scene3D {
           // Search volumes are roll/pitch stabilised: heading only.
           rd.outer.rotation.set(0, -hdg * D2R, 0, "YXZ");
         }
-        rd.inner.rotation.set(r.centerEl * D2R, -r.centerAz * D2R, -(r.roll || 0) * D2R, "YXZ");
+        // Elevation is in the geometry; only azimuth and roll rotate here.
+        rd.inner.rotation.set(0, -r.centerAz * D2R, -(r.roll || 0) * D2R, "YXZ");
         rd.outer.scale.setScalar(r.range);
-        rd.outer.visible = true;
+        rd.root.visible = true;
       }
     }
-    for (const [id, rd] of this.radars) if (!shown.has(id)) rd.outer.visible = false;
+    for (const [id, rd] of this.radars) if (!shown.has(id)) rd.root.visible = false;
   }
 
   // -- gun rounds ----------------------------------------------------------------------
@@ -914,8 +935,11 @@ export class Scene3D {
       if (x >= b.min.x && x <= b.max.x && z >= b.min.z && z <= b.max.z) meshes.push(t.mesh);
     }
     if (!meshes.length) return null;
+    // Start above the highest candidate tile (tiles are stretched by the
+    // terrain exaggeration), or a high peak would be missed from inside.
+    const top = Math.max(...meshes.map((m) => m.geometry.boundingBox.max.y * m.scale.y)) + 10;
     this._downRay ||= new THREE.Raycaster();
-    this._downRay.set(new THREE.Vector3(x, 20000, z), new THREE.Vector3(0, -1, 0));
+    this._downRay.set(new THREE.Vector3(x, Math.max(20000, top), z), new THREE.Vector3(0, -1, 0));
     const hit = this._downRay.intersectObjects(meshes, false)[0];
     return hit ? hit.point.y : null;
   }

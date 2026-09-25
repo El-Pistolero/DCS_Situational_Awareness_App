@@ -31,12 +31,18 @@ $("radarSel").onchange = (e) => { S.radar = e.target.value; setPref("radar", S.r
 $("bulletSel").value = S.bullets;
 $("bulletSel").onchange = (e) => { S.bullets = e.target.value; setPref("bullets", S.bullets); map.invalidate(); };
 
+/** Trail plus the current position, without repeating it (the server's trail may already end there). */
+function withHead(trail, head) {
+  const last = trail[trail.length - 1];
+  return last && last[0] === head[0] && last[1] === head[1] ? [...trail] : [...trail, head];
+}
+
 /** Live rounds -> the drawable shape roundsAt() produces for recordings. */
 function liveRounds(snap) {
   if (S.bullets === "off") return [];
   return (snap.rounds || []).map((r) => ({
     id: r.id, color: r.color, coalition: r.coalition, impacted: false, fade: 1,
-    pts: [...(r.trail || []), [r.lon, r.lat, r.alt]], head: [r.lon, r.lat, r.alt],
+    pts: withHead(r.trail || [], [r.lon, r.lat, r.alt]), head: [r.lon, r.lat, r.alt],
   }));
 }
 

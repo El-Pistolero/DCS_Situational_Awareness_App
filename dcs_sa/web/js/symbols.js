@@ -280,8 +280,12 @@ export function drawRounds(ctx, map, rounds) {
       ctx.fillStyle = `rgba(255,190,110,${0.8 * r.fade})`;
       ctx.beginPath(); ctx.arc(hx, hy, 2.2, 0, TAU); ctx.fill();
     } else {
-      // Tracer: a short bright streak ending at the round.
-      const prev = pts.length >= 2 ? pts[pts.length - 2] : null;
+      // Tracer: a short bright streak ending at the round, pointing along
+      // its path (the last point that is not the head itself).
+      let prev = null;
+      for (let k = pts.length - 1; k >= 0; k--) {
+        if (Math.hypot(pts[k][0] - hx, pts[k][1] - hy) > 0.5) { prev = pts[k]; break; }
+      }
       ctx.strokeStyle = "rgba(255,226,140,0.95)";
       ctx.lineWidth = 2;
       ctx.beginPath();

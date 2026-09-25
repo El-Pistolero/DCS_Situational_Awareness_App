@@ -30,6 +30,7 @@ EXTENSIONS = (".acmi", ".txt.acmi", ".zip.acmi")
 #: Gun rounds sent to the browser for tracer drawing.  A long furball can
 #: record tens of thousands; beyond this the list is truncated (and flagged).
 MAX_ROUNDS = 30000
+RADAR_STEP = 0.5  # s; radar state sampling for emitters whose positions are sampled coarsely
 MAX_PARSED = 3
 
 
@@ -236,12 +237,14 @@ class RecordingStore:
             for rid in b.get("roundIds") or []:
                 shooter[rid] = b.get("launcherId")
         rounds: List[Dict] = []
+        total = 0
         for tr in rec.tracks.values():
             if tr.category == "round":
-                if len(rounds) >= MAX_ROUNDS:
-                    continue
                 lon, lat, alt = tr.channel("Longitude"), tr.channel("Latitude"), tr.channel("Altitude")
                 if lon is None or lat is None or not len(tr):
+                    continue
+                total += 1
+                if len(rounds) >= MAX_ROUNDS:
                     continue
                 rounds.append({
                     "id": tr.id,
@@ -252,7 +255,9 @@ class RecordingStore:
                     "lon": [r(v, 7) for v in lon],
                     "lat": [r(v, 7) for v in lat],
                     "alt": [r(v, 1) for v in alt] if alt is not None else [0.0] * len(tr),
-                    "end": tr.ends_at,
+                    # A round with no removal line would otherwise "fly" until
+                    # the recording ends: it ended at its last sample.
+                    "end": tr.removed_at if tr.removed_at is not None else tr.last_seen,
                 })
                 continue
             if tr.category in ("clutter",):
@@ -294,7 +299,19 @@ class RecordingStore:
             scan = tr.channel("ScanAz")
             active = tr.channel("RadarActive")
             if (radar is not None and any(v == v and v > 0 for v in radar)) or scan is not None or active is not None:
-                block = {}
+                block: Dict[str, List] = {}
+                ridx = idx
+                if step > RADAR_STEP:
+                    # Ground/sea positions are sampled every few seconds, far
+                    # too coarse for a sweeping antenna: radar gets its own times.
+                    ridx, last = [], -1e18
+                    for i, t in enumerate(tr.t):
+                        if t - last >= RADAR_STEP - 1e-9:
+                            ridx.append(i)
+                            last = t
+                    if ridx[-1] != len(tr) - 1:
+                        ridx.append(len(tr) - 1)
+                    block["t"] = [round(tr.t[i], 2) for i in ridx]
                 for key, ch, nd in (("mode", "RadarMode", 0), ("az", "RadarAzimuth", 1), ("el", "RadarElevation", 1),
                                     ("roll", "RadarRoll", 1), ("range", "RadarRange", 0),
                                     ("hbw", "RadarHorizontalBeamwidth", 1), ("vbw", "RadarVerticalBeamwidth", 1),
@@ -302,7 +319,7 @@ class RecordingStore:
                                     ("scanCEl", "ScanCenterEl", 1), ("active", "RadarActive", 0)):
                     col = tr.channel(ch)
                     if col is not None:
-                        block[key] = [r(col[i], nd) for i in idx]
+                        block[key] = [r(col[i], nd) for i in ridx]
                 out[tr.id]["radar"] = block
             eng = tr.channel("EngagementRange")
             vals = [v for v in eng if v == v and v > 0] if eng is not None else []
@@ -317,7 +334,6 @@ class RecordingStore:
                     if db.get("vrange"):
                         out[tr.id]["engV"] = db["vrange"]
         rounds.sort(key=lambda x: x["t"][0])
-        total = sum(1 for tr in rec.tracks.values() if tr.category == "round")
         return {"start": rec.start_time, "end": rec.end_time, "objects": out, "rounds": rounds,
                 "roundsTotal": total, "roundsTruncated": total > len(rounds)}
 
