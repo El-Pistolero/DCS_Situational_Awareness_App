@@ -18,6 +18,7 @@ It reads **Tacview** data. Tacview is the program; **ACMI** (`.acmi`) is its fil
 | **Radar** | Your radar cone, lock lines, **RWR scope** | Lock episodes (who, range, how long, how it ended), who locked *you* |
 | **Threats** | Inbound missiles with **time-to-impact** and clock position, spikes, hot bandits, SAM rings you're inside, optional audio warning | — |
 | **Weapons** | Stores remaining, chaff/flare counts, a **HIT** alert when DCS reports you were hit | Every shot: shooter, target, launch range, aspect, time of flight, **kill / miss**, and a **"why did it miss?"** card (launch geometry, missile Mach and range to target, when the target beamed or turned cold); gun bursts with bullet paths, rounds on target and **hits reported by DCS**; kills **confirmed by DCS**; Pk per pilot |
+| **Ground attack** | Your weapons in flight with **time to impact** and predicted impact point, the **JSOW launch zone** around your jet (from DCS's own table), your marked target with **IN RNG**, wrecks and DCS hits on the map | Release marks with release parameters, whole weapon paths with **time-of-fall ticks**, the JSOW-A / cluster **bomblet pattern**, impact and **miss split into long/short and left/right**, **BDA**, a **Strike** tab (targets, passes, a **strike card** per weapon) |
 | **Landing** | — | Approach glidepath and centreline charts, gates at 4 to 0.25 nm, touchdown sink rate / speed / AOA / crab, stabilised-approach check, the **real runway from DCS** (touchdown distance past the threshold, runway remaining), **grade** (LSO-style on the carrier) |
 | **All aircraft** | Every contact with labels | Stats for every aircraft; select any of them for full telemetry |
 
@@ -60,6 +61,46 @@ Click **3D** in the top-right of either view.
 * Threats you can't see get **arrows on the screen edge** (red: missile inbound with time to impact, orange: someone locked you, yellow: hot bandit).
 * **Terrain 2× / 3×** exaggerates relief when you want low-level terrain masking to stand out.
 
+## Ground attack and the JSOW
+
+Every air-to-ground weapon in a recording (JSOW, JDAM, laser-guided and dumb bombs, cluster bombs, Mavericks, HARMs, rockets) gets a **strike** record, and the debrief draws it:
+
+* **Release mark** (the triangle where you pickled) with altitude, Mach, dive, G and bank. The weapon's **whole path** follows, with a tick every 5 s of its fall (10 s for a long JSOW glide). Nothing appears before it happens.
+* **While it flies:** a dashed line to its target and a countdown ("AGM-154A → Ural-375 · opens 0:18"), plus a *Weapons in flight* list on the map.
+* **JSOW-A and cluster bombs:** the point where the dispenser **opened** and its height above the target, every **BLU-97 bomblet** as a dot where it landed, and the pattern's ellipse ("145× BLU-97 · 320 × 195 ft"). The bomblets never flood the object list; they're counted on their JSOW's row.
+* **Impact:** a circled X coloured by result (red destroyed, orange damaged, grey miss), the miss to the target split into **range and deflection** along your run-in ("22 ft LONG · 60 ft R · 2 o'clock"), an arrow when the target **moved** during the time of fall (coordinate-guided weapons don't follow movers), and **BDA badges** ("3 K").
+* **JSOW launch zone:** DCS's own AI launch table for the AGM-154 (max and min range for your release altitude and speed) is drawn around the target, with the fraction of max range you released at.
+* **Strike tab:** the strike summary, a **target board** grouped by site (e.g. "BTR-80 group · 3/4 destroyed · restrike"), and every pass. Open a **strike card** for the release parameters, a bomb plot (run-in up, with the miss and the pattern), a side profile of the release and fall, fly-out charts, the attack run, and plain-language verdicts.
+* **Mark my path inside SAM rings** colours the flown path red where you were inside a hostile SAM envelope ("in SA-11 WEZ 38 s").
+* In **3D**: release posts, weapon paths, bomblets as a cloud, the pattern draped on the terrain, and a **weapon cam** (W) that rides the JSOW or bomb down to impact.
+
+The demo `samples/sample_strike.acmi` has a full JSOW strike: two JSOW-As on a moving column and SA-11 launchers, a JSOW-C on the SA-11 radar, a GBU-12 and a dive-bombing Mk-82 that misses.
+
+## Dogfight (A-A) and Ground attack (A-G) modes
+
+The **ALL | A-A | A-G** switch in the top bar (keys **Shift+A** / **Shift+G**; press again to go back to ALL) changes what the map concentrates on. It only changes when you change it.
+
+* **A-A:** aircraft, missiles and guns; ground units only where they can shoot at you; SAM rings only when you're near them; bandits get **BRAA** and bullseye calls; 10-second velocity vectors; energy-coloured trails; the Weapons tab shows the air-to-air shots.
+* **A-G:** every strike mark, the JSOW launch zone, hostile SAM rings, ground-unit labels near the targets, 5-minute altitude-coloured trails, altitude stalks in 3D; opens the Strike tab.
+* **ALL** is exactly your own settings. Anything you change while in A-A or A-G is remembered for that mode only (a coloured dot marks those rows in **Display**); **Reset** puts a mode back to its defaults.
+* No mode ever hides a missile aimed at you, a spike, the missile warning or bingo.
+
+**Display ▾** (key **D**) has every map option in one place: objects and coalitions, weapons and submunitions, strike marks, SAM rings, radar cones, lock lines, threat arrows, bullseye and BRAA, velocity vectors, grid, labels, trails, coordinates (decimal, the F-16 DED's deg-min, deg-min-sec or MGRS), and 3D stalks and lighting. **Z** declutters and **Z** again restores.
+
+## Selecting things
+
+Click anything to select it: a card on the map shows what it is, where it is (BRAA from you, bullseye), and its state (a weapon's time to impact or miss, a SAM ring and whether you're inside it). **Right-click** it (or press **E**) for everything you can do with it:
+
+* **Follow**, **Padlock in 3D**, **Weapon cam**, **This is me**
+* **Isolate** (X): show only it and what it touched (its shots and their targets, who shot at it, its locks, its group)
+* **Its shots & strikes** / **What shot at it**, **open its strike or shot card**
+* **Next / previous event of this object** (Shift+N / Shift+P), **jump to its death**, **loop its engagement**
+* **Measure from here** and **Measure to me**, **Compare with me** (its telemetry dashed on your charts)
+* **Always show its ring / radar**, **Mark as my target** (the strike marks re-score the miss against it), **Hide it**
+* **Copy** its BRAA, bullseye call or coordinates (Ctrl+C; in the F-16 DED format with elevation for ground units, ready for a steerpoint)
+
+Right-click empty map for a point menu (measure from here, mark as target, copy coordinates). In the object list, filter chips (Air, Surface, Weapons, Hostile, Alive) sit above the groups, and a group header folds it away.
+
 ## Read from DCS, not guessed
 
 A Tacview recording only has positions, so some things in a debrief have to be worked out from geometry: which round hit, whether a kill counted, which runway you landed on. When the DCS-SA scripts are installed, the app **reads these from DCS instead**:
@@ -74,14 +115,14 @@ A Tacview recording only has positions, so some things in a debrief have to be w
 
 Press **?** in either window for the full list.
 
-* **Debrief:** Space play/pause · ← → ±5 s (Shift ±30 s) · **N / P** next/previous event · **I / O / L** loop in/out/on (or Shift-drag the timeline) · **, .** step half a second · **V** 2D/3D · **C** camera (orbit → chase → padlock) · **T** padlock target · **M** measuring tape (or Shift-drag on the map) · **J / K** next/previous aircraft · **1–7** tabs · **Ctrl+O** recordings
+* **Debrief:** Space play/pause · ← → ±5 s (Shift ±30 s) · **N / P** next/previous event · **I / O / L** loop in/out/on (or Shift-drag the timeline) · **, .** step half a second · **V** 2D/3D · **C** camera (orbit → chase → padlock) · **T** padlock target · **W** weapon cam · **M** measuring tape (or Shift-drag on the map) · **J / K** next/previous aircraft · **E** actions for the selection · **X** isolate · **Shift+N / Shift+P** the selection's next/previous event · **Ctrl+C** copy its position · **Shift+A / Shift+G** A-A / A-G mode · **D** Display · **R** SAM rings · **B** bullseye · **Z** declutter · **1–8** tabs · **Ctrl+O** recordings
 * **Live:** **G** Glance layout · **V** 2D/3D · **C** camera · **T** padlock the next threat · **H** heading-up/north-up · **+ / −** range · **N** re-centre · **S** sound · **Ctrl+,** connect
 
 When Tacview writes a new recording after a mission, a banner offers to open the debrief (tick *Auto-open* to skip the click).
 
 ## Try it without DCS
 
-The app ships with a generated demo sortie (`samples/sample_sortie.acmi`): takeoff from Batumi, an AIM-120 kill, a notched R-27, a strafing pass and a landing. Open it from the recordings list. To see the live view in action without DCS, go to *⚙ Connect → Replay a recording*.
+The app ships with two generated demo sorties. `samples/sample_sortie.acmi`: takeoff from Batumi, an AIM-120 kill, a notched R-27, a strafing pass and a landing. `samples/sample_strike.acmi`: a JSOW strike on a vehicle column and an SA-11 site, then a GBU-12 and a Mk-82 dive-bomb pass. Open them from the recordings list. To see the live view in action without DCS, go to *⚙ Connect → Replay a recording*.
 
 ## Command line
 
@@ -105,7 +146,7 @@ DCS World ─ Tacview exporter ─┬─ .acmi file ─────────�
 ```
 
 * `dcs_sa/acmi/`: streaming ACMI 2.x parser (zip / plain / BOM, escaping, all transform variants, reference offsets).
-* `dcs_sa/analysis/`: kinematics (G, turn rate, energy), weapons & kill attribution, takeoff/landing grading, radar locks, timeline; `dcsmerge.py` merges a flight log into a recording.
+* `dcs_sa/analysis/`: kinematics (G, turn rate, energy), weapons & kill attribution, takeoff/landing grading, radar locks, timeline; `strike.py` air-to-ground releases, impacts, bomblet footprints and BDA; `lar.py` the JSOW launch zone from DCS's AI launch table (`dcs_sa/web/data/jsow_lar.json`); `dcsmerge.py` merges a flight log into a recording.
 * `dcs_sa/flightlog.py`: records what DCS reported during a flight; `dcs_sa/threatdb.py` + `dcs_sa/data/`: engagement ranges from Tacview's database.
 * `dcs_sa/telemetry/`: Tacview real-time client (handshake + CRC-64 password), DCS bridge receiver, live threat picture.
 * `dcs_sa/web/`: the UI (plain JavaScript, no build step; 3D via the bundled three.js). Map tiles are © Esri / OpenStreetMap / CARTO, and terrain comes from AWS Terrain Tiles. Offline, the map falls back to a grid.

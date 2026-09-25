@@ -13,22 +13,84 @@ import { Scene3D } from "./scene3d.js";
 import { bindShortcuts } from "./keys.js";
 import { buildShotCard } from "./shotcard.js";
 import { watchRecordings } from "./watch.js";
+import { MODES, createSettings, modeSwitch, reflectMode } from "./modes.js";
+import { createDisplayPanel } from "./layers.js";
+import { createSelectionUI } from "./selmenu.js";
+import { RESULT_COLOR, drawStrikes, kAlt, missText, prepareStrikes, weaponsInFlight } from "./strikeviz.js";
+import { FAMILY_LABEL, groupPasses, posAt, strikeGeometry, weaponLabel } from "./strikegeom.js";
+import { buildStrikeCard, buildStrikeThumb } from "./strikecard.js";
+import { COORD_FORMATS, copyText, fmtCoord } from "./coords.js";
 
 const $ = (id) => document.getElementById(id);
 const pref = (k, d) => { try { return localStorage.getItem(`dcs-sa.${k}`) ?? d; } catch { return d; } };
 const setPref = (k, v) => { try { localStorage.setItem(`dcs-sa.${k}`, v); } catch { /* ignore */ } };
 
+// Display settings.  The manual A-A / A-G modes overlay their own values on
+// the keys they manage; ALL is always exactly the user's own settings.
+const SET = createSettings({
+  prefix: "dcs-sa.",
+  base: {
+    labels: "aircraft", trailSec: 90, trailColor: "side", radar: "all", bullets: "paths",
+    rings: "all", lockLines: true, pointers: "follow", vectors: 0, bullseye: "rings", braa: false,
+    air: "show", ground: "show", cm: "show", weapons: "all", bomblets: "dots", dead: "show",
+    blue: true, red: true, neutral: true,
+    strikeRelease: true, strikePaths: true, strikeFuture: false, strikeImpacts: true, strikeFootprints: true,
+    strikeTti: true, strikeBda: true, strikeLar: false,
+    stalks: "off", lighting: "day", grid: false, coords: "dd", strikeLabels: "auto", exposure: false, labelSize: "m",
+    charts: "Altitude,Speed,AOA,G,Throttle,Energy", evHide: "", wtab: "all", objChip: "all",
+  },
+  modeDefaults: {
+    a2a: {
+      labels: "aircraft", trailSec: 60, trailColor: "ps", radar: "all", rings: "near", pointers: "always", vectors: 10,
+      bullseye: "calls", braa: true, ground: "threats", weapons: "a2a", bomblets: "hide",
+      strikeRelease: false, strikePaths: false, strikeFuture: false, strikeImpacts: false, strikeFootprints: false,
+      strikeTti: false, strikeBda: false, strikeLar: false, stalks: "off",
+      charts: "Altitude,Speed,G,AOA,Energy,Turn rate", evHide: "release,impact,landing,takeoff,message,bookmark", wtab: "a2a",
+    },
+    a2g: {
+      labels: "targets", trailSec: 300, trailColor: "alt", radar: "known", rings: "hostile", pointers: "always", vectors: 0,
+      bullseye: "off", braa: false, ground: "show", weapons: "all", bomblets: "dots",
+      strikeRelease: true, strikePaths: true, strikeFuture: true, strikeImpacts: true, strikeFootprints: true,
+      strikeTti: true, strikeBda: true, strikeLar: true, strikeLabels: "full", stalks: "all", exposure: true,
+      charts: "Altitude,Speed,Vert speed,G,Mach", evHide: "lock,landing,takeoff,message,bookmark,radar", wtab: "a2g",
+    },
+  },
+});
+// Z declutter: a temporary layer over whatever the mode says; Z again restores it exactly.
+const DECLUTTER = { labels: "minimal", cm: "hide", bomblets: "hide", trailSec: 30, vectors: 0, bullseye: "off", braa: false, strikeLabels: "auto" };
+const cfg = (k) => (S?.declutter && k in DECLUTTER ? DECLUTTER[k] : SET.get(k));
+
 const S = {
   key: null, analysis: null, playback: null, objects: new Map(), deaths: new Map(),
   t: 0, start: 0, end: 0, playing: false, speed: 4,
   selected: null, me: null, follow: false,
-  series: new Map(), trailSec: 90, labels: "aircraft", radar: pref("radar", "all"), bullets: pref("bullets", "paths"),
+  series: new Map(),
   rounds: [], roundLife: 8,
-  tab: "flight", status: null, lastPanel: 0, filter: "", eventFilter: new Set(),
+  tab: "flight", status: null, lastPanel: 0, filter: "",
   loop: { a: null, b: null, on: false }, padlockId: null, cam: pref("cam", "orbit"),
-  tapes: [], tapeDraft: null, trailColor: pref("trailColor", "side"), trailSeries: new Map(),
-  openShots: new Set(), keys: null,
+  tapes: [], tapeDraft: null, trailSeries: new Map(),
+  openShots: new Set(), openStrikes: new Set(), keys: null,
+  strikes: [], strikeIds: new Set(), hidden: new Set(), pinned: new Set(), isolate: null, target: null,
+  collapsed: new Map(), shooterFilter: null, compare: null, weaponCam: null, measureFrom: null,
 };
+// Settings the rest of the code reads as plain fields.
+for (const k of ["labels", "trailSec", "trailColor", "radar", "bullets"]) {
+  Object.defineProperty(S, k, { get: () => cfg(k), set: (v) => SET.set(k, v) });
+}
+let evHideCache = { raw: null, set: new Set() };
+Object.defineProperty(S, "eventFilter", {
+  get: () => {
+    const raw = SET.get("evHide") || "";
+    if (raw !== evHideCache.raw) evHideCache = { raw, set: new Set(raw.split(",").filter(Boolean)) };
+    return evHideCache.set;
+  },
+});
+function toggleEventKind(k) {
+  const hide = new Set(S.eventFilter);
+  hide.has(k) ? hide.delete(k) : hide.add(k);
+  SET.set("evHide", [...hide].join(","));
+  stopsCache = null;
+}
 const AIR = ["fixedwing", "rotorcraft", "air"];
 const TAPE_COLORS = ["#ffd166", "#4dd8e6", "#b48cff"];
 
@@ -42,7 +104,16 @@ function setView(view) {
     try {
       scene3d = new Scene3D(document.querySelector(".mapwrap"));
       scene3d.onPick = (id, { shift } = {}) => (shift ? setPadlock(id) : select(id));
+      scene3d.onContext = (id, { clientX, clientY, lon, lat } = {}) => {
+        const r = document.querySelector(".mapwrap").getBoundingClientRect();
+        const target = id ? objectTarget(id) : isNum(lon) ? { kind: "point", lon, lat } : null;
+        if (!target) return;
+        if (id && id !== S.selected) select(id);
+        sel.openMenu(target, clientX - r.left, clientY - r.top);
+      };
       scene3d.setMode(S.cam);
+      scene3d.setLighting?.(cfg("lighting"));
+      if (S.analysis) scene3d.setStrikes?.(strikes3d());
     } catch (err) { toast(`3D view unavailable: ${err.message}`); S.view = "2d"; return; }
   }
   const is3d = S.view === "3d";
@@ -71,6 +142,316 @@ function cycleCam() {
 }
 
 // ---------------------------------------------------------------------------
+// Modes, display options, selection actions
+// ---------------------------------------------------------------------------
+
+let display = null, sel = null, modeSw = null;
+
+const MODE_BLURB = {
+  a2a: "aircraft, missiles and guns; ground units only where they can shoot",
+  a2g: "strike marks, SAM rings, ground units and the Strike tab",
+};
+
+function setupModes() {
+  const counts = () => {
+    if (!S.analysis) return null;
+    const ag = S.strikes.length;
+    return { a2a: S.analysis.weapons.shots.length - ag + S.analysis.weapons.bursts.length, a2g: ag };
+  };
+  modeSw = modeSwitch(SET, { counts });
+  $("modeSw").append(modeSw);
+  reflectMode(SET, { chip: $("modeChip"), describe: (m) => MODE_BLURB[m] || "" });
+  S.tabBeforeMode = S.tab;
+  SET.on((ev) => {
+    if (ev.type === "mode") onModeChange(ev);
+    else if (ev.type === "reset") onDisplayChange(null);
+  });
+}
+
+/** A manual mode switch: re-read every setting, open the mode's home tab. Time, view and selection stay. */
+function onModeChange({ from, to }) {
+  if (from === "all") S.tabBeforeMode = S.tab;
+  if (to === "a2a") S.tab = "weapons";
+  else if (to === "a2g") S.tab = S.strikes.length ? "strike" : "weapons";
+  else S.tab = S.tabBeforeMode || S.tab;
+  onDisplayChange(null);
+}
+
+function cycleSetting(key, order, label) {
+  const i = order.indexOf(SET.get(key));
+  const v = order[(i + 1) % order.length];
+  SET.set(key, v);
+  flash(`${label}: ${v}`);
+  onDisplayChange(key);
+}
+
+/** Any setting changed (Display panel, mode switch, reset): refresh what depends on it. */
+function onDisplayChange(key) {
+  stopsCache = null;
+  if (!key || key === "trailColor") setTrailColor(S.trailColor);
+  if (!key || key === "lighting") scene3d?.setLighting?.(cfg("lighting"));
+  if (!S.analysis) return;
+  renderTicks();
+  renderAllPanels();
+  renderMapChips();
+  onTimeChange(true);
+}
+
+const DISPLAY = [
+  { title: "Objects", rows: [
+    { key: "air", label: "Aircraft", type: "select", options: [["show", "Show"], ["hide", "Hide"]] },
+    { key: "ground", label: "Ground & ships", type: "select", options: [["show", "Show"], ["threats", "Only SAM / AAA / armed ships"], ["hide", "Hide"]] },
+    { key: "cm", label: "Chaff & flares", type: "select", options: [["show", "Show"], ["hide", "Hide"]] },
+    { key: "dead", label: "Destroyed units", type: "select", options: [["show", "Show as X"], ["fade", "Hide after 60 s"], ["hide", "Hide"]] },
+    { key: "blue", label: "Blue", type: "toggle" }, { key: "red", label: "Red", type: "toggle" }, { key: "neutral", label: "Neutral", type: "toggle" },
+  ] },
+  { title: "Weapons", rows: [
+    { key: "weapons", label: "Show", type: "select", options: [["all", "All weapons"], ["a2a", "Air-to-air only"], ["a2g", "Air-to-ground only"], ["none", "None"]] },
+    { key: "bomblets", label: "Submunitions", type: "select", options: [["dots", "Dots"], ["hide", "Hide"]] },
+    { key: "bullets", label: "Gun rounds", type: "select", options: [["paths", "Paths"], ["tracers", "Tracers"], ["off", "Off"]] },
+  ] },
+  { title: "Strike marks", rows: [
+    { key: "strikeRelease", label: "Release points", type: "toggle" },
+    { key: "strikePaths", label: "Weapon paths + time-of-fall ticks", type: "toggle" },
+    { key: "strikeFuture", label: "Path still to fly (dotted)", type: "toggle", title: "Shows where a weapon will go before it gets there" },
+    { key: "strikeImpacts", label: "Impacts and miss distance", type: "toggle" },
+    { key: "strikeFootprints", label: "Bomblet footprints", type: "toggle" },
+    { key: "strikeTti", label: "Weapons in flight · time to impact", type: "toggle" },
+    { key: "strikeBda", label: "BDA badges", type: "toggle" },
+    { key: "strikeLar", label: "JSOW launch zone (DCS table)", type: "toggle", title: "Max / min range for the release altitude and speed, from DCS's own AI launch table" },
+    { key: "strikeLabels", label: "Strike labels", type: "select", options: [["auto", "Selected / zoomed in"], ["full", "Always"]] },
+  ] },
+  { title: "Threats & sensors", rows: [
+    { key: "rings", label: "SAM / AAA rings", type: "select", options: [["all", "All"], ["hostile", "Hostile to me"], ["near", "Hostile, when near"], ["off", "Off"]] },
+    { key: "radar", label: "Radar cones", type: "select", options: [["all", "All (incl. assumed)"], ["known", "Known only"], ["focus", "Selected jet"], ["none", "Off"]] },
+    { key: "lockLines", label: "Lock lines", type: "toggle" },
+    { key: "exposure", label: "Mark my path inside SAM rings", type: "toggle", title: "Red where the selected jet (or you) was inside a hostile SAM / AAA envelope" },
+    { key: "pointers", label: "Threat arrows at the edge", type: "select", options: [["follow", "While following"], ["always", "Always"], ["off", "Off"]] },
+  ] },
+  { title: "Overlays", rows: [
+    { key: "bullseye", label: "Bullseye", type: "select", options: [["rings", "Rings"], ["calls", "Rings + bullseye calls"], ["off", "Off"]] },
+    { key: "braa", label: "BRAA from me on bandits", type: "toggle" },
+    { key: "vectors", label: "Velocity vectors", type: "select", options: [[0, "Off"], [10, "10 s"], [30, "30 s"], [60, "60 s"]] },
+    { key: "grid", label: "Lat / long grid", type: "toggle" },
+  ] },
+  { title: "Labels & trails", rows: [
+    { key: "labels", label: "Labels", type: "select", options: [["aircraft", "Aircraft"], ["targets", "Aircraft + targets"], ["all", "All"], ["minimal", "Minimal"], ["none", "Off"]] },
+    { key: "labelSize", label: "Label size", type: "select", options: [["s", "Small"], ["m", "Medium"], ["l", "Large"], ["xl", "Extra large (second screen)"]] },
+    { key: "trailSec", label: "Trails", type: "select", options: [[30, "30 s"], [60, "60 s"], [90, "90 s"], [300, "5 min"], [1000000, "Full"], [0, "Off"]] },
+    { key: "trailColor", label: "Trail colour", type: "select", options: [["side", "Side"], ["alt", "Altitude"], ["speed", "Speed"], ["g", "G"], ["ps", "Energy (Ps)"], ["aoa", "AOA"]] },
+    { key: "coords", label: "Coordinates", type: "select", options: COORD_FORMATS },
+  ] },
+  { title: "3D", rows: [
+    { key: "stalks", label: "Altitude stalks", type: "select", options: [["off", "Off"], ["selected", "Selected + me"], ["all", "All"]] },
+    { key: "lighting", label: "Lighting", type: "select", options: [["day", "Day"], ["dusk", "Dusk"], ["night", "Night"]] },
+  ] },
+];
+
+// -- selection ------------------------------------------------------------------
+
+function objectTarget(id) {
+  const o = S.objects.get(id);
+  return o ? { kind: "object", id, o } : null;
+}
+const currentTarget = () => S.selTarget || (S.selected ? objectTarget(S.selected) : null);
+function openSelectionMenu() {
+  const tg = currentTarget();
+  if (!tg) return;
+  const r = sel.card.getBoundingClientRect(), h = document.querySelector(".mapwrap").getBoundingClientRect();
+  sel.openMenu(tg, r.width ? r.right - h.left - 8 : 60, r.width ? r.top - h.top + 26 : 60);
+}
+
+/** Position of a target at the playhead (held at its last sample when gone). */
+function targetPos(tg) {
+  if (!tg) return null;
+  if (tg.kind === "point") return { lon: tg.lon, lat: tg.lat, alt: null, present: true };
+  const p = alive(tg.o, S.t) || sampleTrack(tg.o.pb, S.t);
+  if (p) return { ...p, present: true };
+  const q = posAt(tg.o, S.t);
+  return q ? { ...q, present: false } : null;
+}
+
+const isAir = (o) => AIR.includes(o?.category);
+const isSurface = (o) => ["ground", "sea"].includes(o?.category);
+const isWeapon = (o) => o?.category === "weapon";
+const shooterOf = (id) => S.analysis.weapons.shots.some((x) => x.launcherId === id) || S.analysis.weapons.bursts.some((x) => x.launcherId === id) || S.strikes.some((p) => p.s.launcherId === id);
+const shotAt = (id) => S.analysis.weapons.shots.some((x) => x.targetId === id) || S.analysis.weapons.kills.some((k) => k.victimId === id) || S.strikes.some((p) => (p.s.damage || []).some((d) => d.id === id) || p.s.targetId === id);
+const strikeOf = (id) => S.strikes.find((p) => p.s.weaponId === id)?.s || null;
+
+function copyDefault(tg) {
+  const p = targetPos(tg);
+  if (!p) return;
+  if (tg.kind === "object" && isAir(tg.o)) copyAs(tg, "braa"); else copyAs(tg, "coords");
+}
+
+async function copyAs(tg, what) {
+  const p = targetPos(tg);
+  if (!p) return;
+  const me = S.me && S.objects.get(S.me);
+  const mp = me ? alive(me, S.t) : null;
+  let txt = "";
+  if (what === "braa" && mp) txt = `BRAA ${braa(mp.lon, mp.lat, p.lon, p.lat, p.alt)}`;
+  else if (what === "bulls" && S.analysis.bullseye) txt = `BULLSEYE ${braa(S.analysis.bullseye.longitude, S.analysis.bullseye.latitude, p.lon, p.lat, p.alt)}`;
+  else {
+    txt = fmtCoord(p.lon, p.lat, cfg("coords") === "dd" ? "ddm" : cfg("coords"));
+    // A surface unit's altitude is its ground elevation: what a steerpoint needs.
+    if (tg.kind === "object" && !isAir(tg.o) && isNum(p.alt)) txt += ` · elev ${fmtAlt(p.alt)}`;
+  }
+  if (!txt) return;
+  const ok = await copyText(txt);
+  flash(ok ? `Copied: ${txt}` : `Copy failed: ${txt}`);
+}
+
+function flash(msg) {
+  const c = $("modeChip");
+  c.textContent = msg;
+  c.className = "modechip";
+  clearTimeout(flash.timer);
+  flash.timer = setTimeout(() => c.classList.add("hidden"), 3000);
+}
+
+/** Card text for a target. */
+function describeTarget(tg) {
+  if (!tg || !S.analysis) return null;
+  const me = S.me && S.objects.get(S.me);
+  const mp = me ? alive(me, S.t) : null;
+  if (tg.kind === "point") {
+    const lines = [fmtCoord(tg.lon, tg.lat, cfg("coords") === "dd" ? "ddm" : cfg("coords"))];
+    if (mp) lines.push(`from ${me.pilot || me.name}: ${braa(mp.lon, mp.lat, tg.lon, tg.lat)}`);
+    return { title: "Map point", sub: "right-click menu", color: "#ffd166", lines };
+  }
+  const o = tg.o;
+  const p = targetPos(tg);
+  const lines = [];
+  let sub = [o.name !== (o.pilot || o.name) ? o.name : "", o.group, o.coalition].filter(Boolean).join(" · ");
+  const death = S.deaths.get(o.id);
+  if (isAir(o)) {
+    const v = S.series.has(o.id) ? seriesAt(o.id) : null;
+    if (p?.present) lines.push([fmtAlt(p.alt), fmtHdg(p.hdg), v ? fmtSpeed(v.IAS ?? v.TAS) : "", v && isNum(v.GLoad) ? `${v.GLoad.toFixed(1)} g` : ""].filter(Boolean).join(" · "));
+  } else if (isWeapon(o)) {
+    const st = strikeOf(o.id);
+    const shot = S.analysis.weapons.shots.find((x) => x.weaponId === o.id);
+    if (st) {
+      if (S.t < st.releaseTime) lines.push(`released in ${fmtClock(st.releaseTime - S.t)}`);
+      else if (S.t < st.impactTime) lines.push(`${st.dispense?.time && S.t < st.dispense.time ? `opens in ${fmtClock(st.dispense.time - S.t)} · ` : ""}impact in ${fmtClock(st.impactTime - S.t)}${p?.present ? ` · ${kAlt(p.alt)}` : ""}`);
+      else lines.push({ text: `impact ${fmtClock(st.impactTime - S.start)} · ${st.result}${isNum(st.missDistance) ? ` · ${fmtShort(st.missDistance)}` : ""}`, cls: st.result === "destroyed" ? "bad" : "" });
+      if (st.targetName) lines.push(`target ${st.targetName}${st.targetSource === "nearest" ? " (nearest)" : ""}`);
+      const g = strikeGeometry(st, S.objects, { target: S.target || null });
+      if (S.t >= st.impactTime && g?.miss) lines.push(missText(g.miss));
+      sub = `${FAMILY_LABEL[st.family] || "weapon"} · ${st.launcherPilot || st.launcherName || ""}`;
+    } else if (shot) {
+      lines.push(`${shot.launcherPilot || shot.launcherName || "?"} → ${shot.targetPilot || shot.targetName || "—"} · ${shot.outcome}`);
+    }
+  } else {
+    const eng = o.pb?.eng;
+    let margin = "";
+    if (mp && p) {
+      const d = distance(mp.lon, mp.lat, p.lon, p.lat) - eng;
+      margin = d > 0 ? ` · me ${fmtDist(d)} outside` : ` · me ${fmtDist(-d)} INSIDE`;
+    }
+    if (isNum(eng)) lines.push({ text: `ring ${fmtDist(eng)}${o.pb.engSrc !== "recorded" ? ` (${o.pb.engSrc})` : ""}${margin}`, cls: margin.includes("INSIDE") && !S.deaths.has(o.id) ? "bad" : "" });
+    if (o.group) {
+      const members = [...S.objects.values()].filter((x) => x.group === o.group && x.coalition === o.coalition && isSurface(x));
+      if (members.length > 1) lines.push(`${o.group}: ${members.filter((x) => !(S.deaths.has(x.id) && S.t >= S.deaths.get(x.id))).length}/${members.length} alive`);
+    }
+  }
+  if (isNum(death) && S.t >= death) {
+    const k = S.analysis.weapons.kills.find((x) => x.victimId === o.id);
+    lines.push({ text: `destroyed ${fmtClock(death - S.start)}${k?.killerId ? ` by ${k.killerPilot || k.killerName} (${weaponLabel(k.weaponName)})` : ""}`, cls: "bad" });
+  }
+  // Surface units: bearing and range only (their "altitude" is the ground).
+  const alt = isAir(o) || isWeapon(o) ? p?.alt : undefined;
+  if (p && mp && o.id !== S.me) lines.push(`BRAA ${braa(mp.lon, mp.lat, p.lon, p.lat, alt)}`);
+  if (p && S.analysis.bullseye && !isWeapon(o)) lines.push(`BULLS ${braa(S.analysis.bullseye.longitude, S.analysis.bullseye.latitude, p.lon, p.lat, alt)}`);
+  if (p && !p.present && !isNum(death) && !isWeapon(o)) lines.push({ text: "not in the recording at this time", cls: "faint" });
+  return { title: `${o.pilot || (isWeapon(o) ? weaponLabel(o.name) : o.name)}${o.id === S.me ? " (me)" : ""}`, sub, color: sideColor(o), lines };
+}
+
+const onObj = (fn) => (tg) => tg.kind === "object" && fn(tg.o, tg);
+const ACTIONS = [
+  { id: "follow", label: "Follow", key: "F", icon: "⌖", primary: true, group: "view", applies: onObj((o) => isAir(o) || isWeapon(o) || o.category === "sea"),
+    active: (tg) => S.follow && S.selected === tg.id, run: (tg) => { select(tg.id); setFollow(!(S.follow && S.selected === tg.id)); } },
+  { id: "padlock", label: "Padlock in 3D", key: "Shift+click", icon: "◎", group: "view", applies: onObj((o) => o.id !== (S.me || null)),
+    run: (tg) => { if (S.view !== "3d") setView("3d"); setPadlock(tg.id); } },
+  { id: "wcam", label: "Weapon cam", icon: "🎥", primary: true, group: "view", applies: onObj((o) => isWeapon(o) && !o.dispenser),
+    active: (tg) => S.weaponCam?.id === tg.id, run: (tg) => (S.weaponCam?.id === tg.id ? stopWeaponCam() : startWeaponCam(tg.id)) },
+  { id: "me", label: "This is me", icon: "★", group: "view", applies: onObj((o) => isAir(o) && o.id !== S.me),
+    run: (tg) => { S.me = tg.id; renderAllPanels(); map.invalidate(); } },
+  { id: "isolate", label: "Isolate (show only what it touched)", short: "Isolate", key: "X", icon: "◐", primary: true, group: "focus", applies: onObj(() => true),
+    active: (tg) => S.isolate?.id === tg.id, run: (tg) => setIsolate(S.isolate?.id === tg.id ? null : tg.id) },
+  { id: "shots", label: "Its shots & strikes", short: "Its shots", icon: "➶", primary: true, group: "focus", applies: onObj((o) => shooterOf(o.id)),
+    run: (tg) => { S.shooterFilter = tg.id; S.tab = S.strikes.some((p) => p.s.launcherId === tg.id) && SET.mode === "a2g" ? "strike" : "weapons"; renderAllPanels(); } },
+  { id: "hitby", label: "What shot at / hit it", short: "Hit by", icon: "✹", primary: true, group: "focus", applies: onObj((o) => !isWeapon(o) && shotAt(o.id)),
+    run: (tg) => { S.shooterFilter = tg.id; S.tab = isSurface(tg.o) && S.strikes.length ? "strike" : "weapons"; renderAllPanels(); } },
+  { id: "card", label: "Open its strike / shot card", short: "Card", icon: "▤", primary: true, group: "focus", applies: onObj((o) => isWeapon(o) && !!S.analysis.weapons.shots.find((x) => x.weaponId === o.id)),
+    run: (tg) => {
+      if (strikeOf(tg.id)) { S.openStrikes.add(tg.id); S.tab = "strike"; } else { S.openShots.add(tg.id); S.tab = "weapons"; }
+      renderAllPanels();
+    } },
+  { id: "evnext", label: "Next event of this object", key: "Shift+N", icon: "⏭", group: "time", applies: onObj(() => true), run: (tg) => { select(tg.id); stepEvent(1, { only: tg.id }); } },
+  { id: "evprev", label: "Previous event of this object", key: "Shift+P", icon: "⏮", group: "time", applies: onObj(() => true), run: (tg) => { select(tg.id); stepEvent(-1, { only: tg.id }); } },
+  { id: "death", label: "Jump to its death", icon: "✝", group: "time", applies: onObj((o) => S.deaths.has(o.id)), run: (tg) => seek(S.deaths.get(tg.id) - 5) },
+  { id: "loop", label: "Loop its engagement", icon: "↻", group: "time", applies: onObj((o) => objectStops(o.id).length > 0),
+    run: (tg) => { const st = objectStops(tg.id); const a = st[0].time - 5, b = st[st.length - 1].time + 5; setLoop(a, Math.max(b, a + 10), true); seek(a); } },
+  { id: "measure", label: "Measure from here", icon: "📏", group: "measure", applies: () => true,
+    run: (tg) => { S.measureFrom = tg.kind === "point" ? { lonlat: [tg.lon, tg.lat] } : { id: tg.id }; renderMapChips(); } },
+  { id: "tome", label: "Measure to me", icon: "↔", group: "measure", applies: (tg) => !!S.me && S.objects.has(S.me) && !(tg.kind === "object" && tg.id === S.me),
+    run: (tg) => addTape({ a: { id: S.me }, b: tg.kind === "point" ? { lonlat: [tg.lon, tg.lat] } : { id: tg.id } }) },
+  { id: "compare", label: "Compare with me (charts)", icon: "≋", group: "measure", applies: onObj((o) => isAir(o) && !!S.me && o.id !== S.me),
+    run: async (tg) => {
+      S.compare = tg.id; S.tab = "charts";
+      select(S.me);
+      if (!S.series.has(tg.id)) {
+        try { const { body, status } = await api(`/api/recording/${S.key}/series/${encodeURIComponent(tg.id)}`); if (status === 200) S.series.set(tg.id, body); } catch { /* offline */ }
+      }
+      renderAllPanels();
+    } },
+  { id: "pin", label: "Always show its ring / radar", short: "Pin ring", icon: "📌", group: "show", applies: onObj((o) => isNum(o.pb?.eng) || !!o.pb?.radar),
+    active: (tg) => S.pinned.has(tg.id), run: (tg) => { S.pinned.has(tg.id) ? S.pinned.delete(tg.id) : S.pinned.add(tg.id); onTimeChange(true); } },
+  { id: "target", label: "Mark as my target", icon: "◇", group: "show", applies: (tg) => tg.kind === "point" || (!isAir(tg.o) && !isWeapon(tg.o)),
+    active: (tg) => !!S.target && (tg.kind === "object" ? S.target.id === tg.id : false),
+    run: (tg) => {
+      const p = targetPos(tg);
+      if (!p) return;
+      S.target = S.target && tg.kind === "object" && S.target.id === tg.id ? null
+        : { id: tg.kind === "object" ? tg.id : null, name: tg.kind === "object" ? tg.o.name : "point", lon: p.lon, lat: p.lat, alt: p.alt };
+      renderMapChips(); renderAllPanels(); map.invalidate();
+    } },
+  { id: "group", label: "Isolate its group", icon: "⬡", group: "show", applies: onObj((o) => !!o.group && [...S.objects.values()].filter((x) => x.group === o.group).length > 1),
+    run: (tg) => {
+      const ids = new Set([...S.objects.values()].filter((x) => x.group === tg.o.group && x.coalition === tg.o.coalition).map((x) => x.id));
+      for (const id of [...ids]) relatedIds(id).forEach((x) => ids.add(x));
+      S.isolate = { id: tg.id, ids, group: tg.o.group };
+      renderMapChips(); renderObjectList(); onTimeChange(true);
+    } },
+  { id: "hide", label: "Hide it", icon: "⊘", group: "show", applies: onObj((o) => o.id !== S.me),
+    run: (tg) => { S.hidden.add(tg.id); if (S.selected === tg.id) select(null); renderObjectList(); renderMapChips(); onTimeChange(true); } },
+  { id: "copybraa", label: "Copy BRAA from me", icon: "⧉", group: "copy", applies: (tg) => !!S.me && !(tg.kind === "object" && tg.id === S.me), run: (tg) => copyAs(tg, "braa") },
+  { id: "copybulls", label: "Copy bullseye call", icon: "⧉", group: "copy", applies: () => !!S.analysis?.bullseye, run: (tg) => copyAs(tg, "bulls") },
+  { id: "copypos", label: "Copy coordinates", key: "Ctrl+C", icon: "⧉", group: "copy", applies: () => true, hint: () => (cfg("coords") === "dd" ? "deg-min, as the DED" : ""), run: (tg) => copyAs(tg, "coords") },
+];
+
+/** Chips on the map for states that hide or change things (never silent). */
+function renderMapChips() {
+  const box = $("mapChips");
+  box.innerHTML = "";
+  const add = (txt, clear, cls = "") => box.append(el("button", { class: `mapchip ${cls}`, title: "Clear", onclick: clear }, txt, " ×"));
+  if (S.isolate) {
+    const o = S.objects.get(S.isolate.id);
+    add(`Isolated: ${S.isolate.group || o?.pilot || o?.name || "?"} + ${S.isolate.ids.size - 1} related · X`, () => setIsolate(null));
+  }
+  if (S.hidden.size) add(`${S.hidden.size} hidden`, () => { S.hidden.clear(); renderObjectList(); renderMapChips(); onTimeChange(true); });
+  if (S.target) add(`Target: ${S.target.name}`, () => { S.target = null; renderMapChips(); renderAllPanels(); map.invalidate(); }, "tgt");
+  if (S.measureFrom) add("Measuring: click an object or point · Esc", () => { S.measureFrom = null; S.tapeDraft = null; renderMapChips(); map.invalidate(); });
+  if (S.weaponCam) add("Weapon cam · Esc", () => stopWeaponCam());
+  if (S.declutter) add("Decluttered · Z", () => { S.declutter = false; onDisplayChange(null); });
+  if (SET.mode !== "all") {
+    const m = MODES.find((x) => x.id === SET.mode);
+    add(`${m.label} mode`, () => SET.setMode("all"), `m-${SET.mode}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
 
@@ -80,20 +461,18 @@ async function init() {
   $("layerSel").onchange = (e) => { map.setLayer(e.target.value); setPref("layer", e.target.value); };
   $("unitSel").value = units.system;
   $("unitSel").onchange = (e) => { units.set(e.target.value); renderAllPanels(); updateLegend(); renderTapeHud(); map.invalidate(); };
-  $("labelSel").onchange = (e) => { S.labels = e.target.value; map.invalidate(); };
-  $("trailSel").onchange = (e) => { S.trailSec = +e.target.value; map.invalidate(); };
-  $("radarSel").value = S.radar;
-  $("radarSel").onchange = (e) => { S.radar = e.target.value; setPref("radar", S.radar); onTimeChange(true); };
-  $("bulletSel").value = S.bullets;
-  $("bulletSel").onchange = (e) => { S.bullets = e.target.value; setPref("bullets", S.bullets); onTimeChange(true); };
+  setupModes();
+  display = createDisplayPanel($("btnDisplay"), document.querySelector(".mapwrap"), { sections: DISPLAY, settings: SET, onChange: onDisplayChange });
+  sel = createSelectionUI(document.querySelector(".mapwrap"), {
+    actions: ACTIONS, describe: describeTarget, cardHost: $("hudCol"),
+    onClose: () => { if (S.selTarget?.kind === "point") { S.selTarget = null; sel.set(null); } else select(null); },
+  });
   $("btnFollow").onclick = () => setFollow(!S.follow);
   $("btn2d").onclick = () => setView("2d");
   $("btn3d").onclick = () => setView("3d");
   $("btnOrbit").onclick = () => setCam("orbit");
   $("btnChase").onclick = () => setCam("chase");
   $("btnPadlock").onclick = () => setCam("padlock");
-  $("trailColorSel").value = S.trailColor;
-  $("trailColorSel").onchange = (e) => setTrailColor(e.target.value);
   $("btnMeasure").onclick = () => setMeasure(map.tool !== "measure");
   $("btnPrevEv").onclick = () => stepEvent(-1);
   $("btnNextEv").onclick = () => stepEvent(1);
@@ -135,11 +514,16 @@ async function init() {
   });
   map.on("measurecancel", () => { S.tapeDraft = null; map.invalidate(); });
   map.on("contextmenu", (ev) => {
-    const i = tapeNear(ev.px, ev.py);
-    if (i < 0) return;
     ev.event.preventDefault();
-    S.tapes.splice(i, 1);
-    renderTapeHud(); map.invalidate();
+    // A tape under the cursor wins: right-click deletes it (as before).
+    const i = tapeNear(ev.px, ev.py);
+    if (i >= 0) { S.tapes.splice(i, 1); renderTapeHud(); map.invalidate(); return; }
+    if (!S.analysis) return;
+    const hit = hitAt(ev.px, ev.py);
+    const target = hit ? objectTarget(hit.id) : { kind: "point", lon: ev.lonlat[0], lat: ev.lonlat[1] };
+    if (!target) return;
+    if (target.kind === "object" && hit.id !== S.selected) select(hit.id);
+    sel.openMenu(target, ev.px, ev.py);
   });
   renderTabs();
 
@@ -158,7 +542,7 @@ async function init() {
     isIdle: () => !S.loadingKey && (!S.analysis || !S.playing),
   });
   // Test hook (?debug): symbol hitboxes and the map, for browser tests.
-  if (new URLSearchParams(location.search).has("debug")) window.__dcsSA = { hitboxes: () => hitboxes, map, S };
+  if (new URLSearchParams(location.search).has("debug")) window.__dcsSA = { hitboxes: () => hitboxes, map, S, settings: SET, sel, scene3d: () => scene3d };
   requestAnimationFrame(tick);
 }
 
@@ -264,8 +648,10 @@ function setupRecording(key, analysis, playback) {
   S.series.clear(); S.objects.clear(); S.deaths.clear();
   S.trailSeries.clear(); trailCache.clear(); trailRanges.clear(); stopsCache = null;
   S.loop = { a: null, b: null, on: false }; S.padlockId = null; S.tapes = []; S.tapeDraft = null;
-  S.openShots.clear();
+  S.openShots.clear(); S.openStrikes.clear();
   S.lastStop = null;
+  S.hidden.clear(); S.pinned.clear(); S.isolate = null; S.target = null; S.shooterFilter = null; S.compare = null;
+  S.weaponCam = null; S.measureFrom = null; S.selTarget = null;
   hideChip();
   renderTapeHud();
   for (const o of analysis.objects) {
@@ -273,6 +659,10 @@ function setupRecording(key, analysis, playback) {
     if (pb) S.objects.set(o.id, { ...o, pb });
   }
   for (const k of analysis.weapons.kills) S.deaths.set(k.victimId, k.time);
+  S.strikes = prepareStrikes(analysis.strikes || [], S.objects, analysis.weapons.submunitions || {});
+  S.strikeIds = new Set((analysis.strikes || []).map((x) => x.weaponId));
+  S.subCount = new Map(Object.entries(analysis.weapons.submunitions || {}).map(([k, v]) => [k, v.length]));
+  modeSw?.refresh?.();
   S.rounds = playback.rounds || [];
   S.roundLife = Math.max(1, ...S.rounds.map((r) => (r.end ?? r.t[r.t.length - 1]) - r.t[0]));
   if (playback.roundsTruncated) toast(`Showing the first ${S.rounds.length} of ${playback.roundsTotal} gun rounds.`);
@@ -285,9 +675,16 @@ function setupRecording(key, analysis, playback) {
   fitAll();
   select(S.me || analysis.aircraft[0]?.id || null);
   renderAllPanels();
+  scene3d?.setStrikes?.(strikes3d());
   if (pref("view", "2d") === "3d") { setView("3d"); setCam(S.cam); }
   updateLoopBand();
   setTrailColor(S.trailColor);
+  renderMapChips();
+}
+
+/** Strikes with their weapon's playback track, for the 3D view. */
+function strikes3d() {
+  return (S.analysis?.strikes || []).map((x) => ({ ...x, pb: S.objects.get(x.weaponId)?.pb || null }));
 }
 
 function fitAll() {
@@ -334,12 +731,17 @@ function onTimeChange(force = false) {
     if (p && isNum(p.lon)) map.setView(p.lon, p.lat);
   }
   map.invalidate();
+  updateWeaponCam();
   if (S.view === "3d" && scene3d && S.analysis) {
     scene3d.follow = true;
     const focus = S.selected || S.me;
+    const wc = S.weaponCam;
     scene3d.update(sceneObjects(), { focusId: focus, selectedId: S.selected, radar: S.radar, rounds: currentRounds(),
-      padlockId: S.cam === "padlock" ? padlockTarget() : null });
-    scene3d.setPointers(threatsAt(S.t, focus));
+      padlockId: S.cam === "padlock" ? padlockTarget() : null,
+      t: S.t, strikeLayers: strikeLayers(), stalks: cfg("stalks"), rings: ringMode3d(), pinned: S.pinned,
+      lockLines: cfg("lockLines"), dim: S.isolate ? S.isolate.ids : null,
+      weaponCamHoldAt: wc && wc.held ? wc.hold : null });
+    scene3d.setPointers(cfg("pointers") === "off" ? [] : threatsAt(S.t, focus));
   }
   updateScrubber();
   const now = performance.now();
@@ -347,6 +749,58 @@ function onTimeChange(force = false) {
     S.lastPanel = now;
     updateLivePanels();
   }
+}
+
+/** Which strike marks to draw (Display > Strike, or the A-G mode's defaults). */
+function strikeLayers() {
+  return { release: cfg("strikeRelease"), paths: cfg("strikePaths"), future: cfg("strikeFuture"), impacts: cfg("strikeImpacts"),
+    footprints: cfg("strikeFootprints"), tti: cfg("strikeTti"), bda: cfg("strikeBda"), lar: cfg("strikeLar") };
+}
+
+/** 3D engagement domes follow the 2D ring setting ("near" has no 3D test: hostile). */
+function ringMode3d() {
+  const r = cfg("rings");
+  return r === "off" ? "off" : r === "all" ? "all" : "hostile";
+}
+
+/**
+ * Weapon cam: ride a weapon in 3D chase, hold on the impact for 3 s, then
+ * hand back to the previous selection and camera.
+ */
+function startWeaponCam(weaponId) {
+  const st = S.strikes.find((p) => p.s.weaponId === weaponId);
+  const shot = S.analysis.weapons.shots.find((x) => x.weaponId === weaponId);
+  const t0 = st ? st.s.releaseTime : shot?.launchTime;
+  const t1 = st ? st.s.impactTime : shot?.endTime ?? shot?.launchTime;
+  if (!isNum(t0)) return;
+  S.weaponCam = { id: weaponId, prevSel: S.selected, prevCam: S.cam, prevView: S.view, end: t1, held: false,
+    hold: st ? { lon: st.geom.impact.lon, lat: st.geom.impact.lat, alt: st.geom.impact.alt } : null };
+  if (S.view !== "3d") setView("3d");
+  setCam("chase");
+  select(weaponId);
+  if (S.t < t0 || S.t > t1) seek(t0 - 1);
+  if (!S.playing) togglePlay(true);
+  renderMapChips();
+}
+
+function stopWeaponCam({ restore = true } = {}) {
+  const wc = S.weaponCam;
+  if (!wc) return;
+  S.weaponCam = null;
+  if (restore) {
+    setCam(wc.prevCam);
+    if (wc.prevView !== "3d") setView(wc.prevView);
+    select(wc.prevSel);
+  }
+  renderMapChips();
+}
+
+function updateWeaponCam() {
+  const wc = S.weaponCam;
+  if (!wc) return;
+  if (S.selected !== wc.id) { stopWeaponCam({ restore: false }); return; }
+  wc.held = isNum(wc.end) && S.t > wc.end;
+  if (isNum(wc.end) && S.t > wc.end + 3) stopWeaponCam();
 }
 
 function setFollow(on) {
@@ -388,13 +842,37 @@ function setupScrubber() {
 
 function renderTicks() {
   const sc = $("scrub");
-  sc.querySelectorAll(".tick").forEach((n) => n.remove());
+  sc.querySelectorAll(".tick, .lane").forEach((n) => n.remove());
+  if (!S.analysis) return;
   const span = S.end - S.start || 1;
+  const pct = (t) => `${((t - S.start) / span) * 100}%`;
+  const mode = SET.mode;
   for (const it of S.analysis.timeline) {
     if (!["kill", "shot", "landing", "takeoff", "lock"].includes(it.kind)) continue;
     if (it.kind === "shot" && it.text.includes(": ")) continue; // outcome rows
-    sc.append(el("div", { class: `tick ${it.kind}`, title: `${fmtClock(it.time - S.start)} ${it.text}`,
-      style: { left: `${((it.time - S.start) / span) * 100}%` } }));
+    // Strike releases have their own lanes below.
+    if (it.kind === "shot" && it.objectIds.some((id) => S.strikeIds.has(id))) continue;
+    if (mode === "a2g" && ["landing", "takeoff"].includes(it.kind)) continue;
+    if (mode === "a2a" && ["landing", "takeoff"].includes(it.kind)) continue;
+    sc.append(el("div", { class: `tick ${it.kind}${mode === "a2g" && it.kind !== "kill" ? " dim" : ""}`, title: `${fmtClock(it.time - S.start)} ${it.text}`,
+      style: { left: pct(it.time) } }));
+  }
+  if (mode === "a2a") return;
+  // Strike lanes: release -> impact, stacked when they overlap, dot at the impact.
+  const rows = [];
+  for (const p of [...S.strikes].sort((a, b) => a.s.releaseTime - b.s.releaseTime)) {
+    const x = p.s;
+    let row = rows.findIndex((end) => end < x.releaseTime - 1);
+    if (row < 0) { row = rows.length; rows.push(0); }
+    rows[row] = x.impactTime;
+    if (row > 2) continue; // three lanes are plenty; the Strike tab lists everything
+    const col = RESULT_COLOR[x.result] || RESULT_COLOR.unknown;
+    const lane = el("div", {
+      class: "lane", style: { left: pct(x.releaseTime), width: `${((x.impactTime - x.releaseTime) / span) * 100}%`, top: `${26 + row * 3}px` },
+      title: `${fmtClock(x.releaseTime - S.start)} ${weaponLabel(x.weaponName)}${x.targetName ? ` → ${x.targetName}` : ""} · TOF ${Math.round(x.timeOfFall)} s · ${x.result}`,
+    }, el("i", { style: { background: col } }));
+    lane.addEventListener("pointerdown", (e) => { e.stopPropagation(); seek(x.releaseTime - 5); select(x.weaponId); });
+    sc.append(lane);
   }
 }
 
@@ -415,8 +893,9 @@ function stepSpeed(dir) {
 }
 
 function gotoTab(n) {
-  if (!TABS[n - 1]) return;
-  S.tab = TABS[n - 1][0];
+  const tabs = visibleTabs();
+  if (!tabs[n - 1]) return;
+  S.tab = tabs[n - 1][0];
   renderAllPanels();
 }
 
@@ -454,18 +933,41 @@ const KEYS = [
   { keys: ["Shift+T"], group: "View", label: "Padlock: automatic target", when: () => S.view === "3d", run: () => setPadlock(null) },
   { keys: ["f"], group: "View", label: "Follow the selected aircraft", run: () => setFollow(!S.follow) },
   { keys: ["m"], group: "View", label: "Measuring tape (or Shift-drag)", run: () => setMeasure(map.tool !== "measure") },
-  { keys: ["Escape"], group: "View", label: "Clear tapes, leave the measure tool", when: () => S.tapes.length > 0 || !!S.tapeDraft || map.tool === "measure",
-    run: () => { setMeasure(false); S.tapes = []; S.tapeDraft = null; map.cancelMeasure(); renderTapeHud(); map.invalidate(); } },
+  { keys: ["Escape"], group: "View", label: "Close a menu", hidden: true, when: () => !!(display?.isOpen() || sel?.menuOpen()),
+    run: () => { display.close(); sel.closeMenu(); } },
+  { keys: ["Escape"], group: "View", label: "Clear tapes, leave the measure tool", when: () => S.tapes.length > 0 || !!S.tapeDraft || map.tool === "measure" || !!S.measureFrom,
+    run: () => { setMeasure(false); S.tapes = []; S.tapeDraft = null; S.measureFrom = null; map.cancelMeasure(); renderTapeHud(); map.invalidate(); } },
+  { keys: ["Escape"], group: "Selection", label: "Leave weapon cam / isolate, then deselect", hidden: true, when: () => !!(S.weaponCam || S.isolate || S.selected || S.selTarget),
+    run: () => {
+      if (S.weaponCam) stopWeaponCam();
+      else if (S.isolate) setIsolate(null);
+      else if (S.selTarget) { S.selTarget = null; sel.set(null); }
+      else select(null);
+    } },
+  { keys: ["Shift+a"], group: "Mode", label: "Dogfight (A-A) mode on / off", run: () => SET.toggle("a2a") },
+  { keys: ["Shift+g"], group: "Mode", label: "Ground-attack (A-G) mode on / off", run: () => SET.toggle("a2g") },
+  { keys: ["d"], group: "View", label: "Display options", run: () => display.toggle() },
+  { keys: ["z"], group: "View", label: "Declutter on / off", run: () => { S.declutter = !S.declutter; onDisplayChange(null); } },
+  { keys: ["r"], group: "View", label: "SAM rings: all → hostile → near → off", run: () => cycleSetting("rings", ["all", "hostile", "near", "off"], "SAM rings") },
+  { keys: ["b"], group: "View", label: "Bullseye: rings → calls → off", run: () => cycleSetting("bullseye", ["rings", "calls", "off"], "Bullseye") },
+  { keys: ["w"], group: "Selection", label: "Weapon cam on the selected weapon", when: () => isWeapon(S.objects.get(S.selected)) || !!S.weaponCam,
+    run: () => (S.weaponCam ? stopWeaponCam() : startWeaponCam(S.selected)) },
   { keys: ["j", "k"], group: "Selection", label: "Next / previous aircraft", run: (e) => stepAircraft(e.key.toLowerCase() === "j" ? 1 : -1) },
+  { keys: ["e"], group: "Selection", label: "Actions for the selection (or right-click it)", when: () => !!currentTarget(), run: () => openSelectionMenu() },
+  { keys: ["x"], group: "Selection", label: "Isolate the selection and what it touched", when: () => !!S.selected || !!S.isolate,
+    run: () => setIsolate(S.isolate ? null : S.selected) },
+  { keys: ["Shift+n", "Shift+p"], group: "Selection", label: "Next / previous event of the selection", when: () => !!S.selected,
+    run: (e) => stepEvent(e.key.toLowerCase() === "n" ? 1 : -1, { only: S.selected }) },
+  { keys: ["Ctrl+c"], group: "Selection", label: "Copy BRAA / coordinates of the selection", when: () => !!currentTarget() && !String(window.getSelection?.() || ""),
+    run: () => copyDefault(currentTarget()) },
   { keys: ["/"], group: "Selection", label: "Filter objects", run: () => $("objFilter").focus() },
   ...TABS_KEYS(),
   { keys: ["Ctrl+o"], group: "Panels", label: "Recordings library", run: () => showLibrary() },
 ];
 
 function TABS_KEYS() {
-  const labels = ["Flight", "Charts", "Weapons", "Landings", "Radar", "Events", "All aircraft"];
-  return labels.map((name, i) => ({
-    keys: [String(i + 1)], group: "Panels", label: `Tabs: ${labels.join(", ")}`, keysLabel: "1–7",
+  return Array.from({ length: 8 }, (_, i) => ({
+    keys: [String(i + 1)], group: "Panels", label: "Tabs, in the order shown", keysLabel: "1–8",
     hidden: i > 0, run: () => gotoTab(i + 1),
   }));
 }
@@ -489,9 +991,9 @@ function eventStops() {
   return stops;
 }
 
-function stepEvent(dir) {
+function stepEvent(dir, { only = null } = {}) {
   if (!S.analysis) return;
-  const stops = eventStops();
+  const stops = only ? objectStops(only) : eventStops();
   // Right after a step the playhead sits 3 s before that event: step from
   // the event itself.  Anywhere else, step from the playhead.
   const at = S.lastStop !== null && S.lastStop !== undefined && Math.abs(S.t - Math.max(S.start, S.lastStop - 3)) < 0.05 ? S.lastStop : S.t;
@@ -501,6 +1003,18 @@ function stepEvent(dir) {
   seek(stop.time - 3);
   S.lastStop = stop.time;
   showChip(stop);
+}
+
+/** Every event involving one object (the mode's event filter does not apply). */
+function objectStops(id) {
+  const stops = [];
+  for (const it of [...S.analysis.timeline].sort((a, b) => a.time - b.time)) {
+    if (!it.objectIds.includes(id)) continue;
+    const last = stops[stops.length - 1];
+    if (last && it.time - last.items[last.items.length - 1].time <= 0.5) last.items.push(it);
+    else stops.push({ time: it.time, items: [it] });
+  }
+  return stops;
 }
 
 let chipTimer = null;
@@ -814,9 +1328,8 @@ const trailCache = new Map();
 const trailRanges = new Map();
 
 function setTrailColor(mode) {
-  S.trailColor = TRAIL_MODES[mode] !== undefined ? mode : "side";
-  $("trailColorSel").value = S.trailColor;
-  setPref("trailColor", S.trailColor);
+  const m = TRAIL_MODES[mode] !== undefined ? mode : "side";
+  if (S.trailColor !== m) S.trailColor = m;
   if (TRAIL_MODES[S.trailColor]?.channel && S.analysis) fetchTrailSeries();
   updateLegend();
   onTimeChange(true);
@@ -928,18 +1441,133 @@ function activeLocks(t) {
   return out;
 }
 
+/** Hostile SAM / AAA / armed ship: has an engagement ring. */
+const isThreatUnit = (o) => ["ground", "sea"].includes(o.category) && isNum(o.pb?.eng);
+
+/**
+ * Does the display (filters, mode, hidden list) show this object?  The
+ * selection, the padlock target, tape ends and missiles at "me" are always
+ * shown, whatever the mode says (a filtered map must never hide a threat).
+ */
+function shown(o, t) {
+  if (o.id === S.selected || o.id === S.padlockId || S.pinned.has(o.id)) return true;
+  if (S.tapes.some((tp) => tp.a.id === o.id || tp.b.id === o.id)) return true;
+  if (S.hidden.has(o.id)) return false;
+  const c = (o.coalition || "").toLowerCase();
+  const side = c.includes("allies") || c.includes("blue") ? "blue" : c.includes("enem") || c.includes("red") ? "red" : "neutral";
+  if (!cfg(side)) return false;
+  const cat = o.category;
+  if (cat === "weapon") {
+    if (o.dispenser) return cfg("bomblets") !== "hide";
+    const w = cfg("weapons");
+    if (w === "none") return false;
+    const ag = S.strikeIds.has(o.id);
+    if (w === "a2a" && ag) return false;
+    if (w === "a2g" && !ag && !atMe(o, t)) return false;
+    return true;
+  }
+  if (cat === "countermeasure") return cfg("cm") !== "hide";
+  if (AIR.includes(cat)) return cfg("air") !== "hide";
+  if (["ground", "sea"].includes(cat) || cat === "misc" || cat === "navaid") {
+    const g = cfg("ground");
+    if (g === "hide") return false;
+    if (g === "threats") return isThreatUnit(o);
+  }
+  return true;
+}
+
+/** Is this weapon a missile shot at "me" (or the selected jet)? */
+function atMe(o, t) {
+  const focus = S.selected || S.me;
+  return S.analysis.weapons.shots.some((sh) => sh.weaponId === o.id && sh.targetId && (sh.targetId === focus || sh.targetId === S.me) && t <= (sh.endTime ?? sh.launchTime) + 1);
+}
+
+/** Ids related to an object: its weapons and their targets, who shot at it, its group. */
+function relatedIds(id) {
+  const o = S.objects.get(id);
+  const ids = new Set([id]);
+  if (!o) return ids;
+  const w = S.analysis.weapons;
+  for (const sh of w.shots) {
+    if (sh.launcherId === id || sh.weaponId === id || sh.targetId === id) {
+      [sh.launcherId, sh.weaponId, sh.targetId].forEach((x) => x && ids.add(x));
+    }
+  }
+  for (const b of w.bursts) {
+    if (b.launcherId === id || b.targetId === id) [b.launcherId, b.targetId].forEach((x) => x && ids.add(x));
+  }
+  for (const k of w.kills) if (k.killerId === id || k.victimId === id) [k.killerId, k.victimId, k.weaponId].forEach((x) => x && ids.add(x));
+  for (const p of S.strikes) {
+    const x = p.s;
+    const hit = (x.damage || []).some((d) => d.id === id);
+    if (x.launcherId === id || x.weaponId === id || x.targetId === id || hit) {
+      [x.launcherId, x.weaponId, x.targetId].forEach((v) => v && ids.add(v));
+      (x.damage || []).forEach((d) => ids.add(d.id));
+      (S.analysis.weapons.submunitions?.[x.weaponId] || []).forEach((b) => ids.add(b));
+    }
+  }
+  for (const ep of S.analysis.radar.locks) if (ep.ownerId === id || ep.targetId === id) [ep.ownerId, ep.targetId].forEach((x) => x && ids.add(x));
+  if (o.group) for (const x of S.objects.values()) if (x.group === o.group && x.coalition === o.coalition) ids.add(x.id);
+  return ids;
+}
+
+function setIsolate(id) {
+  S.isolate = id ? { id, ids: relatedIds(id) } : null;
+  renderMapChips();
+  renderObjectList();
+  onTimeChange(true);
+}
+
+/** Labels for hostile ground units near a strike (label mode "targets"). */
+let targetIdsCache = null;
+function strikeTargetIds() {
+  if (targetIdsCache?.key === S.key) return targetIdsCache.ids;
+  const ids = new Set();
+  for (const p of S.strikes) {
+    if (p.s.targetId) ids.add(p.s.targetId);
+    (p.s.damage || []).forEach((d) => ids.add(d.id));
+  }
+  for (const x of S.analysis?.targets || []) ids.add(x.id);
+  targetIdsCache = { key: S.key, ids };
+  return ids;
+}
+
 function sceneObjects() {
   if (!S.analysis) return [];
   const t = S.t;
   const locks = activeLocks(t);
   const out = [];
+  const meP = S.me && S.objects.get(S.me) ? alive(S.objects.get(S.me), t) : null;
+  const braaOn = cfg("braa") && meP;
+  const bullsCalls = cfg("bullseye") === "calls" && S.analysis.bullseye;
+  const deadMode = cfg("dead");
+  const targets = cfg("labels") === "targets" ? strikeTargetIds() : null;
   for (const o of S.objects.values()) {
     const p = sampleTrack(o.pb, t);
     if (!p || !isNum(p.lon)) continue;
     const death = S.deaths.get(o.id);
     const dead = isNum(death) && t >= death;
     if (dead && ["fixedwing", "rotorcraft", "air"].includes(o.category) && t > death + 2) continue;
+    if (dead && deadMode === "hide" && o.id !== S.selected) continue;
+    if (dead && deadMode === "fade" && t > death + 60 && o.id !== S.selected) continue;
+    if (!shown(o, t)) continue;
     const row = { ...o, lon: p.lon, lat: p.lat, alt: p.alt, hdg: p.hdg, pitch: p.pitch, roll: p.roll, dead, v: {} };
+    if (targets && targets.has(o.id)) row.labelMe = true;
+    if (o.category === "weapon") {
+      row.name = weaponLabel(o.name);
+      // The strike overlay tags weapons in flight ("AGM-154A → target · 0:42"): no second label.
+      if (S.strikeIds.has(o.id) && cfg("strikeTti")) row.noLabel = true;
+    }
+    if (AIR.includes(o.category) && !dead && o.id !== S.me && isHostile(S.objects.get(S.me), o)) {
+      const bits = [];
+      if (braaOn) {
+        const asp = isNum(p.hdg) ? aspectDeg(p.lon, p.lat, p.hdg, meP.lon, meP.lat) : null;
+        const hc = isNum(asp) ? (asp >= 135 ? "HOT" : asp <= 45 ? "COLD" : "FLANK") : "";
+        bits.push(`BRAA ${braa(meP.lon, meP.lat, p.lon, p.lat, p.alt)} ${hc}`.trim());
+      }
+      if (bullsCalls) bits.push(`BULLS ${braa(S.analysis.bullseye.longitude, S.analysis.bullseye.latitude, p.lon, p.lat, p.alt)}`);
+      if (bits.length) row.tag = bits.join(" · ");
+    }
     // Ground speed from the playback track, for labels.
     const i = p.i, pb = o.pb;
     if (i > 0 && pb.t[i] > pb.t[i - 1]) {
@@ -987,39 +1615,205 @@ function currentRounds() {
   return roundsAt(S.rounds, S.t, { mode: S.bullets, maxLife: S.roundLife });
 }
 
+/** Engagement ring filter for the "rings" setting. */
+function ringFilter(o) {
+  if (S.pinned.has(o.id)) return true;
+  const mode = cfg("rings");
+  if (mode === "off") return false;
+  if (mode === "all") return true;
+  const focus = S.objects.get(S.selected) && AIR.includes(S.objects.get(S.selected).category) ? S.selected : S.me;
+  const me = S.objects.get(focus);
+  if (!isHostile(me, o) && me) return false;
+  if (mode === "hostile") return true;
+  // "near": only while the jet is within 1.5x the ring (or has no position).
+  const mp = me && alive(me, S.t);
+  const r = o.v?.EngagementRange;
+  return !mp || !isNum(r) || distance(mp.lon, mp.lat, o.lon, o.lat) <= r * 1.5;
+}
+
+const isoAlpha = (id) => (!S.isolate || S.isolate.ids.has(id) ? 1 : 0.15);
+
 let hitboxes = [];
 function drawMap(ctx, m) {
   const objs = sceneObjects();
+  map.gridOverlay = cfg("grid");
   hitboxes = drawScene(ctx, m, objs, {
     selectedId: S.selected, focusId: S.me, labels: S.labels, showTrails: S.trailSec > 0, showRadar: S.radar,
-    rounds: currentRounds(),
+    rounds: currentRounds(), ringFilter, lockLines: cfg("lockLines"), vectors: cfg("vectors"),
+    bullseye: cfg("bullseye") !== "off", alphaOf: S.isolate ? (o) => isoAlpha(o.id) : null,
+    labelScale: { s: 0.9, m: 1, l: 1.25, xl: 1.5 }[cfg("labelSize")] || 1,
   });
-  if (S.follow && S.analysis) {
-    const focus = S.selected || S.me;
+  if (S.strikes.length && S.analysis) {
+    const hits = drawStrikes(ctx, m, S.strikes, S.t, {
+      layers: strikeLayers(), selectedId: S.selected, objects: S.objects, target: S.target,
+      labels: cfg("strikeLabels"), alphaOf: S.isolate ? isoAlpha : null,
+    });
+    // Objects win over strike marks at the same spot (they come first).
+    hitboxes = hitboxes.concat(hits);
+  }
+  if (S.target) drawTargetMark(ctx, m, S.target);
+  if (cfg("exposure")) drawExposure(ctx, m);
+  const pointers = cfg("pointers");
+  if (S.analysis && pointers !== "off" && (S.follow || pointers === "always")) {
+    const focus = S.selected && AIR.includes(S.objects.get(S.selected)?.category) ? S.selected : S.me;
     const me = objs.find((o) => o.id === focus);
     const from = me ? m.project(me.lon, me.lat) : [m.w / 2, m.h / 2];
-    // Keep the arrows clear of the map tools column on the right.
+    // Keep the arrows clear of the map tools column on the right and the HUD column on the left.
     const tools = document.querySelector(".map-tools")?.getBoundingClientRect();
     drawEdgePointers(ctx, m, from, threatsAt(S.t, focus), { top: 48, right: tools ? tools.width + 22 : 22, bottom: 40, left: 22 });
+  }
+  if (S.measureFrom && S.hoverLonLat) {
+    S.tapeDraft = { a: S.measureFrom, b: { lonlat: S.hoverLonLat } };
   }
   if (S.tapes.length || S.tapeDraft) drawTapes(ctx, m);
   if (S.tapes.length && Math.abs((S._tapeHudT ?? -1e9) - S.t) > 0.5) { S._tapeHudT = S.t; renderTapeHud(); }
 }
 
-function onMapClick({ px, py }) {
+/**
+ * Where a jet flew inside a hostile SAM / AAA envelope (horizontal range
+ * within the ring, height above the site within its vertical range):
+ * [{t0, t1, site}] per aircraft, computed once per recording.
+ */
+const exposureCache = new Map();
+function exposure(id) {
+  const key = `${S.key}|${id}`;
+  if (exposureCache.has(key)) return exposureCache.get(key);
+  const jet = S.objects.get(id);
+  const out = [];
+  if (jet) {
+    const sites = [...S.objects.values()].filter((o) => isThreatUnit(o) && isHostile(jet, o));
+    const pb = jet.pb;
+    let cur = null;
+    for (let i = 0; i < pb.t.length; i++) {
+      const t = pb.t[i];
+      if (!isNum(pb.lon[i])) continue;
+      let inside = null;
+      for (const o of sites) {
+        const d = S.deaths.get(o.id);
+        if (isNum(d) && t >= d) continue;
+        const q = sampleTrack(o.pb, t);
+        if (!q) continue;
+        const up = isNum(pb.alt?.[i]) && isNum(q.alt) ? pb.alt[i] - q.alt : 0;
+        if (distance(q.lon, q.lat, pb.lon[i], pb.lat[i]) <= o.pb.eng && (!isNum(o.pb.engV) || up <= o.pb.engV)) { inside = o; break; }
+      }
+      if (inside && cur && cur.site === inside.name && t - cur.t1 <= 2) cur.t1 = t;
+      else if (inside) { cur = { t0: t, t1: t, site: inside.name }; out.push(cur); }
+      else cur = null;
+    }
+  }
+  exposureCache.set(key, out);
+  return out;
+}
+
+/** Red overlay on the flown path where the selected jet (or me) was inside a SAM envelope. */
+function drawExposure(ctx, m) {
+  const id = S.selected && AIR.includes(S.objects.get(S.selected)?.category) ? S.selected : S.me;
+  const jet = S.objects.get(id);
+  if (!jet) return;
+  const pb = jet.pb;
+  ctx.save();
+  ctx.strokeStyle = "rgba(255,59,59,0.55)";
+  ctx.lineWidth = 6;
+  ctx.lineCap = "round";
+  ctx.font = "11px ui-monospace, monospace";
+  ctx.textBaseline = "middle";
+  for (const iv of exposure(id)) {
+    if (iv.t0 > S.t) break;
+    const t1 = Math.min(iv.t1, S.t);
+    ctx.beginPath();
+    let first = true;
+    for (let i = Math.max(0, bisectRight(pb.t, iv.t0)); i < pb.t.length && pb.t[i] <= t1; i++) {
+      if (!isNum(pb.lon[i])) continue;
+      const [x, y] = m.project(pb.lon[i], pb.lat[i]);
+      if (first) { ctx.moveTo(x, y); first = false; } else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    const q = sampleTrack(pb, iv.t0);
+    if (q && t1 - iv.t0 >= 2) {
+      const [x, y] = m.project(q.lon, q.lat);
+      ctx.lineWidth = 3; ctx.strokeStyle = "rgba(6,9,13,0.9)";
+      const txt = `in ${iv.site} WEZ ${Math.round(t1 - iv.t0)} s`;
+      ctx.strokeText(txt, x + 8, y + 14);
+      ctx.fillStyle = "#ff8080";
+      ctx.fillText(txt, x + 8, y + 14);
+      ctx.lineWidth = 6; ctx.strokeStyle = "rgba(255,59,59,0.55)";
+    }
+  }
+  ctx.restore();
+}
+
+/** The user's target point: a diamond with its name. */
+function drawTargetMark(ctx, m, tg) {
+  const [x, y] = m.project(tg.lon, tg.lat);
+  ctx.save();
+  ctx.strokeStyle = "#ffd166";
+  ctx.fillStyle = "rgba(255,209,102,0.18)";
+  ctx.lineWidth = 1.8;
+  ctx.beginPath(); ctx.moveTo(x, y - 9); ctx.lineTo(x + 9, y); ctx.lineTo(x, y + 9); ctx.lineTo(x - 9, y); ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  ctx.font = "11px ui-monospace, monospace";
+  ctx.textBaseline = "middle";
+  ctx.lineWidth = 3; ctx.strokeStyle = "rgba(6,9,13,0.9)";
+  ctx.strokeText(`TGT ${tg.name || ""}`, x + 12, y);
+  ctx.fillStyle = "#ffd166";
+  ctx.fillText(`TGT ${tg.name || ""}`, x + 12, y);
+  ctx.restore();
+}
+
+function hitAt(px, py) {
   let best = null, bd = Infinity;
   for (const h of hitboxes) {
     const d = Math.hypot(h.x - px, h.y - py);
     if (d < h.r && d < bd) { best = h; bd = d; }
   }
-  if (best) select(best.id);
+  return best;
+}
+
+function onMapClick({ px, py, lonlat }) {
+  const best = hitAt(px, py);
+  if (S.measureFrom) {
+    // Second click of "Measure from here": an object or a map point.
+    addTape({ a: S.measureFrom, b: best ? { id: best.id } : { lonlat } });
+    S.measureFrom = null; S.tapeDraft = null;
+    renderMapChips();
+    return;
+  }
+  if (best?.strike) {
+    // A release or impact mark: the weapon, with its strike card open.
+    S.openStrikes.add(best.id);
+    S.tab = "strike";
+    select(best.id);
+    requestAnimationFrame(() => document.querySelector(`.strike-anchor[data-weapon="${CSS.escape(best.id)}"]`)?.scrollIntoView({ block: "start", behavior: "smooth" }));
+    return;
+  }
+  if (best) { select(best.id); return; }
+  // A bomblet dot selects the weapon that dispensed it.
+  const b = bombletNear(px, py);
+  if (b) select(b);
+}
+
+/** Dispenser id of a bomblet (falling or landed) within 10 px, or null. */
+function bombletNear(px, py) {
+  for (const p of S.strikes) {
+    if (!p.bomblets.length || S.t < (p.geom?.dispense?.time ?? Infinity)) continue;
+    for (const id of S.analysis.weapons.submunitions?.[p.s.weaponId] || []) {
+      const o = S.objects.get(id);
+      const q = o && posAt(o, S.t);
+      if (!q) continue;
+      const [x, y] = map.project(q.lon, q.lat);
+      if (Math.hypot(x - px, y - py) <= 10) return p.s.weaponId;
+    }
+  }
+  return null;
 }
 
 function onMapHover(ev) {
   const hud = $("hudHover");
+  S.hoverLonLat = ev?.lonlat || null;
+  if (S.measureFrom) map.invalidate();
   if (!ev || !S.analysis) { hud.classList.add("hidden"); return; }
   const [lon, lat] = ev.lonlat;
-  const lines = [`${lat.toFixed(4)}°, ${lon.toFixed(4)}°`];
+  const lines = [fmtCoord(lon, lat, cfg("coords"))];
   const be = S.analysis.bullseye;
   if (be) lines.push(`BE ${braa(be.longitude, be.latitude, lon, lat)}`);
   const me = S.selected && S.objects.get(S.selected);
@@ -1035,6 +1829,8 @@ function onMapHover(ev) {
 
 async function select(id) {
   S.selected = id;
+  S.selTarget = null;
+  sel?.set(id ? objectTarget(id) : null);
   if (S.view === "3d") onTimeChange(true);
   renderObjectList();
   map.invalidate();
@@ -1048,38 +1844,77 @@ async function select(id) {
   renderAllPanels();
 }
 
+const OBJ_CHIPS = [["all", "All"], ["air", "Air"], ["surface", "Surface"], ["weapons", "Weapons"], ["hostile", "Hostile"], ["alive", "Alive"]];
+
 function renderObjectList() {
   const list = $("objList");
   list.innerHTML = "";
   if (!S.analysis) return;
+  // Filter chips (persisted) and the hidden / isolated chips.
+  const chip = cfg("objChip");
+  const chips = el("div", { class: "chips objchips" }, ...OBJ_CHIPS.map(([k, label]) => el("button", {
+    class: chip === k ? "active" : "", onclick: () => { SET.set("objChip", k); renderObjectList(); } }, label)));
+  if (S.hidden.size) chips.append(el("button", { class: "warnchip", title: "Show every hidden object again", onclick: () => { S.hidden.clear(); renderObjectList(); renderMapChips(); onTimeChange(true); } }, `${S.hidden.size} hidden · show`));
+  list.append(chips);
+  const me = S.objects.get(S.me);
   const groups = new Map();
   const statsById = new Map(S.analysis.aircraft.map((a) => [a.id, a]));
   for (const o of S.objects.values()) {
     if (!["fixedwing", "rotorcraft", "air", "ground", "sea", "weapon"].includes(o.category)) continue;
     if (o.category === "weapon" && /Shell|Bullet|Projectile/.test(o.type || "")) continue; // see Weapons tab
+    if (o.dispenser) continue; // bomblets: counted on their dispenser's row
     const label = `${o.pilot || ""} ${o.name} ${o.group || ""}`.toLowerCase();
     if (S.filter && !label.includes(S.filter)) continue;
-    const g = o.category === "weapon" ? "Weapons" : `${o.coalition || "Unknown"} · ${["ground", "sea"].includes(o.category) ? "surface" : "air"}`;
+    const surface = ["ground", "sea"].includes(o.category);
+    if (chip === "air" && !AIR.includes(o.category)) continue;
+    if (chip === "surface" && !surface) continue;
+    if (chip === "weapons" && o.category !== "weapon") continue;
+    if (chip === "hostile" && !(me && isHostile(me, o))) continue;
+    if (chip === "alive" && S.deaths.has(o.id) && S.t >= S.deaths.get(o.id)) continue;
+    const g = o.category === "weapon" ? "Weapons" : `${o.coalition || "Unknown"} · ${surface ? "surface" : "air"}`;
     if (!groups.has(g)) groups.set(g, []);
     groups.get(g).push(o);
   }
-  const order = [...groups.keys()].sort((a, b) => (a === "Weapons") - (b === "Weapons") || a.localeCompare(b));
+  // The mode decides which groups come first and which start collapsed.
+  const mode = SET.mode;
+  const rank = (g) => {
+    const surface = g.endsWith("surface"), weapons = g === "Weapons";
+    if (mode === "a2g") return surface ? 0 : weapons ? 1 : 2;
+    return weapons ? 2 : surface ? 1 : 0;
+  };
+  const order = [...groups.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
   for (const g of order) {
     const items = groups.get(g);
-    const grp = el("div", { class: "objgroup" }, el("h4", {}, g, el("span", {}, items.length)));
+    const defCollapsed = (mode === "a2a" && g.endsWith("surface")) || (mode === "a2g" && g.endsWith("air") && !items.some((o) => o.id === S.me));
+    const ck = `${mode}|${g}`;
+    const collapsed = S.collapsed.has(ck) ? S.collapsed.get(ck) : defCollapsed;
+    const head = el("h4", { class: "click", title: collapsed ? "Show this group" : "Collapse this group",
+      onclick: () => { S.collapsed.set(ck, !collapsed); renderObjectList(); } },
+      el("span", {}, collapsed ? "▸ " : "▾ ", g), el("span", {}, items.length));
+    const grp = el("div", { class: "objgroup" }, head);
+    if (collapsed) { list.append(grp); continue; }
     for (const o of items.slice(0, 300)) {
       const dead = S.deaths.has(o.id) && S.t >= S.deaths.get(o.id);
       const st = statsById.get(o.id)?.stats;
+      const subs = S.subCount?.get(o.id);
+      const dim = S.isolate && !S.isolate.ids.has(o.id);
       grp.append(el("div", {
-        class: `objrow${o.id === S.selected ? " selected" : ""}${dead ? " dead" : ""}`,
+        class: `objrow${o.id === S.selected ? " selected" : ""}${dead ? " dead" : ""}${dim ? " gone" : ""}${S.hidden.has(o.id) ? " hid" : ""}`,
         "data-id": o.id,
         onclick: (e) => {
           if (e.shiftKey) { setPadlock(o.id); return; }
           select(o.id); const p = sampleTrack(o.pb, S.t) || sampleTrack(o.pb, o.pb.t[0]); if (p) map.setView(p.lon, p.lat);
         },
+        oncontextmenu: (e) => {
+          e.preventDefault();
+          if (o.id !== S.selected) select(o.id);
+          const r = document.querySelector(".mapwrap").getBoundingClientRect();
+          sel.openMenu(objectTarget(o.id), Math.max(8, e.clientX - r.left), e.clientY - r.top);
+        },
       },
       el("span", { class: "dot", style: { background: sideColor(o) } }),
-      el("span", { class: "nm" }, o.pilot || o.name, o.pilot ? el("small", {}, o.name) : "",
+      el("span", { class: "nm" }, o.pilot || (o.category === "weapon" ? weaponLabel(o.name) : o.name), o.pilot ? el("small", {}, o.name) : "",
+        subs ? el("small", { title: `${subs} submunitions recorded` }, `· ${subs} bomblets`) : "",
         o.id === S.me ? el("span", { class: "me-badge" }, "ME") : ""),
       el("span", { class: "st" }, st?.maxAltitude ? fmtAlt(st.maxAltitude, { suffix: false }) : o.category === "weapon" ? fmtClock(o.firstSeen - S.start) : "")));
     }
@@ -1092,15 +1927,21 @@ function renderObjectList() {
 // ---------------------------------------------------------------------------
 
 const TABS = [
-  ["flight", "Flight"], ["charts", "Charts"], ["weapons", "Weapons"], ["landings", "Landings"],
+  ["flight", "Flight"], ["charts", "Charts"], ["weapons", "Weapons"], ["strike", "Strike"], ["landings", "Landings"],
   ["radar", "Radar"], ["events", "Events"], ["aircraft", "All aircraft"],
 ];
+
+/** Tabs keep their order and numbers (1-8) whatever the recording or mode. */
+function visibleTabs() {
+  return TABS;
+}
 
 function renderTabs() {
   const nav = $("tabs");
   nav.innerHTML = "";
-  for (const [idx, [id, label]] of TABS.entries()) {
+  for (const [idx, [id, label]] of visibleTabs().entries()) {
     const count = !S.analysis ? "" : id === "weapons" ? S.analysis.weapons.shots.length + S.analysis.weapons.bursts.length
+      : id === "strike" ? S.strikes.length
       : id === "landings" ? S.analysis.landings.length : id === "events" ? S.analysis.timeline.length
       : id === "radar" ? S.analysis.radar.locks.length : "";
     nav.append(el("button", { class: S.tab === id ? "active" : "", role: "tab", title: `${label} (${idx + 1})`, onclick: () => { S.tab = id; renderAllPanels(); } },
@@ -1114,8 +1955,10 @@ function renderAllPanels() {
   const panel = $("tabpanel");
   panel.innerHTML = "";
   charts = [];
+  strikeCards = [];
+  flightEls = null;
   if (!S.analysis) { panel.append(el("div", { class: "empty" }, "Open a recording to begin.")); return; }
-  ({ flight: renderFlight, charts: renderCharts, weapons: renderWeapons, landings: renderLandings,
+  ({ flight: renderFlight, charts: renderCharts, weapons: renderWeapons, strike: renderStrike, landings: renderLandings,
     radar: renderRadar, events: renderEvents, aircraft: renderAircraft })[S.tab](panel);
   updateLivePanels();
 }
@@ -1125,8 +1968,9 @@ let flightEls = null;
 
 function updateLivePanels() {
   if (!S.analysis) return;
-  if (S.tab === "flight") updateFlight();
+  if (S.tab === "flight" && flightEls?.adi.isConnected) updateFlight();
   for (const c of charts) c.setMarker(c._markerFn ? c._markerFn(S.t) : S.t);
+  for (const c of strikeCards) c._setTime?.(S.t);
   if (S.tab === "events") {
     for (const row of document.querySelectorAll(".timeline-list .ev")) {
       const t = +row.dataset.t;
@@ -1138,13 +1982,35 @@ function updateLivePanels() {
     const d = S.deaths.get(row.dataset.id);
     row.classList.toggle("dead", isNum(d) && S.t >= d);
   }
-  const hud = $("hudSel");
-  const o = S.selected && S.objects.get(S.selected);
-  const p = o && sampleTrack(o.pb, S.t);
-  if (p) {
-    hud.classList.remove("hidden");
-    hud.textContent = `${o.pilot || o.name} · ${fmtHdg(p.hdg)} · ${fmtAlt(p.alt)}${S.follow ? " · following" : ""}`;
-  } else hud.classList.add("hidden");
+  sel?.refresh();
+  renderWif();
+}
+
+/** "Weapons in flight" for the selected jet (or me): time to impact, progress. */
+function renderWif() {
+  const box = $("wifHud");
+  const who = S.selected && AIR.includes(S.objects.get(S.selected)?.category) ? S.selected : S.me;
+  const list = cfg("strikeTti") ? weaponsInFlight(S.strikes, S.t, who) : [];
+  if (!list.length) { box.classList.add("hidden"); box._sig = ""; return; }
+  box.classList.remove("hidden");
+  const sig = list.map((x) => x.s.weaponId).join(",");
+  if (box._sig !== sig) {
+    box._sig = sig;
+    box.innerHTML = "";
+    box.append(el("div", { class: "wif-h" }, "Weapons in flight"));
+    for (const x of list) {
+      box.append(el("div", { class: "wif-row", "data-id": x.s.weaponId, title: "Select this weapon",
+        onclick: () => select(x.s.weaponId) },
+        el("span", { class: "nm" }, `${weaponLabel(x.s.weaponName)}${x.s.targetName ? ` → ${x.s.targetName}` : ""}`),
+        el("span", { class: "tti" }), el("div", { class: "prog" }, el("i"))));
+    }
+  }
+  for (const x of list) {
+    const row = box.querySelector(`.wif-row[data-id="${CSS.escape(x.s.weaponId)}"]`);
+    if (!row) continue;
+    row.querySelector(".tti").textContent = isNum(x.opens) ? `opens ${fmtClock(x.opens)}` : fmtClock(x.left);
+    row.querySelector(".prog i").style.width = `${Math.round(x.frac * 100)}%`;
+  }
 }
 
 // -- Flight tab ---------------------------------------------------------------
@@ -1263,7 +2129,7 @@ function updateFlight() {
   add("Locked", lockTxt);
   if (isNum(v.GlideslopeVerticalDeviation)) add("ILS dev", `${fmtAlt(v.GlideslopeVerticalDeviation)} / ${fmtAlt(v.LocalizerLateralDeviation)}`);
   if (me) {
-    add("Position", `${me.lat.toFixed(4)}, ${me.lon.toFixed(4)}`);
+    add("Position", fmtCoord(me.lon, me.lat, cfg("coords")));
     const be = S.analysis.bullseye;
     if (be) add("Bullseye", braa(be.longitude, be.latitude, me.lon, me.lat));
   }
@@ -1285,24 +2151,32 @@ const CHART_DEFS = {
   Controls: { series: [["PitchControlInput", "#ffd166"], ["RollControlInput", "#4ea8ff"], ["YawControlInput", "#4dd8e6"], ["Elevator", "#ff9f43"], ["Rudder", "#b48cff"]], f: (v) => v, fmt: (v) => v.toFixed(2) },
   Radar: { series: [["RadarAzimuth", "#4dd8e6"], ["LockedTargetAzimuth", "#ff9f43"]], f: (v) => v, fmt: (v) => v.toFixed(0) },
 };
-let chartSel = new Set((pref("charts", "Altitude,Speed,AOA,G,Throttle,Energy")).split(","));
+const chartSel = () => new Set(String(cfg("charts") || "").split(",").filter(Boolean));
 
 function renderCharts(panel) {
   const ser = S.selected && S.series.get(S.selected);
   if (!ser) { panel.append(el("div", { class: "empty" }, "Select an aircraft to chart its telemetry.")); return; }
+  const picked = chartSel();
   const picker = el("div", { class: "chart-picker" });
   for (const name of Object.keys(CHART_DEFS)) {
     const has = CHART_DEFS[name].series.some(([k]) => ser.channels[k]);
     if (!has) continue;
-    picker.append(el("button", { class: chartSel.has(name) ? "active" : "", onclick: () => {
-      chartSel.has(name) ? chartSel.delete(name) : chartSel.add(name);
-      setPref("charts", [...chartSel].join(",")); renderAllPanels();
+    picker.append(el("button", { class: picked.has(name) ? "active" : "", onclick: () => {
+      picked.has(name) ? picked.delete(name) : picked.add(name);
+      SET.set("charts", [...picked].join(",")); renderAllPanels();
     } }, name));
   }
+  // "Compare with me": the other jet's series drawn dashed on the same charts.
+  const other = S.compare && S.compare !== S.selected ? S.series.get(S.compare) : null;
   const wrap = el("div", { class: "charts" });
-  panel.append(el("div", { class: "muted", style: { marginBottom: "6px" } }, `${ser.summary.pilot || ser.summary.name} — click a chart to jump there`), picker, wrap);
+  const head = el("div", { class: "muted", style: { marginBottom: "6px" } }, `${ser.summary.pilot || ser.summary.name} — click a chart to jump there`);
+  if (S.compare && S.compare !== S.selected) {
+    const o = S.objects.get(S.compare);
+    head.append(" ", filterChip(`dashed: ${o?.pilot || o?.name || S.compare}${other ? "" : " (loading…)"}`, () => { S.compare = null; renderAllPanels(); }));
+  }
+  panel.append(head, picker, wrap);
   for (const name of Object.keys(CHART_DEFS)) {
-    if (!chartSel.has(name)) continue;
+    if (!picked.has(name)) continue;
     const def = CHART_DEFS[name];
     const lockMode = ser.channels.LockedTargetMode;
     const series = def.series.filter(([k]) => ser.channels[k]).map(([k, color]) => ({
@@ -1310,6 +2184,13 @@ function renderCharts(panel) {
       // Locked-target values are held after the lock drops; show them only while locked.
       y: ser.channels[k].map((v, i) => (isNum(v) && !(k.startsWith("LockedTarget") && lockMode && !(lockMode[i] > 0)) ? def.f(v) : null)),
     }));
+    if (other) {
+      for (const [k, color] of def.series) {
+        if (!other.channels[k] || k.startsWith("LockedTarget")) continue;
+        series.push({ name: `${k} (${other.summary.pilot || other.summary.name})`, color, dash: [5, 4], x: other.t,
+          y: other.channels[k].map((v) => (isNum(v) ? def.f(v) : null)) });
+      }
+    }
     if (!series.length) continue;
     const canvas = el("canvas");
     wrap.append(canvas);
@@ -1332,65 +2213,104 @@ function replayShot(shot) {
   setLoop(shot.launchTime - 5, (shot.endTime ?? shot.launchTime) + 3, true);
   const who = shot.targetId && S.objects.has(shot.targetId) ? shot.targetId : shot.launcherId;
   if (who) select(who);
-  if (S.trailSec === 0 || S.trailSec === 30) { S.trailSec = 90; $("trailSel").value = "90"; }
+  if (S.trailSec === 0 || S.trailSec === 30) S.trailSec = 90;
   seek(shot.launchTime - 5);
   togglePlay(true);
+}
+
+/** Is this shot an air-to-ground release (it has a strike record)? */
+const isAG = (sh) => !!sh.weaponId && S.strikeIds.has(sh.weaponId);
+
+function filterChip(label, clear) {
+  return el("button", { class: "filterchip", title: "Clear this filter", onclick: clear }, label, " ×");
 }
 
 function renderWeapons(panel) {
   const w = S.analysis.weapons;
   const dcs = S.analysis.dcs;
+  const tab = cfg("wtab");
+  const agShots = w.shots.filter(isAG).length;
+  const seg = el("div", { class: "seg wtab" }, ...[["all", "All", w.shots.length], ["a2a", "A-A", w.shots.length - agShots], ["a2g", "A-G", agShots]]
+    .map(([k, label, n]) => el("button", { class: tab === k ? "active" : "", onclick: () => { SET.set("wtab", k); renderAllPanels(); } }, `${label} ${n}`)));
+  const head = el("div", { class: "tabhead" }, seg);
+  const shooter = S.shooterFilter && S.objects.get(S.shooterFilter);
+  if (shooter) head.append(filterChip(`Shooter or target: ${shooter.pilot || shooter.name}`, () => { S.shooterFilter = null; renderAllPanels(); }));
+  panel.append(head);
   if (dcs) {
     panel.append(el("div", { class: "dcs-note" }, dcsBadge(),
       ` Hits and kills below are read from DCS (flight log ${dcs.log}: ${dcs.hits ?? 0} hits, ${dcs.kills ?? 0} kills`,
       dcs.killsCorrected ? `, ${dcs.killsCorrected} kill credit corrected` : "", dcs.killsAdded ? `, ${dcs.killsAdded} added` : "",
       `). Clock offset ${dcs.offset >= 0 ? "+" : ""}${dcs.offset.toFixed(1)} s, flight paths agree to ${Math.round(dcs.medianError)} m.`));
   }
-  const shooters = Object.values(w.byShooter);
-  if (shooters.length) {
-    const t = el("table", { class: "grid" }, el("tr", {}, ...["Shooter", "Shots", "Kills", "Pk", "Gun"].map((h) => el("th", {}, h))));
-    for (const s of shooters) {
-      t.append(el("tr", { class: "click", onclick: () => select(s.id) },
-        el("td", {}, el("span", { class: "dot", style: { display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", marginRight: "6px", background: sideColor(s) } }), s.pilot || s.name),
-        el("td", { class: "num" }, s.shots), el("td", { class: "num" }, s.kills),
-        el("td", { class: "num" }, isNum(s.pk) ? `${Math.round(s.pk * 100)}%` : "—"),
-        el("td", { class: "num" }, s.gunBursts ? `${s.gunBursts} / ${s.gunRounds}rd` : "—")));
+  const inTab = (sh) => (tab === "all" || (tab === "a2g") === isAG(sh)) &&
+    (!S.shooterFilter || sh.launcherId === S.shooterFilter || sh.targetId === S.shooterFilter);
+  const shotList = w.shots.filter(inTab);
+  // Shooters: counted from the rows shown, so A-A Pk is not diluted by bombs.
+  const tally = new Map();
+  for (const sh of shotList) {
+    if (!sh.launcherId) continue;
+    const t = tally.get(sh.launcherId) || { id: sh.launcherId, name: sh.launcherName, pilot: sh.launcherPilot, color: S.objects.get(sh.launcherId)?.color, coalition: S.objects.get(sh.launcherId)?.coalition, shots: 0, kills: 0 };
+    t.shots += 1;
+    if (sh.outcome === "kill") t.kills += 1;
+    tally.set(sh.launcherId, t);
+  }
+  if (tab !== "a2g") {
+    for (const b of Object.values(w.byShooter)) {
+      if (!b.gunBursts || (S.shooterFilter && b.id !== S.shooterFilter)) continue;
+      const t = tally.get(b.id) || { id: b.id, name: b.name, pilot: b.pilot, color: b.color, coalition: b.coalition, shots: 0, kills: 0 };
+      t.gunBursts = b.gunBursts; t.gunRounds = b.gunRounds;
+      tally.set(b.id, t);
+    }
+  }
+  if (tally.size) {
+    const t = el("table", { class: "grid" }, el("tr", {}, ...["Shooter", "Shots", "Kills", tab === "a2g" ? "Hit rate" : "Pk", "Gun"].map((h) => el("th", {}, h))));
+    for (const x of tally.values()) {
+      t.append(el("tr", { class: "click", onclick: () => select(x.id) },
+        el("td", {}, el("span", { class: "dot", style: { display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", marginRight: "6px", background: sideColor(x) } }), x.pilot || x.name),
+        el("td", { class: "num" }, x.shots), el("td", { class: "num" }, x.kills),
+        el("td", { class: "num" }, x.shots ? `${Math.round((x.kills / x.shots) * 100)}%` : "—"),
+        el("td", { class: "num" }, x.gunBursts ? `${x.gunBursts} / ${x.gunRounds}rd` : "—")));
     }
     panel.append(el("div", { class: "section" }, el("h3", {}, "Shooters"), t));
   }
-  const shots = el("table", { class: "grid" }, el("tr", {}, ...["", "Time", "Shooter", "Weapon", "Target", "Range", "Result"].map((h) => el("th", {}, h))));
-  for (const s of w.shots) {
+  const shots = el("table", { class: "grid" }, el("tr", {}, ...["", "Time", "Shooter", "Weapon", "Target", tab === "a2g" ? "Miss" : "Range", "Result"].map((h) => el("th", {}, h))));
+  for (const s of shotList) {
     const g = s.geometry || {};
+    const ag = isAG(s);
+    const strike = ag ? S.strikes.find((p) => p.s.weaponId === s.weaponId)?.s : null;
     const key = s.weaponId || `t${s.launchTime}`;
-    const open = S.openShots.has(key);
-    const toggle = () => { open ? S.openShots.delete(key) : S.openShots.add(key); renderAllPanels(); };
-    shots.append(el("tr", { class: "click", title: `Aspect ${fmtDeg(g.aspect)} · off-boresight ${fmtDeg(g.offBoresight)} · TOF ${fmtNum(s.timeOfFlight, 1)}s · closest ${fmtDist(s.closestApproach)}`,
-      onclick: (e) => { if (e.altKey) { toggle(); return; } seek(s.launchTime - 3); if (s.launcherId) select(s.launcherId); } },
-      el("td", { class: "tog", title: "Why did it hit / miss?", onclick: (e) => { e.stopPropagation(); toggle(); } }, open ? "▾" : "▸"),
+    const openSet = ag ? S.openStrikes : S.openShots;
+    const open = openSet.has(key);
+    const toggle = () => { open ? openSet.delete(key) : openSet.add(key); renderAllPanels(); };
+    shots.append(el("tr", { class: "click", title: ag ? `TOF ${fmtNum(strike?.timeOfFall, 0)} s · released at ${kAlt(strike?.release?.altitude)}` : `Aspect ${fmtDeg(g.aspect)} · off-boresight ${fmtDeg(g.offBoresight)} · TOF ${fmtNum(s.timeOfFlight, 1)}s · closest ${fmtDist(s.closestApproach)}`,
+      onclick: (e) => { if (e.altKey) { toggle(); return; } seek(s.launchTime - 3); if (s.launcherId) select(ag ? s.weaponId : s.launcherId); } },
+      el("td", { class: "tog", title: ag ? "Strike card: release, fall, impact, BDA" : "Why did it hit / miss?", onclick: (e) => { e.stopPropagation(); toggle(); } }, open ? "▾" : "▸"),
       el("td", { class: "num" }, fmtClock(s.launchTime - S.start)),
       el("td", {}, s.launcherPilot || s.launcherName || "?"),
-      el("td", {}, s.weaponName),
-      el("td", {}, s.targetPilot || s.targetName || "—"),
-      el("td", { class: "num" }, fmtDist(g.range)),
-      el("td", {}, outcomePill(s.outcome), s.dcsHit ? dcsBadge(`DCS reported a hit on ${s.dcsHit}`) : s.dcsConfirmed ? dcsBadge("DCS reported this launch") : "")));
+      el("td", {}, ag ? weaponLabel(s.weaponName) : s.weaponName),
+      el("td", {}, ag ? strike?.targetName || "—" : s.targetPilot || s.targetName || "—"),
+      el("td", { class: "num" }, ag ? fmtShort(strike?.missDistance) : fmtDist(g.range)),
+      el("td", {}, outcomePill(ag ? strike?.result || s.outcome : s.outcome), s.dcsHit ? dcsBadge(`DCS reported a hit on ${s.dcsHit}`) : s.dcsConfirmed ? dcsBadge("DCS reported this launch") : "")));
     if (open) {
-      const card = buildShotCard(s, { objects: S.objects, start: S.start, seek, onReplay: replayShot, charts });
+      const card = ag && strike ? strikeCard(strike) : buildShotCard(s, { objects: S.objects, start: S.start, seek, onReplay: replayShot, charts });
       shots.append(el("tr", { class: "shotcard-row" }, el("td", { colspan: 7 }, card)));
     }
   }
-  panel.append(el("div", { class: "section" }, el("h3", {}, "Missiles, rockets & bombs"), w.shots.length ? shots : el("div", { class: "empty" }, "None")));
-  if (w.bursts.length) {
-    const hasDcs = w.bursts.some((x) => isNum(x.dcsHits));
+  panel.append(el("div", { class: "section" }, el("h3", {}, tab === "a2g" ? "Air-to-ground releases" : tab === "a2a" ? "Missiles & rockets" : "Missiles, rockets & bombs"),
+    shotList.length ? shots : el("div", { class: "empty" }, tab === "a2g" ? "No air-to-ground releases in this recording." : "None")));
+  const bursts = w.bursts.filter((x) => !S.shooterFilter || x.launcherId === S.shooterFilter || x.targetId === S.shooterFilter);
+  if (bursts.length && tab !== "a2g") {
+    const hasDcs = bursts.some((x) => isNum(x.dcsHits));
     const heads = ["Time", "Shooter", "Rounds", "On target", ...(hasDcs ? ["DCS hits"] : []), "Target", "Range", "Result"];
     const b = el("table", { class: "grid" }, el("tr", {}, ...heads.map((h) => el("th", { title: h === "DCS hits" ? "Hits DCS itself reported for this burst" : h === "On target" ? "Rounds whose recorded path passed within 12 m of the target" : null }, h))));
-    for (const x of w.bursts) {
+    for (const x of bursts) {
       const hits = isNum(x.roundsOnTarget) && x.rounds ? `${x.roundsOnTarget} (${Math.round((100 * x.roundsOnTarget) / x.rounds)}%)` : "—";
       const dcsTargets = x.dcsHitTargets ? Object.entries(x.dcsHitTargets).map(([k, v]) => `${k} ×${v}`).join(", ") : "";
       b.append(el("tr", {
         class: "click",
         title: [x.weaponName, isNum(x.fireRate) ? `${Math.round(x.fireRate)} rds/s recorded` : "", isNum(x.timeOfFlight) ? `mean time of flight ${x.timeOfFlight.toFixed(1)} s` : "",
           isNum(x.closestApproach) ? `closest round ${units.metric ? `${x.closestApproach.toFixed(1)} m` : `${Math.round(x.closestApproach * M_TO_FT)} ft`}` : "", dcsTargets ? `DCS hits: ${dcsTargets}` : ""].filter(Boolean).join(" · "),
-        onclick: () => { seek(x.start - 1.5); select(x.launcherId); if (S.bullets === "off") { S.bullets = "paths"; $("bulletSel").value = "paths"; } },
+        onclick: () => { seek(x.start - 1.5); select(x.launcherId); if (S.bullets === "off") S.bullets = "paths"; },
       },
         el("td", { class: "num" }, fmtClock(x.start - S.start)), el("td", {}, x.launcherPilot || x.launcherName),
         el("td", { class: "num" }, x.rounds || "trigger"), el("td", { class: "num" }, hits),
@@ -1401,7 +2321,10 @@ function renderWeapons(panel) {
     panel.append(el("div", { class: "section" }, el("h3", {}, "Gun"), b));
   }
   const kills = el("div");
-  for (const k of w.kills) {
+  const agKill = (k) => ["ground", "sea"].includes(k.victimCategory) || S.strikeIds.has(k.weaponId);
+  const killList = w.kills.filter((k) => (tab === "all" || (tab === "a2g") === agKill(k)) &&
+    (!S.shooterFilter || k.killerId === S.shooterFilter || k.victimId === S.shooterFilter));
+  for (const k of killList) {
     kills.append(el("div", { class: "ev", style: { padding: "4px 0", cursor: "pointer" }, onclick: () => seek(k.time - 5) },
       el("span", { class: "num muted" }, fmtClock(k.time - S.start), "  "),
       el("b", { class: "k-kill" }, k.victimPilot || k.victimName), " ",
@@ -1409,7 +2332,191 @@ function renderWeapons(panel) {
       k.confirmedBy === "DCS" ? dcsBadge("DCS reported this kill") : "",
       k.note ? el("div", { class: "faint", style: { fontSize: "11px", marginLeft: "52px" } }, k.note) : ""));
   }
-  panel.append(el("div", { class: "section" }, el("h3", {}, "Kills & losses"), w.kills.length ? kills : el("div", { class: "empty" }, "None")));
+  panel.append(el("div", { class: "section" }, el("h3", {}, "Kills & losses"), killList.length ? kills : el("div", { class: "empty" }, "None")));
+}
+
+// -- Strike tab -------------------------------------------------------------------
+
+function strikeCard(strike) {
+  const card = buildStrikeCard(strike, {
+    objects: S.objects, start: S.start, seek, charts, target: S.target && S.selected === strike.weaponId ? S.target : null,
+    onReplay: replayStrike, onWeaponCam: (x) => startWeaponCam(x.weaponId), onShowOnMap: showStrikeOnMap, onSelect: (id) => select(id),
+    series: async (id) => {
+      if (S.series.has(id)) return S.series.get(id);
+      try { const { body, status } = await api(`/api/recording/${S.key}/series/${encodeURIComponent(id)}`); if (status === 200) { S.series.set(id, body); return body; } } catch { /* offline */ }
+      return null;
+    },
+  });
+  strikeCards.push(card);
+  return card;
+}
+let strikeCards = [];
+
+function replayStrike(x) {
+  const pass = groupPasses(S.analysis.strikes).find((p) => p.strikes.includes(x)) || { strikes: [x] };
+  const a = Math.min(...pass.strikes.map((q) => q.releaseTime)) - 10;
+  const b = Math.max(...pass.strikes.map((q) => q.impactTime)) + 5;
+  setLoop(a, b, true);
+  select(x.weaponId);
+  if (S.trailSec < 300) S.trailSec = 300;
+  seek(a);
+  togglePlay(true);
+}
+
+function showStrikeOnMap(x) {
+  const g = strikeGeometry(x, S.objects);
+  if (!g) return;
+  const lons = [g.release.lon, g.impact.lon], lats = [g.release.lat, g.impact.lat];
+  if (g.target) { lons.push(g.target.lon); lats.push(g.target.lat); }
+  if (S.view === "3d") setView("2d");
+  setFollow(false);
+  map.fitBounds(Math.min(...lons), Math.min(...lats), Math.max(...lons), Math.max(...lats));
+  select(x.weaponId);
+  if (S.t < x.impactTime) seek(x.impactTime + 1);
+}
+
+/**
+ * Surface units in sites: their ACMI Group when the recording has one, else
+ * units of one coalition within 1 km of each other (a column, a SAM site).
+ * {of: Map id -> site name, members: Map name -> [objects]}
+ */
+let sitesCache = null;
+function surfaceSites() {
+  if (sitesCache?.key === S.key) return sitesCache;
+  const units = [...S.objects.values()].filter((o) => isSurface(o) && !o.dispenser);
+  const pos = new Map(units.map((o) => [o.id, posAt(o, o.pb.t[0])]));
+  const parent = new Map(units.map((o) => [o.id, o.id]));
+  const find = (x) => { while (parent.get(x) !== x) x = parent.get(x); return x; };
+  for (let i = 0; i < units.length; i++) {
+    for (let j = i + 1; j < units.length; j++) {
+      const a = units[i], b = units[j];
+      if (a.group || b.group || a.coalition !== b.coalition) continue;
+      const pa = pos.get(a.id), pb = pos.get(b.id);
+      if (pa && pb && distance(pa.lon, pa.lat, pb.lon, pb.lat) <= 1000) parent.set(find(a.id), find(b.id));
+    }
+  }
+  const byRoot = new Map();
+  for (const o of units) {
+    const k = o.group ? `g:${o.group}` : find(o.id);
+    if (!byRoot.has(k)) byRoot.set(k, []);
+    byRoot.get(k).push(o);
+  }
+  const of = new Map(), members = new Map();
+  for (const [k, list] of byRoot) {
+    if (list.length < 2 && !k.startsWith("g:")) continue;
+    // Name a proximity group after what its units share ("SA-11 Buk"), else its most common type.
+    let name = k.startsWith("g:") ? k.slice(2) : null;
+    if (!name) {
+      const words = list.map((o) => o.name.split(/\s+/));
+      const common = [];
+      for (let i = 0; words.every((w) => w.length > i + 1 && w[i] === words[0][i]); i++) common.push(words[0][i]);
+      const types = new Map();
+      for (const o of list) types.set(o.name, (types.get(o.name) || 0) + 1);
+      const top = common.length ? common.join(" ") : [...types].sort((a, b) => b[1] - a[1])[0][0];
+      name = `${top} group (${list.length} units)`;
+      if (members.has(name)) name = `${name} #${members.size + 1}`;
+    }
+    members.set(name, list);
+    for (const o of list) of.set(o.id, name);
+  }
+  sitesCache = { key: S.key, of, members };
+  return sitesCache;
+}
+
+function renderStrike(panel) {
+  const all = S.analysis.strikes || [];
+  const list = all.filter((x) => !S.shooterFilter || x.launcherId === S.shooterFilter || x.targetId === S.shooterFilter ||
+    (x.damage || []).some((d) => d.id === S.shooterFilter));
+  const who = S.shooterFilter && S.objects.get(S.shooterFilter);
+  if (who) panel.append(el("div", { class: "tabhead" }, filterChip(`Filtered: ${who.pilot || who.name}`, () => { S.shooterFilter = null; renderAllPanels(); })));
+  if (!list.length) { panel.append(el("div", { class: "empty" }, "No air-to-ground releases.")); return; }
+  // Summary.
+  const byType = new Map();
+  for (const x of list) byType.set(weaponLabel(x.weaponName), (byType.get(weaponLabel(x.weaponName)) || 0) + 1);
+  const destroyed = new Set(list.flatMap((x) => (x.damage || []).map((d) => d.id)));
+  const unitary = list.filter((x) => !x.submunitions && isNum(x.missDistance)).map((x) => x.missDistance).sort((a, b) => a - b);
+  const median = unitary.length ? unitary[Math.floor(unitary.length / 2)] : null;
+  const first = Math.min(...list.map((x) => x.releaseTime)), last = Math.max(...list.map((x) => x.impactTime));
+  panel.append(el("div", { class: "section" }, el("h3", {}, "Strike summary"), el("div", { class: "tiles" },
+    miniTile("Releases", String(list.length)),
+    miniTile("Destroyed", String(destroyed.size)),
+    miniTile("Misses", String(list.filter((x) => x.result === "miss").length)),
+    miniTile("Median miss", median === null ? "—" : fmtShort(median)),
+    miniTile("First → last", `${fmtClock(first - S.start)}–${fmtClock(last - S.start)}`),
+    el("div", { class: "tile wide" }, el("div", { class: "k" }, "Weapons"), el("div", { class: "v" }, [...byType].map(([k, n]) => `${n}× ${k}`).join(", "))))));
+
+  // Targets, by ACMI group ("SA-11 site: 3/4 destroyed"), else by proximity.
+  const targets = (S.analysis.targets || []).filter((t) => !S.shooterFilter || list.some((x) => x.targetId === t.id || (x.damage || []).some((d) => d.id === t.id)));
+  if (targets.length) {
+    const sites = surfaceSites();
+    const groups = new Map();
+    for (const t of targets) {
+      const g = sites.of.get(t.id) || "Other targets";
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(t);
+    }
+    // Sites first, lone units last.
+    const other = groups.get("Other targets");
+    if (other) { groups.delete("Other targets"); groups.set("Other targets", other); }
+    const box = el("div", { class: "section" }, el("h3", {}, "Targets"));
+    const tbl = el("table", { class: "grid targets" }, el("tr", {}, ...["", "Target", "Weapons", "Best miss", "Result"].map((h) => el("th", {}, h))));
+    box.append(tbl);
+    for (const [g, rows] of groups) {
+      const members = sites.members.get(g) || [];
+      if (g === "Other targets" && groups.size > 1) tbl.append(el("tr", { class: "tgroup" }, el("td", { colspan: 5 }, el("b", {}, g))));
+      if (members.length > 1) {
+        const dead = members.filter((o) => S.deaths.has(o.id)).length;
+        tbl.append(el("tr", { class: "tgroup" }, el("td", { colspan: 5 }, el("b", {}, g), ` · ${dead}/${members.length} destroyed`,
+          members.length > dead && dead > 0 ? el("span", { class: "pill lock", title: "Units of this group survived: candidates for a re-attack" }, "restrike") : "")));
+      }
+      for (const t of rows) {
+        const strikesOn = list.filter((x) => x.targetId === t.id || (x.damage || []).some((d) => d.id === t.id));
+        const wcount = new Map();
+        for (const x of strikesOn) wcount.set(weaponLabel(x.weaponName), (wcount.get(weaponLabel(x.weaponName)) || 0) + 1);
+        const misses = t.weapons.map((x) => x.miss).filter(isNum);
+        const thumbStrike = strikesOn.find((x) => x.targetId === t.id) || strikesOn[0];
+        tbl.append(el("tr", { class: "click", onclick: () => {
+          if (!strikesOn.length) return;
+          const a = Math.min(...strikesOn.map((x) => x.releaseTime)) - 10, b = Math.max(...strikesOn.map((x) => x.impactTime)) + 5;
+          setLoop(a, b, true); select(t.id); seek(a);
+        } },
+          el("td", {}, thumbStrike ? buildStrikeThumb(thumbStrike, S.objects, 48) : ""),
+          el("td", {}, t.name),
+          el("td", {}, [...wcount].map(([k, n]) => `${n}× ${k}`).join(", ") || "—"),
+          el("td", { class: "num" }, misses.length ? fmtShort(Math.min(...misses)) : "—"),
+          el("td", {}, isNum(t.destroyed) ? [outcomePill("kill"), ` ${fmtClock(t.destroyed - S.start)}`, t.destroyedBy ? el("small", { class: "muted", style: { display: "block" } }, weaponLabel(t.destroyedBy)) : ""]
+            : el("span", { class: "muted" }, "survived"))));
+      }
+    }
+    panel.append(box);
+  }
+
+  // Passes: releases by one jet within a few seconds of each other.
+  const box = el("div", { class: "section" }, el("h3", {}, "Passes"));
+  groupPasses(list).forEach((pass, i) => {
+    const l = S.objects.get(pass.launcherId);
+    const names = new Map();
+    for (const x of pass.strikes) names.set(weaponLabel(x.weaponName), (names.get(weaponLabel(x.weaponName)) || 0) + 1);
+    box.append(el("div", { class: "pass-h" }, el("b", {}, `Pass ${i + 1}`), ` · ${fmtClock(pass.first - S.start)} · ${l?.pilot || l?.name || "?"} · `,
+      [...names].map(([k, n]) => (n > 1 ? `${n}× ${k}` : k)).join(", ")));
+    const tbl = el("table", { class: "grid" }, el("tr", {}, ...["", "Weapon", "Target", "TOF", "Miss", "Result"].map((h) => el("th", {}, h))));
+    for (const x of pass.strikes) {
+      const open = S.openStrikes.has(x.weaponId);
+      const toggle = () => { open ? S.openStrikes.delete(x.weaponId) : S.openStrikes.add(x.weaponId); renderAllPanels(); };
+      const kills = new Set((x.damage || []).map((d) => d.id)).size;
+      tbl.append(el("tr", { class: `click${x.weaponId === S.selected ? " current" : ""}`, onclick: (e) => { if (e.altKey) { toggle(); return; } seek(x.releaseTime - 3); select(x.weaponId); } },
+        el("td", { class: "tog", title: "Strike card", onclick: (e) => { e.stopPropagation(); toggle(); } }, open ? "▾" : "▸"),
+        el("td", {}, weaponLabel(x.weaponName), el("small", { class: "muted" }, ` ${FAMILY_LABEL[x.family] || ""}`)),
+        el("td", {}, x.targetName || "—"),
+        el("td", { class: "num" }, `${Math.round(x.timeOfFall)}s`),
+        el("td", { class: "num" }, fmtShort(x.missDistance)),
+        el("td", {}, el("span", { class: `pill ${x.result === "destroyed" ? "kill" : x.result === "damaged" ? "lock" : "miss"}` }, kills ? `${x.result} · ${kills} K` : x.result),
+          isNum(x.dcsHits) && x.dcsHits > 0 ? dcsBadge(`DCS reported ${x.dcsHits} hits`) : "")));
+      if (open) tbl.append(el("tr", { class: "shotcard-row strike-anchor", "data-weapon": x.weaponId }, el("td", { colspan: 6 }, strikeCard(x))));
+    }
+    box.append(tbl);
+  });
+  panel.append(box);
 }
 
 // -- Landings tab -----------------------------------------------------------------
@@ -1553,9 +2660,7 @@ function renderEvents(panel) {
   const kinds = [...new Set(S.analysis.timeline.map((e) => e.kind))];
   const chips = el("div", { class: "chips" });
   for (const k of kinds) {
-    chips.append(el("button", { class: S.eventFilter.has(k) ? "" : "active", onclick: () => {
-      S.eventFilter.has(k) ? S.eventFilter.delete(k) : S.eventFilter.add(k); stopsCache = null; renderAllPanels();
-    } }, k));
+    chips.append(el("button", { class: S.eventFilter.has(k) ? "" : "active", onclick: () => { toggleEventKind(k); renderAllPanels(); } }, k));
   }
   const mine = pref("evMine", "0") === "1";
   panel.append(chips, el("label", { class: "muted", style: { display: "block", marginBottom: "6px" } },

@@ -319,27 +319,37 @@ export function drawEngagementRing(ctx, map, obj) {
 }
 
 /**
- * Draw a set of objects.
- * opts: { selectedId, focusId, labels: "all"|"aircraft"|"none", showTrails, trailSeconds,
- *         showRadar: "focus"|"all"|"none", showRings, lockLines, byId }
+ * Draw a set of objects (o.noLabel suppresses an object's label).
+ * opts: { selectedId, focusId, labels: "all"|"aircraft"|"targets"|"minimal"|"none", showTrails, trailSeconds,
+ *         showRadar: "focus"|"all"|"known"|"none", showRings (false = none), ringFilter(o) -> bool,
+ *         lockLines, byId, alphaOf(o) -> 0..1 (dimming), vectors: seconds of velocity vector (0 = off),
+ *         bullseye: false hides the bullseye, labelScale: label text size (1 = 11 px) }
+ * Objects may carry `tag` (an extra label line), `labelMe` (label it in
+ * "targets" mode) and `dispenser` (a bomblet: drawn as a dot, nothing else).
  */
 export function drawScene(ctx, map, objects, opts = {}) {
   const byId = opts.byId || new Map(objects.map((o) => [o.id, o]));
   const hits = [];
+  const alphaOf = opts.alphaOf || (() => 1);
+  const fade = (o) => { const a = alphaOf(o); ctx.globalAlpha = a; return a; };
 
   // Pass 1: rings, radar, trails, lock lines (underneath symbols).
   for (const o of objects) {
-    if (o.category === "bullseye") { drawBullseye(ctx, map, o); continue; }
-    if (opts.showRings !== false) drawEngagementRing(ctx, map, o);
+    if (o.category === "bullseye") { ctx.globalAlpha = 1; if (opts.bullseye !== false) drawBullseye(ctx, map, o); continue; }
+    if (o.dispenser || fade(o) <= 0) continue;
+    // A destroyed SAM no longer threatens anyone.
+    if (!o.dead && opts.showRings !== false && (!opts.ringFilter || opts.ringFilter(o))) drawEngagementRing(ctx, map, o);
     const radarMode = opts.showRadar || "focus";
     if (radarMode === "all" || radarMode === "known" || (radarMode === "focus" && (o.id === opts.focusId || o.id === opts.selectedId))) {
       drawRadar(ctx, map, o, { assumed: radarMode !== "known" });
     }
   }
+  ctx.globalAlpha = 1;
   if (opts.showTrails !== false) {
     for (const o of objects) {
       const trail = o.trail;
-      if (!trail || trail.length < 2) continue;
+      if (!trail || trail.length < 2 || o.dispenser) continue;
+      if (fade(o) <= 0) continue;
       const color = sideColor(o);
       const weapon = o.category === "weapon";
       ctx.lineWidth = weapon ? 1.4 : o.id === opts.focusId ? 2.2 : 1.5;
@@ -357,14 +367,31 @@ export function drawScene(ctx, map, objects, opts = {}) {
         prev = p;
       }
     }
+    ctx.globalAlpha = 1;
   }
   if (opts.rounds) drawRounds(ctx, map, opts.rounds);
+  if (opts.vectors > 0) {
+    // Where each aircraft will be in `vectors` seconds at its current speed and heading.
+    ctx.save();
+    ctx.lineWidth = 1.6;
+    for (const o of objects) {
+      if (!["fixedwing", "rotorcraft", "air"].includes(o.category) || o.dead || fade(o) <= 0) continue;
+      const end = vectorEnd(o, opts.vectors);
+      if (!end) continue;
+      const a = map.project(o.lon, o.lat), b = map.project(end[0], end[1]);
+      ctx.strokeStyle = withAlpha(sideColor(o), 0.85);
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.beginPath(); ctx.moveTo(...a); ctx.lineTo(...b); ctx.stroke();
+      ctx.beginPath(); ctx.arc(b[0], b[1], 2, 0, TAU); ctx.fill();
+    }
+    ctx.restore();
+  }
   if (opts.lockLines !== false) {
     ctx.save();
     ctx.setLineDash([4, 4]);
     ctx.lineWidth = 1.3;
     for (const o of objects) {
-      if (!o.lock) continue;
+      if (!o.lock || fade(o) <= 0) continue;
       const t = byId.get(o.lock);
       if (!t) continue;
       const a = map.project(o.lon, o.lat), b = map.project(t.lon, t.lat);
@@ -380,6 +407,13 @@ export function drawScene(ctx, map, objects, opts = {}) {
   for (const o of sorted) {
     const [x, y] = map.project(o.lon, o.lat);
     if (x < -50 || y < -50 || x > map.w + 50 || y > map.h + 50) continue;
+    if (fade(o) <= 0) continue;
+    if (o.dispenser) {
+      // A bomblet: a dot, no label or hitbox (a JSOW-A releases 145 of them).
+      ctx.fillStyle = "rgba(255,196,120,0.9)";
+      ctx.fillRect(x - 1, y - 1, 2, 2);
+      continue;
+    }
     const color = sideColor(o);
     const ang = isNum(o.hdg) ? map.screenAngle(o.hdg) : -Math.PI / 2;
     const selected = o.id === opts.selectedId;
@@ -406,19 +440,29 @@ export function drawScene(ctx, map, objects, opts = {}) {
         break;
       default:
         drawGround(ctx, x, y, color, o);
+        if (selected) {
+          ctx.save();
+          ctx.strokeStyle = "#ffffff";
+          ctx.lineWidth = 1.5;
+          ctx.beginPath(); ctx.arc(x, y, 12, 0, TAU); ctx.stroke();
+          ctx.restore();
+        }
         hits.push({ id: o.id, x, y, r: 9 });
     }
   }
+  ctx.globalAlpha = 1;
 
   // Pass 3: labels.
   const labels = opts.labels || "aircraft";
   if (labels !== "none") {
-    ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
+    const fs = Math.round(11 * (opts.labelScale || 1));
+    ctx.font = `${fs}px ui-monospace, SFMono-Regular, Menlo, monospace`;
     ctx.textBaseline = "middle";
     for (const o of sorted) {
+      if (o.dispenser || alphaOf(o) < 0.5) continue; // no labels on dimmed objects
       const air = ["fixedwing", "rotorcraft", "air"].includes(o.category);
-      const show = air || (labels === "all" && o.category !== "countermeasure") ||
-        o.id === opts.selectedId || (o.category === "weapon" && labels !== "minimal");
+      const show = !o.noLabel && (air || (labels === "all" && o.category !== "countermeasure") || (labels === "targets" && o.labelMe) ||
+        o.id === opts.selectedId || (o.category === "weapon" && labels !== "minimal") || !!o.tag);
       if (!show) continue;
       const [x, y] = map.project(o.lon, o.lat);
       if (x < -50 || y < -50 || x > map.w + 50 || y > map.h + 50) continue;
@@ -430,20 +474,19 @@ export function drawScene(ctx, map, objects, opts = {}) {
         if (isNum(spd)) bits.push(units.metric ? `${Math.round(spd * 3.6)}` : `${Math.round(spd * MPS_TO_KT)}`);
         if (o.pilot && o.name && labels !== "minimal") lines.push(`${o.name}`);
         lines.push(bits.filter(Boolean).join(" · "));
-      } else if (o.category === "weapon") {
-        lines.push(o.name);
       } else {
         lines.push(o.name);
       }
+      if (o.tag) lines.push(o.tag);
       const color = o.category === "weapon" ? "#e8ecf2" : sideColor(o);
       const lx = x + 14, ly = y - 8;
       for (let i = 0; i < lines.length; i++) {
         const txt = lines[i];
         ctx.lineWidth = 3;
         ctx.strokeStyle = "rgba(6,9,13,0.85)";
-        ctx.strokeText(txt, lx, ly + i * 12);
+        ctx.strokeText(txt, lx, ly + i * (fs + 1));
         ctx.fillStyle = i === 0 ? color : "rgba(220,225,232,0.8)";
-        ctx.fillText(txt, lx, ly + i * 12);
+        ctx.fillText(txt, lx, ly + i * (fs + 1));
       }
     }
   }

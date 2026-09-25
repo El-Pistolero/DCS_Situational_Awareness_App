@@ -7,6 +7,7 @@
 <meta name="description" content="Tacview / ACMI flight recording debrief for DCS World">
 <link rel="icon" type="image/png" href="/static/favicon-32.png">
 <link rel="stylesheet" href="/static/css/app.css">
+<link rel="stylesheet" href="/static/css/strike.css">
 </head>
 <body>
 <div class="app" id="app">
@@ -18,6 +19,7 @@
     <button id="btnLibrary" title="Open another recording">Recordings</button>
     <div class="title" id="recTitle">No recording loaded</div>
     <div class="group">
+      <div id="modeSw"></div>
       <select id="unitSel" title="Units">
         <option value="imperial">kt · ft · nm</option>
         <option value="metric">km/h · m · km</option>
@@ -35,11 +37,15 @@
 
   <main class="mapwrap">
     <canvas class="map" id="map" aria-label="Tactical map"></canvas>
-    <div class="map-hud tl hidden" id="hudSel"></div>
+    <div class="hudcol" id="hudCol">
+      <div class="map-hud wif hidden" id="wifHud"></div>
+      <div class="map-hud tapes hidden" id="tapeHud"></div>
+      <div class="mapchips" id="mapChips"></div>
+    </div>
     <div class="map-hud bl hidden" id="hudHover"></div>
-    <div class="map-hud tapes hidden" id="tapeHud"></div>
     <div class="map-hud br hidden" id="trailLegend"></div>
     <div class="evchip hidden" id="evChip"></div>
+    <div class="modechip hidden" id="modeChip"></div>
     <div class="map-tools">
       <div class="row">
         <div class="seg"><button id="btn2d" class="active" title="2D map (V)">2D</button><button id="btn3d" title="3D view (V)">3D</button></div>
@@ -58,47 +64,8 @@
         <button id="btnFollow" title="Keep the selected aircraft centred (F)">Follow</button>
         <button id="btnFit" title="Zoom to fit everything">Fit</button>
       </div>
-      <div class="row only2d">
-        <select id="labelSel" title="Labels">
-          <option value="aircraft">Labels: aircraft</option>
-          <option value="all">Labels: all</option>
-          <option value="minimal">Labels: minimal</option>
-          <option value="none">Labels: off</option>
-        </select>
-      </div>
       <div class="row">
-        <select id="trailSel" title="Trail length">
-          <option value="30">Trails 30 s</option>
-          <option value="90" selected>Trails 90 s</option>
-          <option value="300">Trails 5 min</option>
-          <option value="1000000">Trails full</option>
-          <option value="0">Trails off</option>
-        </select>
-      </div>
-      <div class="row">
-        <select id="trailColorSel" title="Colour trails by">
-          <option value="side">Trail colour: side</option>
-          <option value="alt">Trail colour: altitude</option>
-          <option value="speed">Trail colour: speed</option>
-          <option value="g">Trail colour: G</option>
-          <option value="ps">Trail colour: energy (Ps)</option>
-          <option value="aoa">Trail colour: AOA</option>
-        </select>
-      </div>
-      <div class="row">
-        <select id="radarSel" title="Radar cones">
-          <option value="all">Radars: all (incl. assumed)</option>
-          <option value="known">Radars: known only</option>
-          <option value="focus">Radar: selected jet</option>
-          <option value="none">Radar: off</option>
-        </select>
-      </div>
-      <div class="row">
-        <select id="bulletSel" title="Gun rounds">
-          <option value="paths">Bullets: paths</option>
-          <option value="tracers">Bullets: tracers</option>
-          <option value="off">Bullets: off</option>
-        </select>
+        <button id="btnDisplay" title="Display options: objects, weapons, strike marks, threats, labels, trails, 3D (D)">Display ▾</button>
       </div>
     </div>
     <div class="welcome" id="welcome"></div>

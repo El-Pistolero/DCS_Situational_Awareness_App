@@ -270,11 +270,14 @@ export class TacticalMap {
       ctx.fillStyle = `rgba(8,11,16,${layer.dim})`;
       ctx.fillRect(0, 0, this.w, this.h);
     }
+    // Lat/long grid over imagery too, when asked (it is always drawn without tiles).
+    if (this.gridOverlay && layer.url && this.failedTiles < 24) this._drawGrid(0.3);
     if (this.scene) {
       ctx.save();
       this.scene(ctx, this);
       ctx.restore();
     }
+    if (this.northArrow) this._drawNorth();
     this._drawScale();
     if (layer.attribution && this.failedTiles < 24) {
       ctx.font = "10px system-ui, sans-serif";
@@ -341,7 +344,29 @@ export class TacticalMap {
     return img;
   }
 
-  _drawGrid() {
+  /** North arrow in the bottom-right corner, turning with a heading-up map. */
+  _drawNorth() {
+    const ctx = this.ctx;
+    const x = this.w - 28, y = this.h - 46;
+    const a = this.screenAngle(0);
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(a + Math.PI / 2);
+    ctx.fillStyle = "rgba(8,12,17,0.7)";
+    ctx.beginPath(); ctx.arc(0, 0, 14, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#ff5c5c";
+    ctx.beginPath(); ctx.moveTo(0, -11); ctx.lineTo(5, 2); ctx.lineTo(-5, 2); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "rgba(220,225,232,0.85)";
+    ctx.beginPath(); ctx.moveTo(0, 11); ctx.lineTo(5, 2); ctx.lineTo(-5, 2); ctx.closePath(); ctx.fill();
+    ctx.restore();
+    ctx.font = "bold 10px ui-monospace, monospace";
+    ctx.fillStyle = "#ffffff";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("N", x + Math.cos(a) * 21, y + Math.sin(a) * 21);
+  }
+
+  _drawGrid(alpha = 0.14) {
     const ctx = this.ctx;
     const mpp = this.metersPerPixel();
     const spanDeg = (mpp * Math.max(this.w, this.h)) / 111320;
@@ -352,9 +377,9 @@ export class TacticalMap {
     const lons = [tl[0], br[0], tr[0], bl[0]], lats = [tl[1], br[1], tr[1], bl[1]];
     const minLon = Math.floor(Math.min(...lons) / step) * step, maxLon = Math.max(...lons);
     const minLat = Math.floor(Math.min(...lats) / step) * step, maxLat = Math.max(...lats);
-    ctx.strokeStyle = "rgba(120,140,160,0.14)";
+    ctx.strokeStyle = `rgba(160,178,196,${alpha})`;
     ctx.lineWidth = 1;
-    ctx.fillStyle = "rgba(160,175,190,0.4)";
+    ctx.fillStyle = `rgba(190,202,214,${Math.min(0.85, alpha * 3)})`;
     ctx.font = "10px ui-monospace, monospace";
     for (let lon = minLon; lon <= maxLon; lon += step) {
       const a = this.project(lon, minLat), b = this.project(lon, maxLat);
