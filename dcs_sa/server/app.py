@@ -10,6 +10,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import threading
 import time
 import webbrowser
@@ -132,6 +133,7 @@ class App:
         self.warnings: list[str] = []
         self.desktop = False
         self.open_live_window = None  # set by the desktop shell
+        self.open_debrief = None      # (key) -> show that recording in the debrief window
         self.profile = read_profile()
         self.tiles = TileCache(str(Path(cfg.upload_dir).parent / "tilecache"))
         self.dcsmap = DcsMapStore(str(Path(cfg.upload_dir).parent / "tilecache" / "dcs"))
@@ -266,6 +268,14 @@ def make_handler(app: App):
                         app.open_live_window()
                         return self._json({"ok": True})
                     return self._json({"ok": False})
+                if path == "/api/open-debrief":
+                    key = str(self._body_json().get("key") or "")
+                    if not re.fullmatch(r"[0-9a-f]{16}", key) or app.store.path_for(key) is None:
+                        return self._error(404, "unknown recording")
+                    if app.open_debrief:
+                        app.open_debrief(key)
+                        return self._json({"ok": True})
+                    return self._json({"ok": False})
                 if path == "/api/shortcut":
                     from ..shortcut import install_shortcuts
 
@@ -350,6 +360,14 @@ def make_handler(app: App):
             if action in ("status", "load"):
                 job = app.store.ensure(key)
                 return self._json(job.to_dict())
+            if action == "summary":
+                got = app.store.get(key)
+                if got is None:
+                    job = app.store.ensure(key)
+                    return self._json({"pending": True, **job.to_dict()}, 202)
+                r = got[1].get("recording") or {}
+                return self._json({"key": key, "title": r.get("title"), "duration": r.get("duration"),
+                                   "aircraftCount": r.get("aircraftCount")})
 
             got = app.store.get(key)
             if got is None:

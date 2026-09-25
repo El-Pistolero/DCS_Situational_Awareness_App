@@ -260,7 +260,7 @@ table.grid tr.current td { background: #1f2c1f; }
 
 /* ---------- Bottom: playback ---------- */
 
-.playback { display: grid; grid-template-columns: auto auto 1fr auto; gap: 12px; align-items: center; padding: 8px 12px; }
+.playback { display: grid; grid-template-columns: auto auto auto 1fr auto; gap: 12px; align-items: center; padding: 8px 12px; }
 .playback .btns { display: flex; gap: 4px; align-items: center; }
 .playback .play { width: 36px; height: 30px; padding: 0; font-size: 14px; }
 .playback select { padding: 3px 6px; }
@@ -386,3 +386,64 @@ canvas.scene3d { position: absolute; inset: 0; display: none; touch-action: none
 .terrain-hud { position: absolute; left: 10px; bottom: 34px; display: none; font: 11px var(--sans); color: #e3e8ef;
   background: rgba(8,12,17,0.72); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; pointer-events: none; }
 .brand img.logo { width: 22px; height: 22px; border-radius: 5px; }
+
+/* ---------- Keyboard help ---------- */
+dialog.kbd-help { background: var(--panel); color: var(--text); border: 1px solid var(--line-2); border-radius: 10px; width: min(760px, 94vw); padding: 16px 18px; }
+dialog.kbd-help::backdrop { background: rgba(0,0,0,0.6); }
+.kbd-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.kbd-head h2 { margin: 0; font-size: 17px; }
+.kbd-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 6px 22px; }
+.kbd-groups h3 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 10px 0 6px; }
+.kbd-row { display: grid; grid-template-columns: 130px 1fr; gap: 10px; align-items: center; padding: 2px 0; font-size: 12px; }
+.kbd-row .keys { white-space: nowrap; }
+kbd { font: 11px var(--mono); background: var(--panel-2); border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; margin-right: 2px; display: inline-block; min-width: 18px; text-align: center; }
+
+/* ---------- Loop band, event chip ---------- */
+.scrub .loopband { position: absolute; top: 10px; height: 14px; pointer-events: none; background: rgba(255,209,102,0.08); border-left: 1px solid rgba(255,209,102,0.35); border-right: 1px solid rgba(255,209,102,0.35); }
+.scrub .loopband.on { background: rgba(255,209,102,0.22); border-color: var(--accent); }
+.evchip { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); font: 12px var(--mono); background: rgba(8,12,17,0.88); border: 1px solid var(--line-2); border-radius: 14px; padding: 5px 12px; pointer-events: none; white-space: nowrap; max-width: 80%; overflow: hidden; text-overflow: ellipsis; z-index: 3; }
+.evchip .k { text-transform: uppercase; font-size: 10px; letter-spacing: 0.05em; margin: 0 4px; }
+
+/* ---------- Measuring tape ---------- */
+.map-hud.tapes { top: 44px; left: 10px; pointer-events: auto; display: grid; gap: 3px; }
+.tapes .row { display: flex; gap: 6px; align-items: center; }
+.tapes .sw { width: 10px; height: 3px; border-radius: 2px; }
+.tapes button { padding: 0 6px; font-size: 11px; line-height: 16px; }
+canvas.map.measuring { cursor: crosshair; }
+
+/* ---------- Trail colour legend ---------- */
+.map-hud.br { right: 10px; bottom: 34px; }
+.legend-bar { height: 8px; width: 160px; border-radius: 3px; margin: 4px 0 2px; }
+.legend-ends { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); }
+
+/* ---------- 3D padlock and pointers ---------- */
+.lbl3d.pad { color: #ffd166; font-weight: 600; }
+.ptr3d { position: absolute; left: 0; top: 0; z-index: 4; pointer-events: none; font: 11px var(--mono); text-shadow: 0 0 3px #000, 0 0 2px #000; display: none; white-space: nowrap; }
+.ptr3d i { position: absolute; left: 0; top: 0; width: 14px; height: 14px; background: currentColor; clip-path: polygon(100% 50%, 0 0, 25% 50%, 0 100%); }
+.ptr3d span { position: absolute; left: 0; top: 0; }
+
+/* ---------- New recording banner ---------- */
+.banner { position: absolute; left: 50%; transform: translateX(-50%); z-index: 20; display: flex; gap: 10px; align-items: center;
+  background: rgba(12,18,25,0.95); border: 1px solid var(--line-2); border-left: 4px solid var(--accent); border-radius: 8px;
+  padding: 8px 12px; font-size: 12px; pointer-events: auto; box-shadow: 0 6px 24px rgba(0,0,0,0.5); animation: slidein 0.25s ease-out; max-width: 92%; }
+.banner.top { top: 12px; }
+.banner.bottom { bottom: 16px; }
+.banner .ttl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.banner label { display: flex; gap: 4px; align-items: center; color: var(--muted); white-space: nowrap; }
+@keyframes slidein { from { opacity: 0; margin-top: -10px; } to { opacity: 1; margin-top: 0; } }
+
+/* ---------- Shot post-mortem card ---------- */
+td.tog { width: 18px; color: var(--muted); cursor: pointer; user-select: none; text-align: center; }
+td.tog:hover { color: var(--accent); }
+tr.shotcard-row > td { padding: 0 0 8px; background: transparent !important; }
+.shotcard { background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; }
+.shotcard canvas.diagram { width: 100%; height: 150px; display: block; margin-bottom: 6px; }
+.shotcard canvas.flyout { width: 100%; height: 100px; display: block; margin: 4px 0; }
+.chips.verdict { margin: 8px 0; }
+.chips.verdict span { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line-2); }
+.chips.verdict span.warn { color: var(--warn); border-color: var(--warn); }
+.chips.verdict span.good { color: var(--green); border-color: #2c6b45; }
+
+/* ---------- Values read from DCS ---------- */
+.dcs-badge { font-size: 9px; font-weight: 700; letter-spacing: 0.04em; color: #0b0f14; background: var(--cyan); border-radius: 3px; padding: 0 4px; margin-left: 5px; vertical-align: 1px; }
+.dcs-note { font-size: 11px; color: var(--muted); background: #13232b; border: 1px solid #1f3c47; border-radius: 6px; padding: 5px 8px; margin-bottom: 10px; }

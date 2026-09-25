@@ -76,9 +76,19 @@ def run(cfg: Config, live_only: bool = False) -> int:
                                   background_color="#0b0f14")
 
         app.open_live_window = open_live
-        webview.create_window("DCS SA" + (" - Live" if live_only else " - Debrief"), first,
-                              width=1480, height=920, min_size=(900, 600),
-                              background_color="#0b0f14")
+        main = webview.create_window("DCS SA" + (" - Live" if live_only else " - Debrief"), first,
+                                     width=1480, height=920, min_size=(900, 600),
+                                     background_color="#0b0f14")
+
+        def open_debrief(key: str) -> None:
+            # Switch the main window to that recording and bring it forward.
+            for step in (lambda: main.evaluate_js(f"location.hash='rec={key}'"), main.restore, main.show):
+                try:
+                    step()
+                except Exception:  # noqa: BLE001 - window may be closed or the backend lacks the call
+                    pass
+
+        app.open_debrief = None if live_only else open_debrief
         try:
             webview.start()
         finally:
@@ -96,6 +106,7 @@ def run(cfg: Config, live_only: bool = False) -> int:
                                            "--window-size=1480,920"]))
 
         app.open_live_window = lambda: launch(url + "live")
+        app.open_debrief = lambda key: launch(f"{url}#rec={key}")
         launch(first)
         print(f"DCS SA running at {url} - close the window to quit.")
         try:

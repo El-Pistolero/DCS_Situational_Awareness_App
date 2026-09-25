@@ -200,7 +200,7 @@ class LiveWorld:
                     "ejection": f"{who} ejected", "dead": f"{who} destroyed", "pilot_dead": f"{who} pilot killed",
                 }.get(kind, f"{kind} {who} {whom}".strip())
                 self.events.append({
-                    "seq": self.event_seq, "time": ev.get("t") or self.time, "kind": f"DCS {kind}",
+                    "seq": self.event_seq, "id": self.event_seq, "time": ev.get("t") or self.time, "kind": f"DCS {kind}",
                     "objectIds": [], "names": [], "text": text, "source": "dcs", "count": 1, "_key": key,
                     "againstMe": self._is_me(tgt),
                 })

@@ -1,15 +1,18 @@
 // Debrief / review controller.
 
 import {
-  api, bisectRight, braa, el, fmtAlt, fmtClock, fmtDeg, fmtDist, fmtHdg, fmtMass, fmtNum,
-  fmtPct, fmtSpeed, fmtVs, fmtZulu, isNum, radarAt, roundsAt, sampleTrack, sideColor, units, distance,
-  M_TO_FT, MPS_TO_KT, MPS_TO_FPM,
+  api, aspectDeg, bearing, bisectRight, braa, el, fmtAlt, fmtClock, fmtDeg, fmtDist, fmtHdg, fmtMass, fmtNum, fmtShort,
+  fmtPct, fmtSpeed, fmtVs, fmtZulu, isHostile, isNum, radarAt, rampColor, rampCss, roundsAt, sampleTrack,
+  sideColor, slantRange, units, distance, M_TO_FT, MPS_TO_KT, MPS_TO_FPM,
 } from "./util.js";
 import { LAYERS, TacticalMap } from "./map.js";
-import { drawScene } from "./symbols.js";
+import { drawEdgePointers, drawScene, radarVolume } from "./symbols.js";
 import { LineChart } from "./charts.js";
 import { bar, drawADI, drawStick } from "./instruments.js";
 import { Scene3D } from "./scene3d.js";
+import { bindShortcuts } from "./keys.js";
+import { buildShotCard } from "./shotcard.js";
+import { watchRecordings } from "./watch.js";
 
 const $ = (id) => document.getElementById(id);
 const pref = (k, d) => { try { return localStorage.getItem(`dcs-sa.${k}`) ?? d; } catch { return d; } };
@@ -22,7 +25,12 @@ const S = {
   series: new Map(), trailSec: 90, labels: "aircraft", radar: pref("radar", "all"), bullets: pref("bullets", "paths"),
   rounds: [], roundLife: 8,
   tab: "flight", status: null, lastPanel: 0, filter: "", eventFilter: new Set(),
+  loop: { a: null, b: null, on: false }, padlockId: null, cam: pref("cam", "orbit"),
+  tapes: [], tapeDraft: null, trailColor: pref("trailColor", "side"), trailSeries: new Map(),
+  openShots: new Set(), keys: null,
 };
+const AIR = ["fixedwing", "rotorcraft", "air"];
+const TAPE_COLORS = ["#ffd166", "#4dd8e6", "#b48cff"];
 
 const map = new TacticalMap($("map"), { layer: pref("layer", "satellite") });
 let scene3d = null;
@@ -33,7 +41,8 @@ function setView(view) {
   if (view === "3d" && !scene3d) {
     try {
       scene3d = new Scene3D(document.querySelector(".mapwrap"));
-      scene3d.onPick = (id) => select(id);
+      scene3d.onPick = (id, { shift } = {}) => (shift ? setPadlock(id) : select(id));
+      scene3d.setMode(S.cam);
     } catch (err) { toast(`3D view unavailable: ${err.message}`); S.view = "2d"; return; }
   }
   const is3d = S.view === "3d";
@@ -47,10 +56,18 @@ function setView(view) {
 }
 
 function setCam(mode) {
+  S.cam = mode;
   scene3d?.setMode(mode);
   setTimeout(() => onTimeChange(true), 0);
   $("btnOrbit").classList.toggle("active", mode === "orbit");
   $("btnChase").classList.toggle("active", mode === "chase");
+  $("btnPadlock").classList.toggle("active", mode === "padlock");
+  setPref("cam", mode);
+}
+
+function cycleCam() {
+  const order = ["orbit", "chase", "padlock"];
+  setCam(order[(order.indexOf(S.cam) + 1) % order.length]);
 }
 
 // ---------------------------------------------------------------------------
@@ -74,6 +91,14 @@ async function init() {
   $("btn3d").onclick = () => setView("3d");
   $("btnOrbit").onclick = () => setCam("orbit");
   $("btnChase").onclick = () => setCam("chase");
+  $("btnPadlock").onclick = () => setCam("padlock");
+  $("trailColorSel").value = S.trailColor;
+  $("trailColorSel").onchange = (e) => setTrailColor(e.target.value);
+  $("btnMeasure").onclick = () => setMeasure(map.tool !== "measure");
+  $("btnPrevEv").onclick = () => stepEvent(-1);
+  $("btnNextEv").onclick = () => stepEvent(1);
+  $("btnLoop").onclick = () => toggleLoop();
+  $("btnKeys").onclick = () => S.keys?.help();
   $("exagSel").onchange = (e) => { scene3d?.setExaggeration(+e.target.value); onTimeChange(true); };
   $("btnFit").onclick = fitAll;
   $("btnLibrary").onclick = showLibrary;
@@ -82,6 +107,11 @@ async function init() {
   $("btnBack").onclick = () => seek(S.t - 10);
   $("btnFwd").onclick = () => seek(S.t + 10);
   $("objFilter").oninput = (e) => { S.filter = e.target.value.toLowerCase(); renderObjectList(); };
+  $("objFilter").addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    e.target.value = ""; S.filter = ""; renderObjectList(); e.target.blur();
+  });
   $("btnDebrief").onclick = () => {
     if (S.key) window.open(`/api/recording/${S.key}/markdown${S.me ? `?focus=${S.me}` : ""}`, "_blank");
   };
@@ -89,17 +119,45 @@ async function init() {
     if (S.status?.desktop) { e.preventDefault(); await api("/api/open-live", { method: "POST" }); }
   });
   setupScrubber();
-  setupKeys();
+  S.keys = bindShortcuts(KEYS);
   map.scene = drawMap;
+  map.measureEnabled = true;
   map.on("click", onMapClick);
   map.on("hover", onMapHover);
   map.on("viewchange", (ev) => { if (ev?.user && S.follow) setFollow(false); });
+  map.on("measurestart", (ev) => { S.tapeDraft = { a: snapAt(ev.px, ev.py) || { lonlat: ev.lonlat }, b: { lonlat: ev.lonlat } }; map.invalidate(); });
+  map.on("measuremove", (ev) => { if (S.tapeDraft) { S.tapeDraft.b = { lonlat: ev.lonlat }; map.invalidate(); } });
+  map.on("measureend", (ev) => {
+    if (!S.tapeDraft) return;
+    S.tapeDraft.b = snapAt(ev.px, ev.py) || { lonlat: ev.lonlat };
+    addTape(S.tapeDraft);
+    S.tapeDraft = null;
+  });
+  map.on("measurecancel", () => { S.tapeDraft = null; map.invalidate(); });
+  map.on("contextmenu", (ev) => {
+    const i = tapeNear(ev.px, ev.py);
+    if (i < 0) return;
+    ev.event.preventDefault();
+    S.tapes.splice(i, 1);
+    renderTapeHud(); map.invalidate();
+  });
   renderTabs();
 
   try { S.status = (await api("/api/status")).body; } catch { /* offline */ }
   const hash = new URLSearchParams(location.hash.slice(1));
   if (hash.get("rec")) loadRecording(hash.get("rec"));
   else showLibrary();
+  window.addEventListener("hashchange", () => {
+    const k = new URLSearchParams(location.hash.slice(1)).get("rec");
+    if (k && k !== S.key) loadRecording(k);
+  });
+  watchRecordings({
+    host: document.querySelector(".mapwrap"), placement: "top",
+    openHere: (key) => loadRecording(key),
+    isIdle: () => !S.analysis || !S.playing,
+  });
+  // Test hook (?debug): symbol hitboxes and the map, for browser tests.
+  if (new URLSearchParams(location.search).has("debug")) window.__dcsSA = { hitboxes: () => hitboxes, map, S };
   requestAnimationFrame(tick);
 }
 
@@ -192,6 +250,10 @@ async function loadRecording(key) {
 function setupRecording(key, analysis, playback) {
   S.key = key; S.analysis = analysis; S.playback = playback;
   S.series.clear(); S.objects.clear(); S.deaths.clear();
+  S.trailSeries.clear(); trailCache.clear(); trailRanges.clear(); stopsCache = null;
+  S.loop = { a: null, b: null, on: false }; S.padlockId = null; S.tapes = []; S.tapeDraft = null;
+  S.openShots.clear();
+  renderTapeHud();
   for (const o of analysis.objects) {
     const pb = playback.objects[o.id];
     if (pb) S.objects.set(o.id, { ...o, pb });
@@ -209,7 +271,9 @@ function setupRecording(key, analysis, playback) {
   fitAll();
   select(S.me || analysis.aircraft[0]?.id || null);
   renderAllPanels();
-  if (pref("view", "2d") === "3d") setView("3d");
+  if (pref("view", "2d") === "3d") { setView("3d"); setCam(S.cam); }
+  updateLoopBand();
+  setTrailColor(S.trailColor);
 }
 
 function fitAll() {
@@ -227,6 +291,7 @@ function tick(now) {
   lastFrame = now;
   if (S.playing && S.analysis) {
     S.t += dt * S.speed;
+    if (S.loop.on && isNum(S.loop.a) && isNum(S.loop.b) && S.t >= S.loop.b) S.t = S.loop.a;
     if (S.t >= S.end) { S.t = S.end; togglePlay(false); }
     onTimeChange();
   }
@@ -236,12 +301,15 @@ function tick(now) {
 function togglePlay(force) {
   S.playing = typeof force === "boolean" ? force : !S.playing;
   if (S.playing && S.t >= S.end) S.t = S.start;
+  if (S.playing && S.loop.on && isNum(S.loop.a) && (S.t < S.loop.a || S.t >= S.loop.b)) S.t = S.loop.a;
   $("btnPlay").textContent = S.playing ? "❚❚" : "▶";
 }
 
 function seek(t) {
   if (!S.analysis) return;
-  S.t = Math.max(S.start, Math.min(S.end, t));
+  const nt = Math.max(S.start, Math.min(S.end, t));
+  if (Math.abs(nt - S.t) > 10 && chipTimer) hideChip();
+  S.t = nt;
   onTimeChange(true);
 }
 
@@ -254,7 +322,10 @@ function onTimeChange(force = false) {
   map.invalidate();
   if (S.view === "3d" && scene3d && S.analysis) {
     scene3d.follow = true;
-    scene3d.update(sceneObjects(), { focusId: S.selected || S.me, selectedId: S.selected, radar: S.radar, rounds: currentRounds() });
+    const focus = S.selected || S.me;
+    scene3d.update(sceneObjects(), { focusId: focus, selectedId: S.selected, radar: S.radar, rounds: currentRounds(),
+      padlockId: S.cam === "padlock" ? padlockTarget() : null });
+    scene3d.setPointers(threatsAt(S.t, focus));
   }
   updateScrubber();
   const now = performance.now();
@@ -276,9 +347,20 @@ function setupScrubber() {
     const r = sc.getBoundingClientRect();
     return S.start + ((e.clientX - r.left) / r.width) * (S.end - S.start);
   };
-  let dragging = false;
-  sc.addEventListener("pointerdown", (e) => { dragging = true; sc.setPointerCapture(e.pointerId); seek(tAt(e)); });
+  let dragging = false, painting = null;
+  sc.addEventListener("pointerdown", (e) => {
+    sc.setPointerCapture(e.pointerId);
+    if (e.shiftKey && S.analysis) { painting = { a: tAt(e), b: tAt(e) }; updateLoopBand(painting); return; }
+    dragging = true; seek(tAt(e));
+  });
+  sc.addEventListener("pointerup", () => {
+    if (!painting) return;
+    const { a, b } = painting;
+    painting = null;
+    if (Math.abs(b - a) >= 1) setLoop(Math.min(a, b), Math.max(a, b), true); else updateLoopBand();
+  });
   sc.addEventListener("pointermove", (e) => {
+    if (painting) { painting.b = tAt(e); updateLoopBand(painting); }
     if (dragging) seek(tAt(e));
     let h = sc.querySelector(".hovert");
     if (!h) { h = el("div", { class: "hovert" }); sc.append(h); }
@@ -303,6 +385,7 @@ function renderTicks() {
 }
 
 function updateScrubber() {
+  updateLoopBand();
   const f = (S.t - S.start) / (S.end - S.start || 1);
   document.querySelector(".scrub .progress").style.width = `${f * 100}%`;
   document.querySelector(".scrub .head").style.left = `${f * 100}%`;
@@ -311,19 +394,487 @@ function updateScrubber() {
   $("clock").append(`${fmtClock(S.t - S.start)} / ${fmtClock(S.end - S.start)}`, z ? el("span", { class: "z" }, z) : "");
 }
 
-function setupKeys() {
-  window.addEventListener("keydown", (e) => {
-    if (e.target.matches("input, select, textarea")) return;
-    if (e.code === "Space") { e.preventDefault(); togglePlay(); }
-    else if (e.key === "ArrowLeft") seek(S.t - (e.shiftKey ? 30 : 5));
-    else if (e.key === "ArrowRight") seek(S.t + (e.shiftKey ? 30 : 5));
-    else if (e.key === "f" || e.key === "F") setFollow(!S.follow);
-    else if (e.key === "]" || e.key === "[") {
-      const opts = [...$("speedSel").options].map((o) => +o.value);
-      const i = Math.max(0, Math.min(opts.length - 1, opts.indexOf(S.speed) + (e.key === "]" ? 1 : -1)));
-      S.speed = opts[i]; $("speedSel").value = String(S.speed);
+function stepSpeed(dir) {
+  const opts = [...$("speedSel").options].map((o) => +o.value);
+  const i = Math.max(0, Math.min(opts.length - 1, opts.indexOf(S.speed) + dir));
+  S.speed = opts[i]; $("speedSel").value = String(S.speed);
+}
+
+function gotoTab(n) {
+  if (!TABS[n - 1]) return;
+  S.tab = TABS[n - 1][0];
+  renderAllPanels();
+}
+
+function stepAircraft(dir) {
+  const ids = [...document.querySelectorAll(".objrow[data-id]")].map((r) => r.dataset.id)
+    .filter((id) => AIR.includes(S.objects.get(id)?.category));
+  if (!ids.length) return;
+  const i = ids.indexOf(S.selected);
+  const id = ids[(i < 0 ? (dir > 0 ? 0 : ids.length - 1) : i + dir + ids.length) % ids.length];
+  select(id);
+  if (!S.follow) {
+    const o = S.objects.get(id);
+    const p = sampleTrack(o.pb, S.t) || sampleTrack(o.pb, o.pb.t[0]);
+    if (p) map.setView(p.lon, p.lat);
+  }
+}
+
+const KEYS = [
+  { keys: [" "], group: "Playback", label: "Play / pause", run: () => togglePlay() },
+  { keys: ["ArrowLeft", "ArrowRight"], group: "Playback", label: "Back / forward 5 s", repeat: true,
+    run: (e) => seek(S.t + (e.key === "ArrowLeft" ? -5 : 5)) },
+  { keys: ["Shift+ArrowLeft", "Shift+ArrowRight"], group: "Playback", label: "Back / forward 30 s", repeat: true,
+    run: (e) => seek(S.t + (e.key === "ArrowLeft" ? -30 : 30)) },
+  { keys: [",", "."], group: "Playback", label: "Pause and step 0.5 s", repeat: true,
+    run: (e) => { togglePlay(false); seek(S.t + (e.key === "," ? -0.5 : 0.5)); } },
+  { keys: ["[", "]"], group: "Playback", label: "Slower / faster", repeat: true, run: (e) => stepSpeed(e.key === "]" ? 1 : -1) },
+  { keys: ["Home", "End"], group: "Playback", label: "Start / end of the recording", run: (e) => seek(e.key === "Home" ? S.start : S.end) },
+  { keys: ["n", "p"], group: "Playback", label: "Next / previous event", run: (e) => stepEvent(e.key.toLowerCase() === "n" ? 1 : -1) },
+  { keys: ["i", "o"], group: "Playback", label: "Set loop in / out point", run: (e) => setLoopPoint(e.key.toLowerCase() === "i" ? "a" : "b") },
+  { keys: ["l"], group: "Playback", label: "Loop on / off", run: () => toggleLoop() },
+  { keys: ["Shift+L"], group: "Playback", label: "Clear the loop", run: () => clearLoop() },
+  { keys: ["v"], group: "View", label: "2D / 3D", run: () => setView(S.view === "3d" ? "2d" : "3d") },
+  { keys: ["c"], group: "View", label: "3D camera: orbit → chase → padlock", when: () => S.view === "3d", run: () => cycleCam() },
+  { keys: ["t"], group: "View", label: "Padlock: next target", when: () => S.view === "3d", run: () => cyclePadlock() },
+  { keys: ["Shift+T"], group: "View", label: "Padlock: automatic target", when: () => S.view === "3d", run: () => setPadlock(null) },
+  { keys: ["f"], group: "View", label: "Follow the selected aircraft", run: () => setFollow(!S.follow) },
+  { keys: ["m"], group: "View", label: "Measuring tape (or Shift-drag)", run: () => setMeasure(map.tool !== "measure") },
+  { keys: ["Escape"], group: "View", label: "Clear tapes, leave the measure tool", when: () => S.tapes.length > 0 || map.tool === "measure",
+    run: () => { setMeasure(false); S.tapes = []; renderTapeHud(); map.invalidate(); } },
+  { keys: ["j", "k"], group: "Selection", label: "Next / previous aircraft", run: (e) => stepAircraft(e.key.toLowerCase() === "j" ? 1 : -1) },
+  { keys: ["/"], group: "Selection", label: "Filter objects", run: () => $("objFilter").focus() },
+  ...TABS_KEYS(),
+  { keys: ["Ctrl+o"], group: "Panels", label: "Recordings library", run: () => showLibrary() },
+];
+
+function TABS_KEYS() {
+  const labels = ["Flight", "Charts", "Weapons", "Landings", "Radar", "Events", "All aircraft"];
+  return labels.map((name, i) => ({
+    keys: [String(i + 1)], group: "Panels", label: `Tabs: ${labels.join(", ")}`, keysLabel: "1–7",
+    hidden: i > 0, run: () => gotoTab(i + 1),
+  }));
+}
+
+// -- events & loop ---------------------------------------------------------------
+
+let stopsCache = null;
+function eventStops() {
+  const mine = pref("evMine", "0") === "1" && S.selected;
+  const key = `${[...S.eventFilter].sort().join(",")}|${mine ? S.selected : ""}`;
+  if (stopsCache?.key === key) return stopsCache.stops;
+  const items = S.analysis.timeline.filter((it) => !S.eventFilter.has(it.kind) && (!mine || it.objectIds.includes(S.selected)))
+    .sort((a, b) => a.time - b.time);
+  const stops = [];
+  for (const it of items) {
+    const last = stops[stops.length - 1];
+    if (last && it.time - last.items[last.items.length - 1].time <= 0.5) last.items.push(it);
+    else stops.push({ time: it.time, items: [it] });
+  }
+  stopsCache = { key, stops };
+  return stops;
+}
+
+function stepEvent(dir) {
+  if (!S.analysis) return;
+  const stops = eventStops();
+  const stop = dir > 0 ? stops.find((x) => x.time > S.t + 3.5) : [...stops].reverse().find((x) => x.time < S.t + 2.5);
+  togglePlay(false);
+  if (!stop) { showChip(null); return; }
+  seek(stop.time - 3);
+  showChip(stop);
+}
+
+let chipTimer = null;
+function showChip(stop) {
+  const c = $("evChip");
+  c.innerHTML = "";
+  if (!stop) c.append("No more events");
+  else {
+    const it = stop.items[0];
+    c.append(`${fmtClock(it.time - S.start)} `, el("span", { class: `k k-${it.kind}` }, it.kind), ` · ${it.text}`,
+      stop.items.length > 1 ? ` · +${stop.items.length - 1} more` : "");
+  }
+  c.classList.remove("hidden");
+  clearTimeout(chipTimer);
+  chipTimer = setTimeout(hideChip, stop ? 6000 : 2000);
+}
+function hideChip() { clearTimeout(chipTimer); chipTimer = null; $("evChip").classList.add("hidden"); }
+
+function setLoop(a, b, on) {
+  const cl = (x) => (isNum(x) ? Math.max(S.start, Math.min(S.end, x)) : null);
+  S.loop = { a: cl(a), b: cl(b), on: !!on };
+  if (isNum(S.loop.a) && isNum(S.loop.b) && S.loop.a > S.loop.b) [S.loop.a, S.loop.b] = [S.loop.b, S.loop.a];
+  updateLoopBand();
+}
+function setLoopPoint(which) {
+  if (!S.analysis) return;
+  const l = { ...S.loop, [which]: S.t };
+  setLoop(l.a, l.b, isNum(l.a) && isNum(l.b) ? true : l.on);
+}
+function toggleLoop() {
+  if (!S.analysis) return;
+  if (isNum(S.loop.a) && isNum(S.loop.b)) setLoop(S.loop.a, S.loop.b, !S.loop.on);
+  else setLoop(S.t - 10, S.t + 20, true);
+}
+function clearLoop() { setLoop(null, null, false); }
+
+function updateLoopBand(paint) {
+  const sc = $("scrub");
+  let band = sc.querySelector(".loopband");
+  const a = paint ? Math.min(paint.a, paint.b) : S.loop.a, b = paint ? Math.max(paint.a, paint.b) : S.loop.b;
+  $("btnLoop").classList.toggle("active", S.loop.on);
+  if (!S.analysis || !isNum(a) || !isNum(b)) { band?.remove(); return; }
+  if (!band) { band = el("div", { class: "loopband" }); sc.append(band); }
+  const span = S.end - S.start || 1;
+  band.style.left = `${((a - S.start) / span) * 100}%`;
+  band.style.width = `${((b - a) / span) * 100}%`;
+  band.classList.toggle("on", !!paint || S.loop.on);
+  band.title = `Loop ${fmtClock(a - S.start)}–${fmtClock(b - S.start)}`;
+}
+
+// -- padlock & threats -------------------------------------------------------------
+
+function alive(o, t) {
+  const d = S.deaths.get(o.id);
+  if (isNum(d) && t >= d) return null;
+  return sampleTrack(o.pb, t);
+}
+
+function hostileAircraftAt(t, focusId) {
+  const me = S.objects.get(focusId);
+  const mp = me && alive(me, t);
+  if (!mp) return [];
+  const out = [];
+  for (const o of S.objects.values()) {
+    if (!AIR.includes(o.category) || o.id === focusId || !isHostile(me, o)) continue;
+    const p = alive(o, t);
+    if (p && isNum(p.lon)) out.push({ id: o.id, o, p, range: slantRange(mp.lon, mp.lat, mp.alt, p.lon, p.lat, p.alt) });
+  }
+  return out.sort((a, b) => a.range - b.range);
+}
+
+function padlockCandidates(t, focusId) {
+  const me = S.objects.get(focusId);
+  const mp = me && alive(me, t);
+  const list = hostileAircraftAt(t, focusId).map((x) => ({ id: x.id, range: x.range }));
+  if (mp) {
+    for (const sh of S.analysis.weapons.shots) {
+      if (sh.targetId !== focusId || !sh.weaponId || t < sh.launchTime || t > (sh.endTime ?? sh.launchTime)) continue;
+      const w = S.objects.get(sh.weaponId);
+      const p = w && sampleTrack(w.pb, t);
+      if (p) list.push({ id: sh.weaponId, range: slantRange(mp.lon, mp.lat, mp.alt, p.lon, p.lat, p.alt) });
     }
+  }
+  return list.sort((a, b) => a.range - b.range);
+}
+
+function padlockTarget() {
+  if (!S.analysis) return null;
+  const focus = S.selected || S.me;
+  const pinned = S.padlockId && S.objects.get(S.padlockId);
+  if (pinned && pinned.id !== focus && alive(pinned, S.t)) return pinned.id;
+  const lock = activeLocks(S.t).get(focus);
+  if (lock && S.objects.get(lock) && alive(S.objects.get(lock), S.t)) return lock;
+  return hostileAircraftAt(S.t, focus)[0]?.id || null;
+}
+
+function setPadlock(id) {
+  S.padlockId = id;
+  if (id && S.view === "3d" && S.cam !== "padlock") setCam("padlock");
+  onTimeChange(true);
+}
+
+function cyclePadlock() {
+  const list = padlockCandidates(S.t, S.selected || S.me);
+  if (!list.length) return;
+  const cur = padlockTarget();
+  const i = list.findIndex((x) => x.id === cur);
+  setPadlock(list[(i + 1) % list.length].id);
+}
+
+/** Threats to the focus aircraft at t, for the off-screen pointers. */
+function threatsAt(t, focusId) {
+  if (!S.analysis || !focusId) return [];
+  const me = S.objects.get(focusId);
+  const mp = me && alive(me, t);
+  if (!mp) return [];
+  const out = [];
+  const rangeTo = (o, tt) => {
+    const a = sampleTrack(me.pb, tt), b = sampleTrack(o.pb, tt);
+    return a && b ? slantRange(a.lon, a.lat, a.alt, b.lon, b.lat, b.alt) : null;
+  };
+  for (const sh of S.analysis.weapons.shots) {
+    if (sh.targetId !== focusId || !sh.weaponId || t < sh.launchTime || t > (sh.endTime ?? sh.launchTime)) continue;
+    const w = S.objects.get(sh.weaponId);
+    const p = w && sampleTrack(w.pb, t);
+    if (!p) continue;
+    const r = rangeTo(w, t), r0 = rangeTo(w, t - 0.5), r1 = rangeTo(w, t + 0.5);
+    const closure = isNum(r0) && isNum(r1) ? r0 - r1 : null;
+    const tti = isNum(closure) && closure > 1 ? r / closure : null;
+    out.push({ id: w.id, lon: p.lon, lat: p.lat, color: "#ff3b3b", level: 3,
+      text: `${sh.weaponName} ${fmtDist(r)}${isNum(tti) ? ` ${Math.round(tti)}s` : ""}` });
+  }
+  const spikes = new Set();
+  for (const [owner, target] of activeLocks(t)) {
+    if (target !== focusId) continue;
+    const o = S.objects.get(owner);
+    const p = o && alive(o, t);
+    if (!p) continue;
+    spikes.add(owner);
+    out.push({ id: owner, lon: p.lon, lat: p.lat, color: "#ff9f43", level: 2,
+      text: `${o.pilot || o.name} SPIKE ${fmtDist(distance(mp.lon, mp.lat, p.lon, p.lat))}` });
+  }
+  for (const h of hostileAircraftAt(t, focusId)) {
+    if (spikes.has(h.id) || h.range > 60000 || !isNum(h.p.hdg)) continue;
+    if (aspectDeg(h.p.lon, h.p.lat, h.p.hdg, mp.lon, mp.lat) < 135) continue;
+    out.push({ id: h.id, lon: h.p.lon, lat: h.p.lat, color: "#ffd166", level: 1,
+      text: `${h.o.name} HOT ${fmtDist(distance(mp.lon, mp.lat, h.p.lon, h.p.lat))}` });
+  }
+  return out;
+}
+
+// -- measuring tape ------------------------------------------------------------------
+
+function setMeasure(on) {
+  map.tool = on ? "measure" : null;
+  $("btnMeasure").classList.toggle("active", on);
+  $("map").classList.toggle("measuring", on);
+}
+
+function snapAt(px, py) {
+  let best = null, bd = Infinity;
+  for (const h of hitboxes) {
+    const d = Math.hypot(h.x - px, h.y - py);
+    if (d < h.r && d < bd) { best = h; bd = d; }
+  }
+  return best ? { id: best.id } : null;
+}
+
+function addTape(t) {
+  const used = new Set(S.tapes.map((x) => x.color));
+  if (S.tapes.length >= 3) { used.delete(S.tapes[0].color); S.tapes.shift(); }
+  t.color = TAPE_COLORS.find((c) => !used.has(c)) || TAPE_COLORS[0];
+  S.tapes.push(t);
+  renderTapeHud();
+  map.invalidate();
+}
+
+/** Resolve a tape end at t: {lon, lat, alt, obj, present}. */
+function tapeEnd(end, t) {
+  if (end.lonlat) return { lon: end.lonlat[0], lat: end.lonlat[1], alt: null, obj: null, present: true };
+  const o = S.objects.get(end.id);
+  if (!o) return null;
+  const p = alive(o, t);
+  if (p) return { ...p, obj: o, present: true };
+  const n = o.pb.t.length;
+  const q = sampleTrack(o.pb, Math.max(o.pb.t[0], Math.min(o.pb.end ?? o.pb.t[n - 1], t)));
+  return q ? { ...q, obj: o, present: false } : null;
+}
+
+function tapeLabel(tape, t) {
+  const A = tapeEnd(tape.a, t), B = tapeEnd(tape.b, t);
+  if (!A || !B) return null;
+  const brg = bearing(A.lon, A.lat, B.lon, B.lat);
+  const d = distance(A.lon, A.lat, B.lon, B.lat);
+  if (!A.present || !B.present) return { A, B, lines: ["—"], short: "—", stale: true };
+  if (A.obj && B.obj) {
+    const slant = slantRange(A.lon, A.lat, A.alt, B.lon, B.lat, B.alt);
+    const at = (tt) => { const a = tapeEnd(tape.a, tt), b = tapeEnd(tape.b, tt); return a && b && a.present && b.present ? slantRange(a.lon, a.lat, a.alt, b.lon, b.lat, b.alt) : null; };
+    const r0 = at(t - 0.5), r1 = at(t + 0.5);
+    const closure = isNum(r0) && isNum(r1) ? r0 - r1 : null;
+    const dAlt = isNum(A.alt) && isNum(B.alt) ? B.alt - A.alt : null;
+    const nameA = A.obj.pilot || A.obj.name, nameB = B.obj.pilot || B.obj.name;
+    const l2 = [`${fmtDist(slant, { precise: true })} slant`];
+    if (isNum(dAlt)) l2.push(`Δ${dAlt >= 0 ? "+" : "−"}${fmtAlt(Math.abs(dAlt))}`);
+    if (isNum(closure)) l2.push(`C ${closure >= 0 ? "+" : "−"}${fmtSpeed(Math.abs(closure))}`);
+    return { A, B, lines: [`${nameA} → ${nameB} ${fmtHdg(brg)}`, l2.join(" · ")], short: `${nameA} → ${nameB} ${fmtDist(slant)}` };
+  }
+  if (A.obj || B.obj) {
+    const O = A.obj ? A : B, P = A.obj ? B : A;
+    const b2 = bearing(O.lon, O.lat, P.lon, P.lat);
+    const name = O.obj.pilot || O.obj.name;
+    const txt = `${name} → BRG ${fmtHdg(b2)} · ${fmtDist(d, { precise: true })}`;
+    return { A, B, lines: [txt], short: txt };
+  }
+  const sel = S.selected && S.objects.get(S.selected);
+  let eta = "";
+  if (sel) {
+    const p0 = sampleTrack(sel.pb, t - 0.5), p1 = sampleTrack(sel.pb, t + 0.5);
+    const gs = p0 && p1 ? distance(p0.lon, p0.lat, p1.lon, p1.lat) : null;
+    if (isNum(gs) && gs > 20) eta = ` · ${fmtClock(d / gs)} @ ${fmtSpeed(gs)}`;
+  }
+  const txt = `BRG ${fmtHdg(brg)} / ${fmtHdg(brg + 180)} · ${fmtDist(d, { precise: true })}`;
+  return { A, B, lines: [txt + eta], short: txt };
+}
+
+function drawTapes(ctx, m) {
+  const all = S.tapeDraft ? [...S.tapes, { ...S.tapeDraft, color: "#ffffff" }] : S.tapes;
+  for (const tape of all) {
+    const L = tapeLabel(tape, S.t);
+    if (!L) continue;
+    const a = m.project(L.A.lon, L.A.lat), b = m.project(L.B.lon, L.B.lat);
+    ctx.save();
+    ctx.strokeStyle = L.stale ? "rgba(160,160,160,0.8)" : tape.color;
+    ctx.lineWidth = 1.5;
+    if (L.stale) ctx.setLineDash([5, 5]);
+    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+    ctx.setLineDash([]);
+    const ang = Math.atan2(b[1] - a[1], b[0] - a[0]) + Math.PI / 2;
+    for (const [x, y] of [a, b]) {
+      ctx.beginPath(); ctx.moveTo(x - Math.cos(ang) * 5, y - Math.sin(ang) * 5); ctx.lineTo(x + Math.cos(ang) * 5, y + Math.sin(ang) * 5); ctx.stroke();
+    }
+    ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
+    const w = Math.max(...L.lines.map((l) => ctx.measureText(l).width)) + 12;
+    const h = L.lines.length * 14 + 6;
+    const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+    ctx.fillStyle = "rgba(8,12,17,0.85)";
+    ctx.strokeStyle = L.stale ? "rgba(160,160,160,0.8)" : tape.color;
+    ctx.lineWidth = 1;
+    ctx.fillRect(mx - w / 2, my - h - 6, w, h);
+    ctx.strokeRect(mx - w / 2, my - h - 6, w, h);
+    ctx.fillStyle = L.stale ? "#aaa" : tape.color;
+    ctx.textAlign = "center"; ctx.textBaseline = "top";
+    L.lines.forEach((l, i) => ctx.fillText(l, mx, my - h - 3 + i * 14));
+    ctx.restore();
+  }
+}
+
+function tapeNear(px, py) {
+  for (let i = S.tapes.length - 1; i >= 0; i--) {
+    const L = tapeLabel(S.tapes[i], S.t);
+    if (!L) continue;
+    const [ax, ay] = map.project(L.A.lon, L.A.lat), [bx, by] = map.project(L.B.lon, L.B.lat);
+    const dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy || 1;
+    const f = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
+    if (Math.hypot(ax + dx * f - px, ay + dy * f - py) <= 6) return i;
+  }
+  return -1;
+}
+
+function renderTapeHud() {
+  const hud = $("tapeHud");
+  hud.innerHTML = "";
+  hud.classList.toggle("hidden", !S.tapes.length);
+  S.tapes.forEach((tape, i) => {
+    const L = S.analysis ? tapeLabel(tape, S.t) : null;
+    hud.append(el("div", { class: "row" }, el("span", { class: "sw", style: { background: tape.color } }),
+      el("span", {}, L?.short || "tape"),
+      el("button", { class: "ghost", title: "Delete this tape", onclick: () => { S.tapes.splice(i, 1); renderTapeHud(); map.invalidate(); } }, "×")));
   });
+}
+
+// -- trail colours ------------------------------------------------------------------------
+
+const TRAIL_MODES = {
+  side: null,
+  alt: { title: "Altitude", kind: "seq" },
+  speed: { title: "Speed", kind: "seq" },
+  g: { title: "G", kind: "limit", lo: 0, hi: 9, limit: 7.5, channel: "GLoad" },
+  ps: { title: "Ps", kind: "div", lo: -60, hi: 60, limit: 3, channel: "Ps" },
+  aoa: { title: "AOA", kind: "limit", lo: 0, hi: 25, limit: 20, channel: "AOA" },
+};
+const trailCache = new Map();
+const trailRanges = new Map();
+
+function setTrailColor(mode) {
+  S.trailColor = TRAIL_MODES[mode] !== undefined ? mode : "side";
+  $("trailColorSel").value = S.trailColor;
+  setPref("trailColor", S.trailColor);
+  if (TRAIL_MODES[S.trailColor]?.channel && S.analysis) fetchTrailSeries();
+  updateLegend();
+  onTimeChange(true);
+}
+
+async function fetchTrailSeries() {
+  const key = S.key;
+  const ids = [...S.objects.values()].filter((o) => AIR.includes(o.category) && !S.trailSeries.has(o.id)).map((o) => o.id);
+  let next = 0;
+  const worker = async () => {
+    while (next < ids.length) {
+      const id = ids[next++];
+      S.trailSeries.set(id, null); // in flight
+      try {
+        const { body, status } = await api(`/api/recording/${key}/series/${encodeURIComponent(id)}?channels=GLoad,Ps,AOA&max=4000`);
+        if (key !== S.key) return;
+        if (status === 200) S.trailSeries.set(id, body);
+        for (const m of ["g", "ps", "aoa"]) trailCache.delete(`${id}:${m}`);
+        map.invalidate(); onTimeChange(true);
+      } catch { S.trailSeries.delete(id); }
+    }
+  };
+  await Promise.all([worker(), worker(), worker(), worker()]);
+}
+
+/** Per-sample values for an object's playback track in a trail-colour mode. */
+function valuesFor(o, mode) {
+  const ck = `${o.id}:${mode}`;
+  if (trailCache.has(ck)) return trailCache.get(ck);
+  const pb = o.pb, n = pb.t.length;
+  let out = null;
+  if (mode === "alt") out = Float32Array.from(pb.alt || [], (v) => (isNum(v) ? v : NaN));
+  else if (mode === "speed") {
+    out = new Float32Array(n).fill(NaN);
+    for (let k = 1; k < n; k++) {
+      const dt = pb.t[k] - pb.t[k - 1];
+      if (dt <= 0 || !isNum(pb.lon[k]) || !isNum(pb.lon[k - 1])) continue;
+      out[k] = slantRange(pb.lon[k - 1], pb.lat[k - 1], pb.alt?.[k - 1], pb.lon[k], pb.lat[k], pb.alt?.[k]) / dt;
+    }
+    if (n > 1) out[0] = out[1];
+  } else {
+    const ser = S.trailSeries.get(o.id);
+    const ch = ser?.channels?.[TRAIL_MODES[mode].channel];
+    if (!ch) return null; // loading, or no such channel: side colour
+    out = new Float32Array(n).fill(NaN);
+    for (let k = 0; k < n; k++) {
+      const j = bisectRight(ser.t, pb.t[k]);
+      if (j >= 0 && isNum(ch[j])) out[k] = ch[j];
+    }
+  }
+  trailCache.set(ck, out);
+  return out;
+}
+
+function trailRange(mode) {
+  const def = TRAIL_MODES[mode];
+  if (isNum(def.lo)) return [def.lo, def.hi];
+  if (trailRanges.has(mode)) return trailRanges.get(mode);
+  const vals = [];
+  for (const o of S.objects.values()) {
+    if (!AIR.includes(o.category)) continue;
+    const v = valuesFor(o, mode);
+    if (v) for (const x of v) if (isNum(x)) vals.push(x);
+  }
+  vals.sort((a, b) => a - b);
+  let r = [0, 1];
+  if (vals.length) r = mode === "speed" ? [vals[Math.floor(vals.length * 0.02)], vals[Math.floor(vals.length * 0.98)]] : [vals[0], vals[vals.length - 1]];
+  trailRanges.set(mode, r);
+  return r;
+}
+
+function trailColorAt(vals, k, mode, range) {
+  const def = TRAIL_MODES[mode];
+  return rampColor(vals[k], range[0], range[1], def.kind, def.limit);
+}
+
+function updateLegend() {
+  const box = $("trailLegend");
+  const def = TRAIL_MODES[S.trailColor];
+  if (!def || !S.analysis) { box.classList.add("hidden"); return; }
+  const [lo, hi] = trailRange(S.trailColor);
+  const ends = {
+    alt: [fmtAlt(lo, { suffix: false }), fmtAlt(hi)],
+    speed: [fmtSpeed(lo, { suffix: false }), fmtSpeed(hi)],
+    g: ["0", "9 g"],
+    ps: units.metric ? ["−60", "+60 m/s"] : ["−200", "+200 ft/s"],
+    aoa: ["0°", "25°"],
+  }[S.trailColor];
+  const note = { g: " (magenta > 7.5)", aoa: " (magenta > 20°)", ps: " (grey = sustaining)" }[S.trailColor] || "";
+  box.innerHTML = "";
+  box.append(el("div", {}, `${def.title} ${ends[0]} ${S.trailColor === "ps" ? "…" : "–"} ${ends[1]}${note}`),
+    el("div", { class: "legend-bar", style: { background: rampCss(def.kind) } }),
+    el("div", { class: "legend-ends" }, el("span", {}, ends[0]), el("span", {}, ends[1])));
+  box.classList.remove("hidden");
 }
 
 // ---------------------------------------------------------------------------
@@ -362,9 +913,19 @@ function sceneObjects() {
       const t0 = t - S.trailSec;
       const a = Math.max(0, bisectRight(pb.t, t0));
       const trail = [];
-      for (let k = a; k <= i; k++) if (isNum(pb.lon[k])) trail.push([pb.lon[k], pb.lat[k], pb.alt?.[k]]);
+      const mode = AIR.includes(o.category) && TRAIL_MODES[S.trailColor] ? S.trailColor : null;
+      const vals = mode ? valuesFor(o, mode) : null;
+      const range = vals ? trailRange(mode) : null;
+      const colors = vals ? [] : null;
+      for (let k = a; k <= i; k++) {
+        if (!isNum(pb.lon[k])) continue;
+        trail.push([pb.lon[k], pb.lat[k], pb.alt?.[k]]);
+        if (colors) colors.push(trailColorAt(vals, k, mode, range));
+      }
       trail.push([p.lon, p.lat, p.alt]);
+      if (colors) colors.push(trailColorAt(vals, Math.max(0, i), mode, range));
       row.trail = trail;
+      if (colors) row.trailColors = colors;
     }
     const rad = S.radar !== "none" ? radarAt(pb, i) : null;
     if (rad) Object.assign(row.v, rad);
@@ -394,6 +955,16 @@ function drawMap(ctx, m) {
     selectedId: S.selected, focusId: S.me, labels: S.labels, showTrails: S.trailSec > 0, showRadar: S.radar,
     rounds: currentRounds(),
   });
+  if (S.follow && S.analysis) {
+    const focus = S.selected || S.me;
+    const me = objs.find((o) => o.id === focus);
+    const from = me ? m.project(me.lon, me.lat) : [m.w / 2, m.h / 2];
+    // Keep the arrows clear of the map tools column on the right.
+    const tools = document.querySelector(".map-tools")?.getBoundingClientRect();
+    drawEdgePointers(ctx, m, from, threatsAt(S.t, focus), { top: 48, right: tools ? tools.width + 22 : 22, bottom: 40, left: 22 });
+  }
+  if (S.tapes.length || S.tapeDraft) drawTapes(ctx, m);
+  if (S.tapes.length && Math.abs((S._tapeHudT ?? -1e9) - S.t) > 0.5) { S._tapeHudT = S.t; renderTapeHud(); }
 }
 
 function onMapClick({ px, py }) {
@@ -463,7 +1034,10 @@ function renderObjectList() {
       grp.append(el("div", {
         class: `objrow${o.id === S.selected ? " selected" : ""}${dead ? " dead" : ""}`,
         "data-id": o.id,
-        onclick: () => { select(o.id); const p = sampleTrack(o.pb, S.t) || sampleTrack(o.pb, o.pb.t[0]); if (p) map.setView(p.lon, p.lat); },
+        onclick: (e) => {
+          if (e.shiftKey) { setPadlock(o.id); return; }
+          select(o.id); const p = sampleTrack(o.pb, S.t) || sampleTrack(o.pb, o.pb.t[0]); if (p) map.setView(p.lon, p.lat);
+        },
       },
       el("span", { class: "dot", style: { background: sideColor(o) } }),
       el("span", { class: "nm" }, o.pilot || o.name, o.pilot ? el("small", {}, o.name) : "",
@@ -486,11 +1060,11 @@ const TABS = [
 function renderTabs() {
   const nav = $("tabs");
   nav.innerHTML = "";
-  for (const [id, label] of TABS) {
+  for (const [idx, [id, label]] of TABS.entries()) {
     const count = !S.analysis ? "" : id === "weapons" ? S.analysis.weapons.shots.length + S.analysis.weapons.bursts.length
       : id === "landings" ? S.analysis.landings.length : id === "events" ? S.analysis.timeline.length
       : id === "radar" ? S.analysis.radar.locks.length : "";
-    nav.append(el("button", { class: S.tab === id ? "active" : "", role: "tab", onclick: () => { S.tab = id; renderAllPanels(); } },
+    nav.append(el("button", { class: S.tab === id ? "active" : "", role: "tab", title: `${label} (${idx + 1})`, onclick: () => { S.tab = id; renderAllPanels(); } },
       label, count !== "" ? el("span", { class: "count" }, count) : ""));
   }
 }
@@ -566,7 +1140,9 @@ function renderFlight(panel) {
     el("div", { class: "who" }, o.pilot || o.name, el("small", {}, [o.name, o.group, o.coalition].filter(Boolean).join(" · "))),
     air && o.id !== S.me ? el("button", { onclick: () => { S.me = o.id; renderAllPanels(); map.invalidate(); } }, "This is me") : el("span", { class: "pill on" }, o.id === S.me ? "ME" : o.category)));
   if (!air) {
+    const eng = o.pb?.eng;
     panel.append(el("dl", { class: "kv" }, el("dt", {}, "Type"), el("dd", {}, o.type || "—"),
+      ...(isNum(eng) ? [el("dt", {}, "Engagement range"), el("dd", { title: o.pb.engSrc === "recorded" ? "From the recording" : `From ${o.pb.engSrc}: DCS recordings do not carry it` }, `${fmtDist(eng)} (${o.pb.engSrc})`)] : []),
       el("dt", {}, "First seen"), el("dd", {}, fmtClock(o.firstSeen - S.start)),
       el("dt", {}, "Last seen"), el("dd", {}, fmtClock((o.endsAt ?? o.lastSeen) - S.start)),
       el("dt", {}, "Parent"), el("dd", {}, o.parent ? (S.objects.get(o.parent)?.pilot || S.objects.get(o.parent)?.name || o.parent) : "—")));
@@ -614,7 +1190,8 @@ function updateFlight() {
   drawStick(flightEls.stick, hasInput
     ? { pitch: v.PitchControlInput, roll: v.RollControlInput, yaw: v.YawControlInput }
     : { pitch: v.Elevator, roll: isNum(v.AileronLeft) ? v.AileronLeft : v.AileronRight, yaw: v.Rudder });
-  flightEls.stickLabel.textContent = hasInput ? "pilot inputs" : hasSurf ? "control surfaces" :
+  const readDcs = hasSurf && (S.analysis.dcs?.channelList || []).includes(`${o.id}:Elevator`);
+  flightEls.stickLabel.textContent = hasInput ? "pilot inputs" : hasSurf ? (readDcs ? "control surfaces · read from DCS" : "control surfaces") :
     "not in this recording — install the DCS bridge for live inputs";
 
   const th = v.Throttle;
@@ -631,7 +1208,11 @@ function updateFlight() {
   const add = (k, val) => kv.append(el("dt", {}, k), el("dd", {}, val));
   add("Fuel", fmtMass(v.FuelWeight));
   if (isNum(v.FuelFlowWeight)) add("Fuel flow", `${fmtMass(v.FuelFlowWeight)}/h`);
-  add("Radar", isNum(v.RadarMode) ? (v.RadarMode > 0 ? `ON · ${fmtDist(v.RadarRange)}` : "OFF") : "—");
+  add("Radar", isNum(v.RadarMode) ? (v.RadarMode > 0 ? `ON · ${fmtDist(v.RadarRange)}` : "OFF") : isNum(v.RadarActive) ? (v.RadarActive > 0 ? "ON (DCS)" : "OFF (DCS)") : "—");
+  const row = sceneObjects().find((x) => x.id === o.id);
+  const vol = row && radarVolume(row, { assumed: true });
+  if (vol) add("Radar cone", { recorded: "recorded in the ACMI", dcs: "read from DCS", type: "typical for type", assumed: "assumed (not recorded)" }[vol.source] || vol.source);
+  if (isNum(v.ScanAz)) add("Scan zone", `±${Math.round(v.ScanAz)}° az · ±${fmtNum(v.ScanEl, 1)}° el (DCS)`);
   if (isNum(v.RadarAzimuth)) add("Antenna", `${fmtDeg(v.RadarAzimuth)} az / ${fmtDeg(v.RadarElevation)} el`);
   const locked = v.LockedTarget && (!isNum(v.LockedTargetMode) || v.LockedTargetMode > 0) ? S.objects.get(v.LockedTarget) : null;
   const me = sampleTrack(o.pb, S.t);
@@ -703,8 +1284,26 @@ function outcomePill(o) {
   return el("span", { class: `pill ${cls}` }, o);
 }
 
+function dcsBadge(title = "Reported by DCS itself") { return el("span", { class: "dcs-badge", title }, "DCS"); }
+
+function replayShot(shot) {
+  setLoop(shot.launchTime - 5, (shot.endTime ?? shot.launchTime) + 3, true);
+  const who = shot.targetId && S.objects.has(shot.targetId) ? shot.targetId : shot.launcherId;
+  if (who) select(who);
+  if (S.trailSec === 0 || S.trailSec === 30) { S.trailSec = 90; $("trailSel").value = "90"; }
+  seek(shot.launchTime - 5);
+  togglePlay(true);
+}
+
 function renderWeapons(panel) {
   const w = S.analysis.weapons;
+  const dcs = S.analysis.dcs;
+  if (dcs) {
+    panel.append(el("div", { class: "dcs-note" }, dcsBadge(),
+      ` Hits and kills below are read from DCS (flight log ${dcs.log}: ${dcs.hits ?? 0} hits, ${dcs.kills ?? 0} kills`,
+      dcs.killsCorrected ? `, ${dcs.killsCorrected} kill credit corrected` : "", dcs.killsAdded ? `, ${dcs.killsAdded} added` : "",
+      `). Clock offset ${dcs.offset >= 0 ? "+" : ""}${dcs.offset.toFixed(1)} s, flight paths agree to ${Math.round(dcs.medianError)} m.`));
+  }
   const shooters = Object.values(w.byShooter);
   if (shooters.length) {
     const t = el("table", { class: "grid" }, el("tr", {}, ...["Shooter", "Shots", "Kills", "Pk", "Gun"].map((h) => el("th", {}, h))));
@@ -717,31 +1316,44 @@ function renderWeapons(panel) {
     }
     panel.append(el("div", { class: "section" }, el("h3", {}, "Shooters"), t));
   }
-  const shots = el("table", { class: "grid" }, el("tr", {}, ...["Time", "Shooter", "Weapon", "Target", "Range", "Result"].map((h) => el("th", {}, h))));
+  const shots = el("table", { class: "grid" }, el("tr", {}, ...["", "Time", "Shooter", "Weapon", "Target", "Range", "Result"].map((h) => el("th", {}, h))));
   for (const s of w.shots) {
     const g = s.geometry || {};
+    const key = s.weaponId || `t${s.launchTime}`;
+    const open = S.openShots.has(key);
+    const toggle = () => { open ? S.openShots.delete(key) : S.openShots.add(key); renderAllPanels(); };
     shots.append(el("tr", { class: "click", title: `Aspect ${fmtDeg(g.aspect)} · off-boresight ${fmtDeg(g.offBoresight)} · TOF ${fmtNum(s.timeOfFlight, 1)}s · closest ${fmtDist(s.closestApproach)}`,
-      onclick: () => { seek(s.launchTime - 3); if (s.launcherId) select(s.launcherId); } },
+      onclick: (e) => { if (e.altKey) { toggle(); return; } seek(s.launchTime - 3); if (s.launcherId) select(s.launcherId); } },
+      el("td", { class: "tog", title: "Why did it hit / miss?", onclick: (e) => { e.stopPropagation(); toggle(); } }, open ? "▾" : "▸"),
       el("td", { class: "num" }, fmtClock(s.launchTime - S.start)),
       el("td", {}, s.launcherPilot || s.launcherName || "?"),
       el("td", {}, s.weaponName),
       el("td", {}, s.targetPilot || s.targetName || "—"),
       el("td", { class: "num" }, fmtDist(g.range)),
-      el("td", {}, outcomePill(s.outcome))));
+      el("td", {}, outcomePill(s.outcome), s.dcsHit ? dcsBadge(`DCS reported a hit on ${s.dcsHit}`) : s.dcsConfirmed ? dcsBadge("DCS reported this launch") : "")));
+    if (open) {
+      const card = buildShotCard(s, { objects: S.objects, start: S.start, seek, onReplay: replayShot, charts });
+      shots.append(el("tr", { class: "shotcard-row" }, el("td", { colspan: 7 }, card)));
+    }
   }
   panel.append(el("div", { class: "section" }, el("h3", {}, "Missiles, rockets & bombs"), w.shots.length ? shots : el("div", { class: "empty" }, "None")));
   if (w.bursts.length) {
-    const b = el("table", { class: "grid" }, el("tr", {}, ...["Time", "Shooter", "Rounds", "On target", "Target", "Range", "Result"].map((h) => el("th", {}, h))));
+    const hasDcs = w.bursts.some((x) => isNum(x.dcsHits));
+    const heads = ["Time", "Shooter", "Rounds", "On target", ...(hasDcs ? ["DCS hits"] : []), "Target", "Range", "Result"];
+    const b = el("table", { class: "grid" }, el("tr", {}, ...heads.map((h) => el("th", { title: h === "DCS hits" ? "Hits DCS itself reported for this burst" : h === "On target" ? "Rounds whose recorded path passed within 12 m of the target" : null }, h))));
     for (const x of w.bursts) {
       const hits = isNum(x.roundsOnTarget) && x.rounds ? `${x.roundsOnTarget} (${Math.round((100 * x.roundsOnTarget) / x.rounds)}%)` : "—";
+      const dcsTargets = x.dcsHitTargets ? Object.entries(x.dcsHitTargets).map(([k, v]) => `${k} ×${v}`).join(", ") : "";
       b.append(el("tr", {
         class: "click",
         title: [x.weaponName, isNum(x.fireRate) ? `${Math.round(x.fireRate)} rds/s recorded` : "", isNum(x.timeOfFlight) ? `mean time of flight ${x.timeOfFlight.toFixed(1)} s` : "",
-          isNum(x.closestApproach) ? `closest round ${x.closestApproach.toFixed(1)} m` : ""].filter(Boolean).join(" · "),
+          isNum(x.closestApproach) ? `closest round ${x.closestApproach.toFixed(1)} m` : "", dcsTargets ? `DCS hits: ${dcsTargets}` : ""].filter(Boolean).join(" · "),
         onclick: () => { seek(x.start - 1.5); select(x.launcherId); if (S.bullets === "off") { S.bullets = "paths"; $("bulletSel").value = "paths"; } },
       },
         el("td", { class: "num" }, fmtClock(x.start - S.start)), el("td", {}, x.launcherPilot || x.launcherName),
-        el("td", { class: "num" }, x.rounds || "trigger"), el("td", { class: "num" }, hits), el("td", {}, x.targetName || "—"),
+        el("td", { class: "num" }, x.rounds || "trigger"), el("td", { class: "num" }, hits),
+        ...(hasDcs ? [el("td", { class: "num" }, isNum(x.dcsHits) ? String(x.dcsHits) : "—")] : []),
+        el("td", {}, x.targetName || "—"),
         el("td", { class: "num" }, fmtDist(x.rangeAtOpen)), el("td", {}, outcomePill(x.kill ? "kill" : "no kill"))));
     }
     panel.append(el("div", { class: "section" }, el("h3", {}, "Gun"), b));
@@ -751,7 +1363,9 @@ function renderWeapons(panel) {
     kills.append(el("div", { class: "ev", style: { padding: "4px 0", cursor: "pointer" }, onclick: () => seek(k.time - 5) },
       el("span", { class: "num muted" }, fmtClock(k.time - S.start), "  "),
       el("b", { class: "k-kill" }, k.victimPilot || k.victimName), " ",
-      k.killerId ? `← ${k.killerPilot || k.killerName} (${k.weaponName})` : `destroyed (${k.cause})`));
+      k.killerId ? `← ${k.killerPilot || k.killerName} (${k.weaponName})` : `destroyed (${k.cause})`,
+      k.confirmedBy === "DCS" ? dcsBadge("DCS reported this kill") : "",
+      k.note ? el("div", { class: "faint", style: { fontSize: "11px", marginLeft: "52px" } }, k.note) : ""));
   }
   panel.append(el("div", { class: "section" }, el("h3", {}, "Kills & losses"), w.kills.length ? kills : el("div", { class: "empty" }, "None")));
 }
@@ -777,7 +1391,19 @@ function renderLandings(panel) {
     card.append(el("div", { class: "tiles" },
       miniTile("Touchdown", fmtSpeed(td.ias)), miniTile("Sink", units.metric ? `${fmtNum(td.sinkRate, 1)} m/s` : `${Math.round(td.sinkRateFpm ?? NaN) || "—"} fpm`),
       miniTile("AOA", fmtDeg(td.aoa, 1)), miniTile("Crab", fmtDeg(td.crab, 1)), miniTile("Bank", fmtDeg(td.bank, 1)),
-      miniTile("Rollout", fmtDist(l.rollout?.distance))));
+      miniTile("Rollout", fmtShort(l.rollout?.distance))));
+    if (l.runway) {
+      const rw = l.runway;
+      const tdz = isNum(l.touchdownFromThreshold) && l.touchdownFromThreshold >= 0 && l.touchdownFromThreshold <= 914;
+      card.append(el("div", { class: "tiles", style: { marginTop: "6px" } },
+        el("div", { class: "tile", title: `Runway geometry read from DCS: ${Math.round(rw.length)} m × ${Math.round(rw.width)} m, heading ${fmtHdg(rw.heading)}` },
+          el("div", { class: "k" }, "Runway", rw.source === "DCS" ? dcsBadge("Runway position, heading and length read from DCS") : ""),
+          el("div", { class: "v" }, `${rw.airbase} ${rw.name}`)),
+        el("div", { class: "tile", title: "Touchdown distance past the landing threshold (touchdown zone: first 914 m / 3000 ft)" },
+          el("div", { class: "k" }, "From threshold"), el("div", { class: `v ${tdz ? "" : "warn"}` }, fmtShort(l.touchdownFromThreshold))),
+        el("div", { class: "tile", title: "Runway left ahead when the rollout ended" },
+          el("div", { class: "k" }, "Remaining"), el("div", { class: `v ${isNum(l.runwayRemaining) && l.runwayRemaining < 300 ? "danger" : ""}` }, fmtShort(l.runwayRemaining)))));
+    }
     const raw = l.profile || {};
     const keep = (raw.distance || []).map((d, i) => (d <= 6 * 1852 ? i : -1)).filter((i) => i >= 0);
     const prof = { t: keep.map((i) => raw.t[i]), distance: keep.map((i) => raw.distance[i]),
@@ -838,7 +1464,7 @@ function renderLandings(panel) {
     for (const x of tos) {
       t.append(el("tr", { class: "click", onclick: () => seek(x.time - 20) },
         el("td", { class: "num" }, fmtClock(x.time - S.start)), el("td", {}, x.pilot || x.aircraftName), el("td", {}, x.location),
-        el("td", { class: "num" }, fmtSpeed(x.liftoffIas)), el("td", { class: "num" }, fmtDist(x.groundRollM)),
+        el("td", { class: "num" }, fmtSpeed(x.liftoffIas)), el("td", { class: "num" }, fmtShort(x.groundRollM)),
         el("td", { class: "num" }, isNum(x.gearUpAfterS) ? `+${x.gearUpAfterS.toFixed(1)}s` : "—")));
     }
     panel.append(el("div", { class: "section" }, el("h3", {}, "Takeoffs"), t));
@@ -886,7 +1512,7 @@ function renderEvents(panel) {
   const chips = el("div", { class: "chips" });
   for (const k of kinds) {
     chips.append(el("button", { class: S.eventFilter.has(k) ? "" : "active", onclick: () => {
-      S.eventFilter.has(k) ? S.eventFilter.delete(k) : S.eventFilter.add(k); renderAllPanels();
+      S.eventFilter.has(k) ? S.eventFilter.delete(k) : S.eventFilter.add(k); stopsCache = null; renderAllPanels();
     } }, k));
   }
   const mine = pref("evMine", "0") === "1";
@@ -897,7 +1523,8 @@ function renderEvents(panel) {
   for (const it of S.analysis.timeline) {
     if (S.eventFilter.has(it.kind)) continue;
     if (mine && S.selected && !it.objectIds.includes(S.selected)) continue;
-    list.append(el("div", { class: "ev", "data-t": it.time, onclick: () => seek(it.time - 3) },
+    list.append(el("div", { class: "ev", "data-t": it.time, onclick: () => seek(it.time - 3),
+      ondblclick: () => { setLoop(it.time - 10, it.time + 20, true); seek(it.time - 10); togglePlay(true); } },
       el("span", { class: "t" }, fmtClock(it.time - S.start)), el("span", { class: `k k-${it.kind}` }, it.kind), el("span", {}, it.text)));
   }
   panel.append(list);

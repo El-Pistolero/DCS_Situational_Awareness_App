@@ -42,6 +42,12 @@ export function fmtDist(m, { suffix = true, precise = false } = {}) {
   return `${nm < 10 || precise ? nm.toFixed(1) : Math.round(nm)}${suffix ? " nm" : ""}`;
 }
 
+/** Short distances (runway, rollout): feet or metres rather than nm/km. */
+export function fmtShort(m) {
+  if (!isNum(m)) return "—";
+  return units.metric ? `${Math.round(m).toLocaleString()} m` : `${Math.round(m * M_TO_FT).toLocaleString()} ft`;
+}
+
 export function fmtVs(mps) {
   if (!isNum(mps)) return "—";
   return units.metric
@@ -248,4 +254,71 @@ export function sampleTrack(tr, t) {
     hdg = (a + wrap180(b - a) * f + 360) % 360;
   }
   return { lon: lerp(tr.lon), lat: lerp(tr.lat), alt: lerp(tr.alt), hdg, pitch: lerp(tr.pitch), roll: lerp(tr.roll), i };
+}
+
+// --- geometry helpers shared by the tape, padlock and threat pointers ---------
+
+/** Hostile if both sides are known and differ. */
+export function isHostile(a, b) {
+  const side = (o) => {
+    const c = (o?.coalition || "").toLowerCase();
+    if (!c || c.includes("neutral") || c.includes("unknown")) return null;
+    return c;
+  };
+  const sa = side(a), sb = side(b);
+  return !!sa && !!sb && sa !== sb;
+}
+
+/** Straight-line distance between two points given as lon/lat/alt (m). */
+export function slantRange(lonA, latA, altA, lonB, latB, altB) {
+  const g = distance(lonA, latA, lonB, latB);
+  const dz = isNum(altA) && isNum(altB) ? altB - altA : 0;
+  return Math.hypot(g, dz);
+}
+
+/** Aspect angle of target T seen from O: 180 = T flying straight at O (hot). */
+export function aspectDeg(tLon, tLat, tHdg, oLon, oLat) {
+  return Math.abs(wrap180(bearing(tLon, tLat, oLon, oLat) - tHdg + 180));
+}
+
+const RAMP_SEQ = [[0.12, 0.2, 0.62], [0.12, 0.62, 0.86], [0.3, 0.82, 0.45], [0.98, 0.84, 0.25], [0.95, 0.3, 0.25]];
+
+/**
+ * Colour for a value: kind "seq" (dark blue -> red), "div" (red - grey - green,
+ * centred on 0 with a grey dead band) or "limit" (seq, magenta above `limit`).
+ * Returns [r, g, b] in 0..1.
+ */
+export function rampColor(v, lo, hi, kind = "seq", limit = null) {
+  if (!isNum(v)) return null;
+  if (kind === "limit" && isNum(limit) && v > limit) return [1, 0.25, 0.95];
+  if (kind === "div") {
+    const m = Math.max(Math.abs(lo), Math.abs(hi)) || 1;
+    const f = Math.max(-1, Math.min(1, v / m));
+    if (Math.abs(v) < (isNum(limit) ? limit : 3)) return [0.62, 0.66, 0.7];
+    return f < 0 ? [0.62 + 0.36 * -f, 0.66 - 0.4 * -f, 0.7 - 0.45 * -f] : [0.62 - 0.32 * f, 0.66 + 0.24 * f, 0.7 - 0.3 * f];
+  }
+  const f = Math.max(0, Math.min(1, (v - lo) / (hi - lo || 1))) * (RAMP_SEQ.length - 1);
+  const i = Math.min(RAMP_SEQ.length - 2, Math.floor(f)), k = f - i;
+  const a = RAMP_SEQ[i], b = RAMP_SEQ[i + 1];
+  return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
+}
+
+/** CSS gradient matching rampColor, for legends. */
+export function rampCss(kind = "seq") {
+  const c = (rgb) => `rgb(${rgb.map((x) => Math.round(x * 255)).join(",")})`;
+  if (kind === "div") return `linear-gradient(90deg, ${c([0.98, 0.26, 0.25])}, ${c([0.62, 0.66, 0.7])} 45%, ${c([0.62, 0.66, 0.7])} 55%, ${c([0.3, 0.9, 0.4])})`;
+  const stops = RAMP_SEQ.map((rgb, i) => `${c(rgb)} ${(i / (RAMP_SEQ.length - 1)) * (kind === "limit" ? 85 : 100)}%`);
+  if (kind === "limit") stops.push("rgb(255,64,242) 85%", "rgb(255,64,242) 100%");
+  return `linear-gradient(90deg, ${stops.join(", ")})`;
+}
+
+/** mm:ss from seconds, for relative labels like "+12s". */
+export function fmtRel(sec) {
+  return isNum(sec) ? `${sec >= 0 ? "+" : "−"}${Math.round(Math.abs(sec))}s` : "—";
+}
+
+/** Speed of sound (m/s) at altitude h (m), ISA. */
+export function speedOfSound(h) {
+  const T = Math.max(216.65, 288.15 - 0.0065 * (isNum(h) ? h : 0));
+  return 20.05 * Math.sqrt(T);
 }

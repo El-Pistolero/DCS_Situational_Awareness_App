@@ -340,10 +340,15 @@ export function drawScene(ctx, map, objects, opts = {}) {
       const weapon = o.category === "weapon";
       ctx.lineWidth = weapon ? 1.4 : o.id === opts.focusId ? 2.2 : 1.5;
       const n = trail.length;
+      const tc = !weapon && o.trailColors && o.trailColors.length === n ? o.trailColors : null;
       let prev = map.project(trail[0][0], trail[0][1]);
       for (let i = 1; i < n; i++) {
         const p = map.project(trail[i][0], trail[i][1]);
-        ctx.strokeStyle = withAlpha(weapon ? "#ffffff" : color, (weapon ? 0.55 : 0.75) * (0.15 + 0.85 * (i / n)));
+        const alpha = (weapon ? 0.55 : tc ? 0.9 : 0.75) * (0.15 + 0.85 * (i / n));
+        const c = tc && tc[i];
+        ctx.strokeStyle = c ? `rgba(${Math.round(c[0] * 255)},${Math.round(c[1] * 255)},${Math.round(c[2] * 255)},${alpha})`
+          : withAlpha(weapon ? "#ffffff" : color, alpha);
+        if (tc) ctx.lineWidth = o.id === opts.focusId ? 3 : 2.2;
         ctx.beginPath(); ctx.moveTo(prev[0], prev[1]); ctx.lineTo(p[0], p[1]); ctx.stroke();
         prev = p;
       }
@@ -438,6 +443,89 @@ export function drawScene(ctx, map, objects, opts = {}) {
       }
     }
   }
+  return hits;
+}
+
+/**
+ * Where the ray from (x0, y0) towards (x1, y1) leaves the rectangle
+ * [inset, w - inset] x [inset, h - inset].  {x, y, ang} with ang the ray's
+ * screen angle, or null when (x1, y1) is inside the rectangle.
+ */
+export function edgeAnchor(x0, y0, x1, y1, w, h, inset = 22) {
+  const ins = typeof inset === "number" ? { top: inset, right: inset, bottom: inset, left: inset } : { top: 22, right: 22, bottom: 22, left: 22, ...inset };
+  const L = ins.left, T = ins.top, Rr = w - ins.right, B = h - ins.bottom;
+  if (x1 >= L && x1 <= Rr && y1 >= T && y1 <= B) return null;
+  // Start from inside the rectangle even when the origin is off screen.
+  const cx = Math.max(L, Math.min(Rr, x0)), cy = Math.max(T, Math.min(B, y0));
+  const dx = x1 - cx, dy = y1 - cy;
+  let k = Infinity;
+  if (dx > 0) k = Math.min(k, (Rr - cx) / dx); else if (dx < 0) k = Math.min(k, (L - cx) / dx);
+  if (dy > 0) k = Math.min(k, (B - cy) / dy); else if (dy < 0) k = Math.min(k, (T - cy) / dy);
+  if (!Number.isFinite(k)) return null;
+  return { x: cx + dx * k, y: cy + dy * k, ang: Math.atan2(dy, dx) };
+}
+
+/**
+ * Arrowheads on the map edge pointing at off-screen contacts.
+ * list: [{id, lon, lat, color, text, dashed?}]; inset: px or {top, right, bottom, left}
+ * (to keep arrows clear of HUD panels).  Returns hitboxes [{id, x, y, r, item}].
+ */
+export function drawEdgePointers(ctx, map, from, list, inset = 22) {
+  const hits = [];
+  const placed = [];
+  ctx.save();
+  ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
+  ctx.textBaseline = "middle";
+  // Most urgent first, so it keeps the exact spot and others stack beside it.
+  const ordered = [...list].sort((p, q) => (q.level ?? 0) - (p.level ?? 0));
+  for (const it of ordered) {
+    const [x1, y1] = map.project(it.lon, it.lat);
+    const a = edgeAnchor(from[0], from[1], x1, y1, map.w, map.h, inset);
+    if (!a) continue;
+    // Contacts on (nearly) the same bearing: shift along the edge so every
+    // arrow and tag stays readable.
+    const clash = placed.filter((p) => Math.hypot(p.x - a.x, p.y - a.y) < 22).length;
+    if (clash) {
+      const along = Math.abs(Math.cos(a.ang)) > Math.abs(Math.sin(a.ang)) ? [0, 1] : [1, 0];
+      a.x += along[0] * 24 * clash; a.y += along[1] * 24 * clash;
+    }
+    placed.push({ x: a.x, y: a.y });
+    if (it.dashed) {
+      ctx.save();
+      ctx.setLineDash([6, 6]);
+      ctx.strokeStyle = it.color;
+      ctx.globalAlpha = 0.7;
+      ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.moveTo(from[0], from[1]); ctx.lineTo(a.x, a.y); ctx.stroke();
+      ctx.restore();
+    }
+    ctx.save();
+    ctx.translate(a.x, a.y);
+    ctx.rotate(a.ang);
+    ctx.fillStyle = it.color;
+    ctx.strokeStyle = "rgba(0,0,0,0.75)";
+    ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(10, 0); ctx.lineTo(-6, -7); ctx.lineTo(-2, 0); ctx.lineTo(-6, 7); ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    ctx.restore();
+    if (it.text) {
+      // Tag on the inward side of the arrow.
+      const tw = ctx.measureText(it.text).width;
+      const ix = a.x - Math.cos(a.ang) * 16, iy = a.y - Math.sin(a.ang) * 16;
+      let tx = Math.cos(a.ang) > 0.3 ? ix - tw : Math.cos(a.ang) < -0.3 ? ix : ix - tw / 2;
+      tx = Math.max(4, Math.min(map.w - tw - 4, tx));
+      // On the top/bottom edge, stacked arrows get stacked tags too.
+      const vert = Math.sin(a.ang) > 0.3 ? -1 : Math.sin(a.ang) < -0.3 ? 1 : 0;
+      const ty = Math.max(10, Math.min(map.h - 10, iy + vert * (8 + 13 * clash)));
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(6,9,13,0.9)";
+      ctx.strokeText(it.text, tx, ty);
+      ctx.fillStyle = it.color;
+      ctx.fillText(it.text, tx, ty);
+    }
+    hits.push({ id: it.id, x: a.x, y: a.y, r: 16, item: it });
+  }
+  ctx.restore();
   return hits;
 }
 

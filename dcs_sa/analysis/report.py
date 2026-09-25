@@ -103,7 +103,8 @@ def analyze(rec: Recording, player_names: Iterable[str] = (), dcs: Optional[Dict
         },
         "timeline": timeline,
         "dcs": ({"log": dcs["log"], "offset": dcs["offset"], "medianError": dcs["medianError"],
-                 "channels": len(dcs["channels"]), "events": len(dcs["events"]), "theatre": dcs.get("theatre"),
+                 "channels": len(dcs["channels"]), "channelList": dcs["channels"], "events": len(dcs["events"]),
+                 "theatre": dcs.get("theatre"),
                  **(dcs_stats or {})} if dcs else None),
         "runways": bool(airbases),
     })

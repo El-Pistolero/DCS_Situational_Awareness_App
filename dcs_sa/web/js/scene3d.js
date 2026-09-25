@@ -3,7 +3,7 @@
 
 import * as THREE from "three";
 import { OrbitControls } from "/static/vendor/OrbitControls.js";
-import { isNum, sideColor, units, M_TO_FT, MPS_TO_KT } from "./util.js";
+import { fmtDist, isNum, sideColor, slantRange, units, M_TO_FT, MPS_TO_KT } from "./util.js";
 import { buildF16, isF16 } from "./f16.js";
 import { radarVolume } from "./symbols.js";
 
@@ -535,8 +535,11 @@ export class Scene3D {
     const trailGeo = new THREE.BufferGeometry();
     trailGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(3 * 1200), 3));
     trailGeo.setDrawRange(0, 0);
+    const weapon = o.category === "weapon";
+    if (!weapon) trailGeo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(3 * 1200), 3));
+    // Aircraft trails carry per-vertex colour (side colour, or the trail-colour ramp).
     const trail = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({
-      color: o.category === "weapon" ? 0xe8e8e8 : color, transparent: true, opacity: o.category === "weapon" ? 0.85 : 0.75,
+      color: weapon ? 0xe8e8e8 : 0xffffff, vertexColors: !weapon, transparent: true, opacity: weapon ? 0.85 : 0.8,
     }));
     trail.frustumCulled = false;
     this.scene.add(trail);
@@ -590,7 +593,7 @@ export class Scene3D {
    * objects: [{id, category, type, lon, lat, alt, hdg, pitch, roll, trail, name, pilot,
    *            coalition, color, dead, lock, v:{EngagementRange}}]
    */
-  update(objects, { focusId = null, selectedId = null, radar = "all", rounds = [] } = {}) {
+  update(objects, { focusId = null, selectedId = null, radar = "all", rounds = [], padlockId = null } = {}) {
     const focus = objects.find((o) => o.id === focusId) || objects.find((o) => o.id === selectedId) ||
       objects.find((o) => ["fixedwing", "rotorcraft"].includes(o.category)) || objects[0];
     if (!focus) return;
@@ -625,11 +628,24 @@ export class Scene3D {
       // Trail
       const tr = o.trail || [];
       const arr = e.trail.geometry.attributes.position.array;
+      const colAttr = e.trail.geometry.attributes.color;
+      const col = colAttr?.array;
+      const tc = o.trailColors && o.trailColors.length === tr.length ? o.trailColors : null;
+      const base = e.baseColor;
       const start = Math.max(0, tr.length - 400);
       let k = 0;
       for (let i = start; i < tr.length; i++) {
         const v = this.toLocal(tr[i][0], tr[i][1], tr[i][2]);
+        if (col) {
+          const c = tc?.[i];
+          col[k] = c ? c[0] : base.r; col[k + 1] = c ? c[1] : base.g; col[k + 2] = c ? c[2] : base.b;
+        }
         arr[k++] = v.x; arr[k++] = v.y; arr[k++] = v.z;
+      }
+      if (col) {
+        const c = tc?.[tc.length - 1];
+        col[k] = c ? c[0] : base.r; col[k + 1] = c ? c[1] : base.g; col[k + 2] = c ? c[2] : base.b;
+        colAttr.needsUpdate = true;
       }
       arr[k++] = p.x; arr[k++] = p.y; arr[k++] = p.z;
       e.trail.geometry.setDrawRange(0, k / 3);
@@ -666,7 +682,25 @@ export class Scene3D {
         this.controls.target.copy(fp);
         this.camera.position.copy(fp).add(new THREE.Vector3(-4000, 2500, 6000));
       }
-      if (this.mode === "chase") {
+      const target = this.mode === "padlock" && padlockId && padlockId !== focus.id ? this.objects.get(padlockId) : null;
+      this._padTarget = target?.pos ? { from: focus, to: target.obj } : null;
+      if (this._padTarget) {
+        // Padlock: behind the jet on the line of sight, looking a third of
+        // the way to the target, so both stay in frame.
+        const tp = target.pos;
+        const dir = tp.clone().sub(fp).normalize();
+        const slant = slantRange(focus.lon, focus.lat, focus.alt, target.obj.lon, target.obj.lat, target.obj.alt);
+        const back = slant < 1000 ? 120 : 60;
+        const want = fp.clone().sub(dir.clone().multiplyScalar(back)).add(new THREE.Vector3(0, back * 0.3, 0));
+        const now = performance.now();
+        const dt = this._lastChase ? (now - this._lastChase) / 1000 : 1;
+        this._lastChase = now;
+        const snap = !this.lastFocusPos || this.camera.position.distanceTo(want) > 600;
+        this.camera.position.lerp(want, snap ? 1 : 1 - Math.exp(-dt / 0.08));
+        this.camera.lookAt(fp.clone().lerp(tp, 0.3));
+        this._updatePadLine(fp, tp, slant);
+      } else this._updatePadLine(null);
+      if (this.mode === "chase" || (this.mode === "padlock" && !this._padTarget)) {
         const hdg = (focus.hdg || 0) * D2R;
         const back = 42, up = 11; // close enough to see the jet's shape
         const want = fp.clone().add(new THREE.Vector3(Math.sin(hdg) * -back, up, Math.cos(hdg) * back));
@@ -681,6 +715,72 @@ export class Scene3D {
       }
       this.lastFocusPos = fp.clone();
     }
+  }
+
+  _updatePadLine(a, b, slant) {
+    if (!this.padLine) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(6), 3));
+      this.padLine = new THREE.Line(g, new THREE.LineDashedMaterial({ color: 0xffd166, dashSize: 30, gapSize: 20, transparent: true, opacity: 0.9, depthTest: false }));
+      this.padLine.frustumCulled = false;
+      this.padLine.renderOrder = 10;
+      this.scene.add(this.padLine);
+      this.padLabel = document.createElement("div");
+      this.padLabel.className = "lbl3d pad";
+      this.labelLayer.append(this.padLabel);
+    }
+    if (!a) { this.padLine.visible = false; this.padLabel.style.display = "none"; this._padMid = null; return; }
+    const arr = this.padLine.geometry.attributes.position.array;
+    arr.set([a.x, a.y, a.z, b.x, b.y, b.z]);
+    this.padLine.geometry.attributes.position.needsUpdate = true;
+    this.padLine.computeLineDistances();
+    // Dash length scales with range so the line reads as dashed at any distance.
+    const d = a.distanceTo(b);
+    this.padLine.material.dashSize = Math.max(8, d / 60);
+    this.padLine.material.gapSize = Math.max(6, d / 90);
+    this.padLine.visible = true;
+    this._padMid = a.clone().lerp(b, 0.5);
+    this.padLabel.textContent = fmtDist(slant);
+  }
+
+  /** Off-screen threat arrows: [{id, color, text}] (positions come from the scene). */
+  setPointers(list) {
+    this._pointerList = list || [];
+    this._ptrPool ||= [];
+    while (this._ptrPool.length < this._pointerList.length) {
+      const d = document.createElement("div");
+      d.className = "ptr3d";
+      d.append(document.createElement("i"), document.createElement("span"));
+      this.labelLayer.append(d);
+      this._ptrPool.push(d);
+    }
+  }
+
+  _pointers(w, h) {
+    const v = new THREE.Vector3();
+    const list = this._pointerList || [];
+    (this._ptrPool || []).forEach((d, i) => {
+      const it = list[i];
+      const e = it && this.objects.get(it.id);
+      if (!e?.pos) { d.style.display = "none"; return; }
+      v.copy(e.pos).project(this.camera);
+      let x = v.x, y = v.y;
+      const behind = v.z > 1;
+      if (behind) { x = -x; y = -y; }
+      let k = 1 / Math.hypot(x / 0.92, y / 0.88);
+      if (!behind && k >= 1) { d.style.display = "none"; return; } // on screen: its label is enough
+      if (!Number.isFinite(k) || Math.hypot(x, y) < 1e-6) { x = 0; y = -0.88; k = 1; }
+      if (behind) k = Math.min(k, 1 / Math.hypot(x / 0.92, y / 0.88));
+      const X = x * k, Y = y * k;
+      const px = ((X + 1) / 2) * w, py = ((1 - Y) / 2) * h;
+      d.style.display = "block";
+      d.style.color = it.color;
+      d.style.transform = `translate(${px}px, ${py}px)`;
+      d.firstChild.style.transform = `translate(-50%, -50%) rotate(${Math.atan2(-Y, X)}rad)`;
+      const span = d.lastChild;
+      if (span.textContent !== it.text) span.textContent = it.text;
+      span.style.transform = `translate(${X > 0.3 ? "calc(-100% - 14px)" : X < -0.3 ? "14px" : "-50%"}, ${Y > 0.3 ? "12px" : Y < -0.3 ? "calc(-100% - 12px)" : "-50%"})`;
+    });
   }
 
   // -- radar -------------------------------------------------------------------------
@@ -837,7 +937,7 @@ export class Scene3D {
       const cat = e.obj?.category;
       const div = cat === "weapon" ? 200 : ["fixedwing", "rotorcraft", "air"].includes(cat) ? 260 : 2500;
       const s = Math.min(cat === "sea" ? 6 : 60, Math.max(1, d / div));
-      e.model.scale.setScalar(this.mode === "chase" && e.obj?.id === this.focusId ? 1 : s);
+      e.model.scale.setScalar((this.mode === "chase" || this.mode === "padlock") && e.obj?.id === this.focusId ? 1 : s);
     }
     this.renderer.render(this.scene, this.camera);
     this._labels();
@@ -868,6 +968,13 @@ export class Scene3D {
       e.label.style.color = o.category === "weapon" ? "#f2f2f2" : e.color;
       e.label.classList.toggle("focus", o.id === this.focusId);
     }
+    if (this._padMid && this.padLabel) {
+      v.copy(this._padMid).project(this.camera);
+      const show = v.z < 1 && Math.abs(v.x) < 1 && Math.abs(v.y) < 1;
+      this.padLabel.style.display = show ? "block" : "none";
+      if (show) this.padLabel.style.transform = `translate(${((v.x + 1) / 2) * w + 6}px, ${((1 - v.y) / 2) * h - 6}px)`;
+    }
+    this._pointers(w, h);
   }
 
   _bindPick() {
@@ -881,7 +988,7 @@ export class Scene3D {
       const ray = new THREE.Raycaster();
       ray.setFromCamera(ndc, this.camera);
       const hit = ray.intersectObjects(this._pickables, false)[0];
-      if (hit && this.onPick) this.onPick(hit.object.userData.id);
+      if (hit && this.onPick) this.onPick(hit.object.userData.id, { shift: e.shiftKey });
     });
     el.addEventListener("pointerdown", () => { if (this.mode === "orbit") this.userMoved = true; });
   }

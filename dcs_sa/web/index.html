@@ -24,6 +24,7 @@
       </select>
       <button id="btnDebrief" title="Download a text debrief" disabled>Debrief .md</button>
       <a href="/live" target="_blank" rel="noopener"><button title="Open the live second-screen view">Live view ↗</button></a>
+      <button id="btnKeys" title="Keyboard shortcuts (?)">⌨</button>
     </div>
   </header>
 
@@ -36,17 +37,23 @@
     <canvas class="map" id="map" aria-label="Tactical map"></canvas>
     <div class="map-hud tl hidden" id="hudSel"></div>
     <div class="map-hud bl hidden" id="hudHover"></div>
+    <div class="map-hud tapes hidden" id="tapeHud"></div>
+    <div class="map-hud br hidden" id="trailLegend"></div>
+    <div class="evchip hidden" id="evChip"></div>
     <div class="map-tools">
       <div class="row">
-        <div class="seg"><button id="btn2d" class="active">2D</button><button id="btn3d">3D</button></div>
+        <div class="seg"><button id="btn2d" class="active" title="2D map (V)">2D</button><button id="btn3d" title="3D view (V)">3D</button></div>
       </div>
       <div class="row only3d">
-        <div class="seg"><button id="btnOrbit" class="active" title="Drag to orbit, scroll to zoom">Orbit</button><button id="btnChase" title="Camera behind the selected aircraft">Chase</button></div>
+        <div class="seg"><button id="btnOrbit" class="active" title="Drag to orbit, scroll to zoom (C cycles)">Orbit</button><button id="btnChase" title="Camera behind the selected aircraft (C cycles)">Chase</button><button id="btnPadlock" title="Keep the target in view (C cycles, T changes target)">Padlock</button></div>
       </div>
       <div class="row only3d">
         <select id="exagSel" title="Terrain height"><option value="1">Terrain 1×</option><option value="2">Terrain 2×</option><option value="3">Terrain 3×</option></select>
       </div>
       <div class="row only2d"><select id="layerSel" title="Base map"></select></div>
+      <div class="row only2d">
+        <button id="btnMeasure" title="Measure (M) · or Shift-drag">Measure</button>
+      </div>
       <div class="row">
         <button id="btnFollow" title="Keep the selected aircraft centred (F)">Follow</button>
         <button id="btnFit" title="Zoom to fit everything">Fit</button>
@@ -66,6 +73,16 @@
           <option value="300">Trails 5 min</option>
           <option value="1000000">Trails full</option>
           <option value="0">Trails off</option>
+        </select>
+      </div>
+      <div class="row">
+        <select id="trailColorSel" title="Colour trails by">
+          <option value="side">Trail colour: side</option>
+          <option value="alt">Trail colour: altitude</option>
+          <option value="speed">Trail colour: speed</option>
+          <option value="g">Trail colour: G</option>
+          <option value="ps">Trail colour: energy (Ps)</option>
+          <option value="aoa">Trail colour: AOA</option>
         </select>
       </div>
       <div class="row">
@@ -97,14 +114,20 @@
       <div class="btns">
         <button class="play" id="btnPlay" title="Play / pause (Space)">▶</button>
         <select id="speedSel" title="Playback speed">
+          <option value="0.1">0.1×</option><option value="0.25">0.25×</option>
           <option value="0.5">0.5×</option><option value="1">1×</option><option value="2">2×</option>
           <option value="4" selected>4×</option><option value="8">8×</option><option value="16">16×</option>
           <option value="32">32×</option><option value="64">64×</option>
         </select>
       </div>
       <div class="btns">
-        <button class="ghost" id="btnBack" title="Back 10 s (←)">−10s</button>
-        <button class="ghost" id="btnFwd" title="Forward 10 s (→)">+10s</button>
+        <button class="ghost" id="btnBack" title="Back 10 s">−10s</button>
+        <button class="ghost" id="btnFwd" title="Forward 10 s">+10s</button>
+      </div>
+      <div class="btns">
+        <button class="ghost" id="btnPrevEv" title="Previous event (P)">⏮</button>
+        <button class="ghost" id="btnNextEv" title="Next event (N)">⏭</button>
+        <button class="ghost" id="btnLoop" title="Loop: I/O set in/out, L toggle, Shift-drag on the timeline">A–B</button>
       </div>
       <div class="scrub" id="scrub" aria-label="Timeline">
         <div class="track"></div><div class="progress"></div><div class="head"></div>

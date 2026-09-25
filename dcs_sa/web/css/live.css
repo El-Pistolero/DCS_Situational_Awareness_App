@@ -17,7 +17,7 @@ body.live { overflow: hidden; }
 .lv-side section { margin-bottom: 16px; }
 
 .lv-own {
-  position: absolute; left: 10px; top: 10px; display: grid; grid-template-columns: repeat(4, auto); gap: 4px 16px;
+  position: absolute; left: 10px; top: 10px; display: grid; grid-template-columns: repeat(5, auto); gap: 4px 16px;
   background: rgba(8,12,17,0.82); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; font-family: var(--mono);
 }
 .lv-own .k { font-size: 10px; color: var(--muted); letter-spacing: 0.06em; }
@@ -81,3 +81,31 @@ canvas.rwr { width: 100%; aspect-ratio: 1; max-width: 260px; display: block; mar
   .lv-top { flex-wrap: wrap; padding: 6px 10px; height: auto; }
   .lv-own { grid-template-columns: repeat(3, auto); }
 }
+
+/* ---------- Trends, Ps, fuel ---------- */
+.trend { font-size: 12px; margin-left: 4px; vertical-align: 3px; }
+.trend.up { color: var(--green); }
+.trend.down { color: var(--muted); }
+.trend.fast { color: var(--danger); }
+.lv-own .v.good { color: var(--green); }
+.lv-own .v.bad { color: var(--danger); }
+.lv-own .v.flash { animation: pulse 0.8s infinite alternate; border-radius: 4px; }
+.lv-warn.bingo { background: #6b4a00; border-color: var(--warn); animation: none; top: 64px; font-size: 18px; }
+.lv-warn.hit { background: #5a1a00; border-color: var(--orange); top: 112px; font-size: 18px; animation: none; }
+.threat { cursor: pointer; }
+.threat.pad { outline: 2px solid var(--accent); outline-offset: -2px; }
+.lv-events div.me { color: var(--orange); }
+
+/* ---------- Glance mode ---------- */
+body.glance .lv { grid-template-columns: 1fr 300px; }
+body.glance .lv-top > :not(.brand):not(.lv-status):not(#btnGlance):not(#btnSound) { display: none !important; }
+body.glance .lv-own { grid-template-columns: repeat(2, auto); gap: 6px 22px; padding: 10px 16px; }
+body.glance .lv-own .k { font-size: 12px; }
+body.glance .lv-own .v { font-size: 48px; line-height: 1.05; }
+body.glance .lv-own .trend { font-size: 20px; vertical-align: 14px; }
+body.glance .lv-own .cfg { display: none; }
+body.glance .threat { padding: 12px; min-height: 72px; grid-template-columns: 64px 1fr auto; }
+body.glance .threat .clock { font-size: 40px; }
+body.glance .threat .tag { font-size: 22px; }
+body.glance .threat.l3 { background: #7a1010; }
+body.glance #eventsSec, body.glance #storesSec { display: none; }

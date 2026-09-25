@@ -66,6 +66,11 @@ export class TacticalMap {
     this.dpr = window.devicePixelRatio || 1;
     this.interactive = true;
     this._drag = null;
+    // Measuring: when enabled, Shift-drag (or any drag with tool === "measure")
+    // emits measurestart/measuremove/measureend instead of panning.
+    this.measureEnabled = false;
+    this.tool = null;
+    this._measure = null;
     this._bindEvents();
     this._resizeObserver = new ResizeObserver(() => this.resize());
     this._resizeObserver.observe(canvas);
@@ -184,15 +189,30 @@ export class TacticalMap {
       this.invalidate();
     }, { passive: false });
 
+    const at = (e) => {
+      const r = c.getBoundingClientRect();
+      const px = e.clientX - r.left, py = e.clientY - r.top;
+      return { px, py, lonlat: this.unproject(px, py) };
+    };
     c.addEventListener("pointerdown", (e) => {
-      if (!this.interactive) return;
+      if (!this.interactive || e.button === 2) return;
       c.setPointerCapture(e.pointerId);
+      if (this.measureEnabled && (this.tool === "measure" || e.shiftKey)) {
+        this._measure = { x: e.clientX, y: e.clientY, moved: false, start: at(e) };
+        return;
+      }
       this._drag = { x: e.clientX, y: e.clientY, moved: false, center: [...this.center] };
     });
     c.addEventListener("pointermove", (e) => {
       const r = c.getBoundingClientRect();
       const px = e.clientX - r.left, py = e.clientY - r.top;
-      if (this._drag) {
+      if (this._measure) {
+        if (!this._measure.moved && Math.abs(e.clientX - this._measure.x) + Math.abs(e.clientY - this._measure.y) > 3) {
+          this._measure.moved = true;
+          this.emit("measurestart", this._measure.start);
+        }
+        if (this._measure.moved) this.emit("measuremove", at(e));
+      } else if (this._drag) {
         const dx = e.clientX - this._drag.x, dy = e.clientY - this._drag.y;
         if (Math.abs(dx) + Math.abs(dy) > 3) this._drag.moved = true;
         if (this._drag.moved) {
@@ -207,6 +227,13 @@ export class TacticalMap {
       this.emit("hover", { px, py, lonlat: this.unproject(px, py) });
     });
     const end = (e) => {
+      if (this._measure) {
+        const m = this._measure;
+        this._measure = null;
+        if (m.moved) this.emit("measureend", at(e));
+        else this.emit("click", at(e));
+        return;
+      }
       if (!this._drag) return;
       const r = c.getBoundingClientRect();
       if (!this._drag.moved) {
@@ -216,7 +243,14 @@ export class TacticalMap {
       this._drag = null;
     };
     c.addEventListener("pointerup", end);
-    c.addEventListener("pointercancel", () => { this._drag = null; });
+    c.addEventListener("pointercancel", () => {
+      this._drag = null;
+      if (this._measure) { this._measure = null; this.emit("measurecancel"); }
+    });
+    c.addEventListener("contextmenu", (e) => {
+      const ev = { ...at(e), event: e };
+      this.emit("contextmenu", ev);
+    });
     c.addEventListener("pointerleave", () => this.emit("hover", null));
   }
 

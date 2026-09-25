@@ -115,6 +115,23 @@ class ServerTests(unittest.TestCase):
             analysis = get(f"/api/recording/{key}/analysis")
             self.assertEqual(analysis["player"], "101")
             self.assertIn("101", get(f"/api/recording/{key}/playback")["objects"])
+            summary = get(f"/api/recording/{key}/summary")
+            self.assertEqual(summary["aircraftCount"], 3)
+            self.assertAlmostEqual(summary["duration"], 595.0, delta=1)
+
+            def post(path, body):
+                req = urllib.request.Request(url.rstrip("/") + path, data=json.dumps(body).encode(), method="POST")
+                return json.loads(urllib.request.urlopen(req, timeout=5).read())
+
+            for bad in ("../../etc", "0123456789abcdef", ""):
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    post("/api/open-debrief", {"key": bad})
+                self.assertEqual(ctx.exception.code, 404)
+            self.assertEqual(post("/api/open-debrief", {"key": key}), {"ok": False})  # no desktop window
+            opened = []
+            app.open_debrief = opened.append
+            self.assertEqual(post("/api/open-debrief", {"key": key}), {"ok": True})
+            self.assertEqual(opened, [key])
             html = urllib.request.urlopen(url, timeout=5).read()
             self.assertIn(b"review.js", html)
             with self.assertRaises(urllib.error.HTTPError):

@@ -55,6 +55,10 @@ export class LineChart {
 
   setMarker(x) { this.marker = x; this.draw(); }
   setBands(bands) { this.bands = bands || []; this.draw(); }
+  /** Vertical x-ranges shaded behind the series: [{x0, x1, color}]. */
+  setVBands(bands) { this.vbands = bands || []; this.draw(); }
+  /** Short vertical marks at x positions: [{x, color, w}]. */
+  setMarks(marks) { this.marks = marks || []; this.draw(); }
 
   _sx(x) {
     const { l, r } = this.pad;
@@ -137,6 +141,16 @@ export class LineChart {
     // Series
     ctx.save();
     ctx.beginPath(); ctx.rect(l, t, this.w - l - pr, this.h - t - b); ctx.clip();
+    for (const vb of this.vbands || []) {
+      const xa = this._sx(vb.x0), xb = this._sx(vb.x1);
+      ctx.fillStyle = vb.color;
+      ctx.fillRect(Math.min(xa, xb), t, Math.max(1, Math.abs(xb - xa)), this.h - t - b);
+    }
+    for (const mk of this.marks || []) {
+      const xa = this._sx(mk.x), xb = this._sx(mk.x + (mk.w || 0));
+      ctx.fillStyle = mk.color;
+      ctx.fillRect(Math.min(xa, xb), this.h - b - 8, Math.max(2, Math.abs(xb - xa)), 8);
+    }
     for (const s of this.series) {
       ctx.strokeStyle = s.color;
       ctx.lineWidth = s.width || 1.5;

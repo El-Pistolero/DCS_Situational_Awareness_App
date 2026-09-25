@@ -13,9 +13,10 @@
   <header class="lv-top">
     <div class="brand"><img class="logo" src="/static/icon.png" alt=""><span class="rec" id="recDot"></span> DCS SA · LIVE</div>
     <div class="lv-status" id="status">Not connected</div>
+    <button id="btnGlance" title="Big-number layout (G)">Glance</button>
     <div class="spacer"></div>
-    <div class="seg"><button id="btn2d" class="active">2D</button><button id="btn3d">3D</button></div>
-    <div class="seg only3d"><button id="btnOrbit" class="active">Orbit</button><button id="btnChase">Chase</button></div>
+    <div class="seg"><button id="btn2d" class="active" title="2D map (V)">2D</button><button id="btn3d" title="3D view (V)">3D</button></div>
+    <div class="seg only3d"><button id="btnOrbit" class="active" title="C cycles">Orbit</button><button id="btnChase" title="C cycles">Chase</button><button id="btnPadlock" title="Keep the target in view (C cycles, T changes target)">Padlock</button></div>
     <select id="radarSel" title="Radar cones"><option value="all">Radars: all</option><option value="known">Radars: known</option><option value="focus">Radar: mine</option><option value="none">Radar: off</option></select>
     <select id="bulletSel" title="Gun rounds"><option value="paths">Bullets: on</option><option value="off">Bullets: off</option></select>
     <select id="rangeSel" class="only2d" title="Map range">
@@ -24,13 +25,16 @@
     </select>
     <button id="btnOrient" class="only2d" title="Heading-up / north-up">Heading up</button>
     <select id="layerSel" class="only2d" title="Ground"></select>
-    <button id="btnSound" title="Audible missile warning">🔇 Sound</button>
-    <button id="btnSetup" title="Connection settings">⚙ Connect</button>
+    <button id="btnSound" title="Audible missile warning (S)">🔇 Sound</button>
+    <button id="btnKeys" title="Keyboard shortcuts (?)">⌨</button>
+    <button id="btnSetup" title="Connection settings (Ctrl+,)">⚙ Connect</button>
   </header>
   <main class="lv-map">
     <canvas class="map" id="map"></canvas>
     <div class="lv-own" id="own"></div>
     <div class="lv-warn hidden" id="warn"></div>
+    <div class="lv-warn bingo hidden" id="bingo"></div>
+    <div class="lv-warn hit hidden" id="hitWarn"></div>
     <div class="lv-empty" id="empty">
       <h2>Waiting for telemetry</h2>
       <p>Start DCS with the <b>DCS-SA bridge</b> installed, or connect to <b>Tacview real-time telemetry</b>.</p>
@@ -41,7 +45,7 @@
     <section><h3>Threats</h3><div id="threats" class="threats"></div></section>
     <section id="rwrSec" class="hidden"><h3>RWR</h3><canvas id="rwr" class="rwr"></canvas></section>
     <section id="storesSec" class="hidden"><h3>Stores</h3><div id="stores" class="stores"></div></section>
-    <section><h3>Events</h3><div id="events" class="lv-events"></div></section>
+    <section id="eventsSec"><h3>Events</h3><div id="events" class="lv-events"></div></section>
   </aside>
 </div>
 
@@ -62,6 +66,15 @@
       <select id="rpFile"></select>
       <label>Speed <select id="rpSpeed"><option>1</option><option>2</option><option selected>4</option><option>8</option></select></label>
       <button type="button" id="btnRp">Play</button>
+    </fieldset>
+    <fieldset>
+      <legend>Fuel</legend>
+      <label>Bingo <input id="bingoIn" type="number" min="0" step="100" placeholder="off"> <span id="bingoUnit">lb</span></label>
+      <span class="muted" id="jokerOut">Joker = bingo × 1.2</span>
+    </fieldset>
+    <fieldset>
+      <legend>Glance</legend>
+      <label><input id="autoGlance" type="checkbox"> Switch to Glance when a missile is inbound</label>
     </fieldset>
     <div id="bridgeInfo" class="muted"></div>
     <button type="button" id="btnInstall" style="margin-top:8px">Install DCS bridge into Export.lua</button>
