@@ -13,7 +13,9 @@ Real DCS recordings are messier than the ACMI spec suggests:
 
 from __future__ import annotations
 
+import bisect
 import math
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -138,6 +140,7 @@ class Shot:
     killed_name: Optional[str] = None
     dcs_confirmed: Optional[bool] = None   # DCS reported the launch
     dcs_hit: Optional[str] = None          # what DCS says this weapon hit
+    submunitions: int = 0                  # bomblets it dispensed (AGM-154A, CBUs)
 
     def to_dict(self) -> Dict:
         return _clean(asdict(self))
@@ -203,6 +206,8 @@ class WeaponReport:
     destructions: List[Destruction]
     by_shooter: Dict[str, Dict]
     rounds: Dict[str, int] = field(default_factory=dict)
+    #: dispenser weapon id -> ids of the submunitions it released
+    submunitions: Dict[str, List[str]] = field(default_factory=dict)
 
     def to_dict(self) -> Dict:
         return {
@@ -210,6 +215,7 @@ class WeaponReport:
             "bursts": [b.to_dict() for b in self.bursts],
             "kills": [k.to_dict() for k in self.kills],
             "byShooter": self.by_shooter,
+            "submunitions": self.submunitions,
             "rounds": self.rounds,
         }
 
@@ -510,6 +516,58 @@ def _speed_profile(samples: List[Tuple[float, float, float, float]]) -> Optional
     return best
 
 
+#: Names of bomblets / submunitions (DCS type names, any separator).
+SUBMUNITION_RE = re.compile(r"BLU[-_ ]?(97|108|61|63|26|77|91|92)|PTAB|\bAO[-_ ]?(1|2[._]?5)|MK[-_ ]?118|BL[-_ ]?755|"
+                            r"bomblet|submun|SD[-_ ]?10|HB[-_ ]?876|SKEET|KB[-_ ]?1|BKF", re.I)
+DISPENSE_RADIUS = 800.0   # m: submunitions appear around where the dispenser opened
+DISPENSE_WINDOW = (-2.0, 0.6)  # s: relative to the dispenser's end
+
+
+def _find_submunitions(rec: Recording, weapons: List[Track], platforms: List[Track]) -> Dict[str, str]:
+    """Submunition id -> dispenser id.
+
+    A cluster weapon (AGM-154A, CBU-87/97, RBK...) opens over the target and
+    releases bomblets, which DCS may record as objects of their own.  They
+    appear where the dispenser ended, far from any aircraft, so they would
+    otherwise look like dozens of launcher-less 'shots'.
+    """
+    ends = []
+    for w in weapons:
+        if w.category != "weapon":
+            continue
+        pos = w.position_at(w.last_seen)
+        if pos is not None:
+            ends.append(((w.removed_at or w.last_seen), w, pos))
+    ends.sort(key=lambda x: x[0])
+    times = [e[0] for e in ends]
+    out: Dict[str, str] = {}
+    for w in weapons:
+        if w.category != "weapon" or weapon_kind(w.tags) in ("gun", "missile"):
+            continue
+        first = w.position_at(w.first_seen)
+        if first is None:
+            continue
+        lo = bisect.bisect_left(times, w.first_seen + DISPENSE_WINDOW[0])
+        hi = bisect.bisect_right(times, w.first_seen - DISPENSE_WINDOW[0] + DISPENSE_WINDOW[1])
+        best, best_d = None, DISPENSE_RADIUS
+        for end_t, d, pos in ends[lo:hi]:
+            if d is w or d.first_seen >= w.first_seen - 0.5 or d.id in out:
+                continue
+            if not (end_t + DISPENSE_WINDOW[0] <= w.first_seen <= end_t + DISPENSE_WINDOW[1]):
+                continue
+            dist = geo.slant_range(first[0], first[1], first[2], pos[0], pos[1], pos[2])
+            if dist < best_d:
+                best, best_d = d, dist
+        if best is None:
+            continue
+        named = bool(SUBMUNITION_RE.search(w.name or ""))
+        # Unnamed bombs spawning at a weapon's end point count only if no
+        # aircraft could have dropped them.
+        if named or _find_launcher(rec, w, platforms)[0] is None:
+            out[w.id] = best.id
+    return out
+
+
 def analyze_weapons(rec: Recording, destructions: Optional[Dict[str, Destruction]] = None) -> WeaponReport:
     destructions = destructions if destructions is not None else find_destructions(rec)
     platforms = [tr for tr in rec.tracks.values() if _is_platform(tr)]
@@ -522,8 +580,14 @@ def analyze_weapons(rec: Recording, destructions: Optional[Dict[str, Destruction
     gun_rounds: Dict[str, List[Tuple[Track, List]]] = {}
     round_stats = {"total": 0, "attributed": 0, "implausible": 0}
     frame_cache: Dict[float, List] = {}
+    sub_of = _find_submunitions(rec, weapons, platforms)
+    submunitions: Dict[str, List[str]] = {}
+    for sid, did in sub_of.items():
+        submunitions.setdefault(did, []).append(sid)
 
     for w in weapons:
+        if w.id in sub_of:
+            continue  # part of its dispenser's attack, not a shot of its own
         kind = weapon_kind(w.tags)
         samples = _weapon_samples(w)
         if kind == "gun":
@@ -555,6 +619,7 @@ def analyze_weapons(rec: Recording, destructions: Optional[Dict[str, Destruction
             end_time=end_time,
             time_of_flight=end_time - w.first_seen,
             max_speed=_speed_profile(samples),
+            submunitions=len(submunitions.get(w.id, [])),
         )
 
         target: Optional[Track] = None
@@ -626,6 +691,7 @@ def analyze_weapons(rec: Recording, destructions: Optional[Dict[str, Destruction
         destructions=sorted(destructions.values(), key=lambda d: d.time),
         by_shooter=_tally(shots, bursts, kills, rec),
         rounds=round_stats,
+        submunitions=submunitions,
     )
 
 

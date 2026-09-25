@@ -303,6 +303,7 @@ const RAMP_SEQ = [[0.12, 0.2, 0.62], [0.12, 0.62, 0.86], [0.3, 0.82, 0.45], [0.9
 export function rampColor(v, lo, hi, kind = "seq", limit = null) {
   if (!isNum(v)) return null;
   if (kind === "limit" && isNum(limit) && v > limit) return [1, 0.25, 0.95];
+  if (kind === "limit" && isNum(limit)) hi = limit; // the ramp runs up to the limit, magenta above
   if (kind === "div") {
     const m = Math.max(Math.abs(lo), Math.abs(hi)) || 1;
     const f = Math.max(-1, Math.min(1, v / m));
@@ -315,12 +316,20 @@ export function rampColor(v, lo, hi, kind = "seq", limit = null) {
   return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
 }
 
-/** CSS gradient matching rampColor, for legends. */
-export function rampCss(kind = "seq") {
+/**
+ * CSS gradient matching rampColor, for legends.  For "limit", *limitFrac* is
+ * where the limit sits on the bar (0..1); for "div", *deadFrac* is the grey
+ * dead band's half-width as a fraction of the half-scale.
+ */
+export function rampCss(kind = "seq", { limitFrac = 0.85, deadFrac = 0.05 } = {}) {
   const c = (rgb) => `rgb(${rgb.map((x) => Math.round(x * 255)).join(",")})`;
-  if (kind === "div") return `linear-gradient(90deg, ${c([0.98, 0.26, 0.25])}, ${c([0.62, 0.66, 0.7])} 45%, ${c([0.62, 0.66, 0.7])} 55%, ${c([0.3, 0.9, 0.4])})`;
-  const stops = RAMP_SEQ.map((rgb, i) => `${c(rgb)} ${(i / (RAMP_SEQ.length - 1)) * (kind === "limit" ? 85 : 100)}%`);
-  if (kind === "limit") stops.push("rgb(255,64,242) 85%", "rgb(255,64,242) 100%");
+  if (kind === "div") {
+    const lo = 50 - deadFrac * 50, hi = 50 + deadFrac * 50;
+    return `linear-gradient(90deg, ${c([0.98, 0.26, 0.25])}, ${c([0.62, 0.66, 0.7])} ${lo}%, ${c([0.62, 0.66, 0.7])} ${hi}%, ${c([0.3, 0.9, 0.4])})`;
+  }
+  const top = kind === "limit" ? limitFrac * 100 : 100;
+  const stops = RAMP_SEQ.map((rgb, i) => `${c(rgb)} ${(i / (RAMP_SEQ.length - 1)) * top}%`);
+  if (kind === "limit") stops.push(`rgb(255,64,242) ${top}%`, "rgb(255,64,242) 100%");
   return `linear-gradient(90deg, ${stops.join(", ")})`;
 }
 

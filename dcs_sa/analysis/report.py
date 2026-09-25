@@ -14,6 +14,7 @@ from . import geo
 from .kinematics import derive, flight_stats
 from .landing import analyze_landings
 from .radar import analyze_radar
+from .strike import analyze_strikes, credit_kills, target_summary
 from .timeline import build_timeline
 from .weapons import analyze_weapons, apply_dcs_events, find_destructions
 
@@ -57,10 +58,14 @@ def analyze(rec: Recording, player_names: Iterable[str] = (), dcs: Optional[Dict
     flying, see :mod:`dcsmerge`); *airbases* are runways read from DCS."""
     destructions = find_destructions(rec)
     weapons = analyze_weapons(rec, destructions)
+    strikes = analyze_strikes(rec, weapons)
+    credit_kills(rec, weapons, strikes)
     dcs_stats = apply_dcs_events(weapons, rec, dcs["events"], dcs.get("coverage")) if dcs else None
+    if dcs:
+        _dcs_strike_hits(strikes, dcs["events"])
     landings = analyze_landings(rec, airbases=airbases)
     radar = analyze_radar(rec, {k: v.time for k, v in destructions.items()}, weapons.shots)
-    timeline = build_timeline(rec, weapons, landings, radar)
+    timeline = build_timeline(rec, weapons, landings, radar, strikes)
     if dcs:
         timeline = _add_dcs_timeline(timeline, rec, dcs)
 
@@ -70,6 +75,7 @@ def analyze(rec: Recording, player_names: Iterable[str] = (), dcs: Optional[Dict
         aircraft.append({**tr.summary(), "stats": _json_safe(stats)})
 
     player = guess_player(rec, player_names)
+    sub_of = {sid: did for did, sids in weapons.submunitions.items() for sid in sids}
     bullseye = rec.bullseye()
     bpos = bullseye.position_at(bullseye.first_seen) if bullseye else None
 
@@ -90,10 +96,12 @@ def analyze(rec: Recording, player_names: Iterable[str] = (), dcs: Optional[Dict
         "player": player.id if player else None,
         "bullseye": {"id": bullseye.id, "longitude": bpos[0], "latitude": bpos[1]} if bpos else None,
         "bounds": list(box) if box else None,
-        "objects": [tr.summary() for tr in sorted(rec.tracks.values(), key=lambda t: t.first_seen)
+        "objects": [_object_row(tr, sub_of) for tr in sorted(rec.tracks.values(), key=lambda t: t.first_seen)
                     if tr.category not in ("clutter", "round")],
         "aircraft": aircraft,
         "weapons": weapons.to_dict(),
+        "strikes": [st.to_dict() for st in strikes],
+        "targets": target_summary(rec, strikes),
         "landings": [ld.to_dict() for ld in landings["landings"]],
         "takeoffs": [to.to_dict() for to in landings["takeoffs"]],
         "radar": {
@@ -109,6 +117,27 @@ def analyze(rec: Recording, player_names: Iterable[str] = (), dcs: Optional[Dict
                  **(dcs_stats or {})} if dcs else None),
         "runways": bool(airbases),
     })
+
+
+def _object_row(tr: Track, sub_of: Dict[str, str]) -> Dict:
+    row = tr.summary()
+    if tr.id in sub_of:
+        row["dispenser"] = sub_of[tr.id]  # a bomblet: drawn with its dispenser, not listed
+    return row
+
+
+def _dcs_strike_hits(strikes, events: List[Dict]) -> None:
+    """Count DCS-reported hits by each air-to-ground weapon (by launcher, weapon and time)."""
+    from .weapons import _norm
+    for st in strikes:
+        n = 0
+        for e in events:
+            if e.get("kind") != "hit" or e.get("initiatorId") != st.launcher_id:
+                continue
+            w = _norm(e.get("weapon"))
+            if (w == _norm(st.weapon_name) or (st.submunitions and "blu" in w)) and st.release_time <= e["time"] <= st.impact_time + 15:
+                n += 1
+        st.dcs_hits = n
 
 
 def _add_dcs_timeline(items: List[Dict], rec: Recording, dcs: Dict) -> List[Dict]:

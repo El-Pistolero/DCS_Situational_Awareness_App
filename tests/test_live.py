@@ -105,6 +105,23 @@ class LiveWorldTests(unittest.TestCase):
         self.assertIn("ScanAz", rows["A"]["v"])
         self.assertNotIn("ScanAz", rows["B"]["v"])
 
+    def test_aaa_far_below_is_not_in_wez(self):
+        w = LiveWorld()
+        w.on_object(0, "A", {"Longitude": 41.6, "Latitude": 41.6, "Altitude": 9000, "Yaw": 90},
+                    {"Type": "Air+FixedWing", "Name": "F-16C_50", "Coalition": "Allies"})
+        w.on_object(0, "S", {"Longitude": 41.6, "Latitude": 41.601, "Altitude": 100},
+                    {"Type": "Ground+AntiAircraft", "Name": "ZSU-23-4 Shilka", "Coalition": "Enemies"})
+        w.set_focus("A")
+        self.assertNotIn("S", {t["id"] for t in w.snapshot()["threats"]})
+        w.on_object(1, "A", {"Altitude": 1500}, {})
+        self.assertIn("S", {t["id"] for t in w.snapshot()["threats"]})
+
+    def test_collapsed_hits_without_weapon_have_no_empty_brackets(self):
+        w = LiveWorld()
+        ev = {"kind": "hit", "t": 1.0, "initiator": {"name": "SAM1"}, "target": {"name": "Viper"}, "weapon": ""}
+        w.on_dcs_events([ev, {**ev, "t": 1.5}])
+        self.assertEqual(w.events[-1]["text"], "SAM1 hit Viper x2")
+
     def test_event_kept(self):
         w = LiveWorld()
         w.on_event(Event(1.0, "Destroyed", ["5"], ""))

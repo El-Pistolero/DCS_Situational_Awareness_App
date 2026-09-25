@@ -462,11 +462,13 @@ export function edgeAnchor(x0, y0, x1, y1, w, h, inset = 22) {
   // Start from inside the rectangle even when the origin is off screen.
   const cx = Math.max(L, Math.min(Rr, x0)), cy = Math.max(T, Math.min(B, y0));
   const dx = x1 - cx, dy = y1 - cy;
-  let k = Infinity;
-  if (dx > 0) k = Math.min(k, (Rr - cx) / dx); else if (dx < 0) k = Math.min(k, (L - cx) / dx);
-  if (dy > 0) k = Math.min(k, (B - cy) / dy); else if (dy < 0) k = Math.min(k, (T - cy) / dy);
+  let kx = Infinity, ky = Infinity;
+  if (dx > 0) kx = (Rr - cx) / dx; else if (dx < 0) kx = (L - cx) / dx;
+  if (dy > 0) ky = (B - cy) / dy; else if (dy < 0) ky = (T - cy) / dy;
+  const k = Math.min(kx, ky);
   if (!Number.isFinite(k)) return null;
-  return { x: cx + dx * k, y: cy + dy * k, ang: Math.atan2(dy, dx) };
+  // edge: "v" = left/right side (stack along y), "h" = top/bottom (stack along x).
+  return { x: cx + dx * k, y: cy + dy * k, ang: Math.atan2(dy, dx), edge: kx <= ky ? "v" : "h", rect: { L, T, R: Rr, B } };
 }
 
 /**
@@ -486,12 +488,19 @@ export function drawEdgePointers(ctx, map, from, list, inset = 22) {
     const [x1, y1] = map.project(it.lon, it.lat);
     const a = edgeAnchor(from[0], from[1], x1, y1, map.w, map.h, inset);
     if (!a) continue;
-    // Contacts on (nearly) the same bearing: shift along the edge so every
-    // arrow and tag stays readable.
-    const clash = placed.filter((p) => Math.hypot(p.x - a.x, p.y - a.y) < 22).length;
-    if (clash) {
-      const along = Math.abs(Math.cos(a.ang)) > Math.abs(Math.sin(a.ang)) ? [0, 1] : [1, 0];
-      a.x += along[0] * 24 * clash; a.y += along[1] * 24 * clash;
+    // Contacts on (nearly) the same bearing: take the first free slot along
+    // the edge the arrow sits on (alternating sides, kept on the canvas), so
+    // every arrow, tag and hitbox stays readable.
+    const along = a.edge === "v" ? [0, 1] : [1, 0];
+    const free = (x, y) => !placed.some((p) => Math.hypot(p.x - x, p.y - y) < 22);
+    let clash = 0;
+    if (!free(a.x, a.y)) {
+      for (let n = 1; n < 40; n++) {
+        const s = (n % 2 ? 1 : -1) * Math.ceil(n / 2) * 24;
+        const x = Math.max(a.rect.L, Math.min(a.rect.R, a.x + along[0] * s));
+        const y = Math.max(a.rect.T, Math.min(a.rect.B, a.y + along[1] * s));
+        if (free(x, y)) { a.x = x; a.y = y; clash = n; break; }
+      }
     }
     placed.push({ x: a.x, y: a.y });
     if (it.dashed) {
@@ -520,7 +529,7 @@ export function drawEdgePointers(ctx, map, from, list, inset = 22) {
       tx = Math.max(4, Math.min(map.w - tw - 4, tx));
       // On the top/bottom edge, stacked arrows get stacked tags too.
       const vert = Math.sin(a.ang) > 0.3 ? -1 : Math.sin(a.ang) < -0.3 ? 1 : 0;
-      const ty = Math.max(10, Math.min(map.h - 10, iy + vert * (8 + 13 * clash)));
+      const ty = Math.max(10, Math.min(map.h - 10, iy + vert * (8 + (a.edge === "h" ? 13 * clash : 0))));
       ctx.lineWidth = 3;
       ctx.strokeStyle = "rgba(6,9,13,0.9)";
       ctx.strokeText(it.text, tx, ty);

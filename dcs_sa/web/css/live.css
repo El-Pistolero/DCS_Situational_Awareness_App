@@ -109,3 +109,7 @@ body.glance .threat .clock { font-size: 40px; }
 body.glance .threat .tag { font-size: 22px; }
 body.glance .threat.l3 { background: #7a1010; }
 body.glance #eventsSec, body.glance #storesSec { display: none; }
+/* Warnings go to the right of the big numbers instead of over them. */
+body.glance .lv-warn { left: auto; right: 14px; transform: none; max-width: calc(100% - 460px); }
+body.glance .lv-warn.bingo { top: 70px; }
+body.glance .lv-warn.hit { top: 126px; }

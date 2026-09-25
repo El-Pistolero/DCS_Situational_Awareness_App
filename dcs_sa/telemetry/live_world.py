@@ -185,7 +185,7 @@ class LiveWorld:
                     # Same shooter/target/weapon: count it instead of a new row
                     # (a gun burst can land dozens of hits a second).
                     last["count"] += 1
-                    last["text"] = f"{who} hit {whom} x{last['count']} ({weapon})"
+                    last["text"] = f"{who} hit {whom} x{last['count']}" + (f" ({weapon})" if weapon else "")
                     self.event_seq += 1
                     last["seq"] = self.event_seq
                     continue
@@ -495,8 +495,12 @@ class LiveWorld:
             if not _hostile(me, obj):
                 continue
             locked_me = obj.props.get("LockedTarget") == me.id and obj.values.get("LockedTargetMode", 1.0) > 0
-            eng = obj.values.get("EngagementRange") or (_engagement_db(obj) or {}).get("range")
-            in_wez = bool(eng) and geo.ground_distance(mp[0], mp[1], op[0], op[1]) <= eng
+            db = _engagement_db(obj) or {}
+            eng = obj.values.get("EngagementRange") or db.get("range")
+            veng = obj.values.get("VerticalEngagementRange") or db.get("vrange") or eng
+            # Inside the envelope both horizontally and vertically (a Shilka
+            # cannot reach a jet 9 km above it).
+            in_wez = bool(eng) and geo.ground_distance(mp[0], mp[1], op[0], op[1]) <= eng and (mp[2] - op[2]) <= veng
             if obj.category in ("fixedwing", "rotorcraft", "air"):
                 if rng > THREAT_RANGE_AIR and not locked_me:
                     continue

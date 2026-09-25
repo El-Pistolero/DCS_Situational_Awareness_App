@@ -23,7 +23,7 @@ const S = {
   sound: false, lastMissiles: new Set(), events: [], userPanned: false, panTimer: null,
   radar: pref("radar", "all"), bullets: pref("bullets", "paths"), cam: pref("cam", "chase"),
   glance: pref("glance", "0") === "1", glanceAuto: false, lastMissileAt: 0,
-  padlockId: null, hist: [], histKey: null, home: null, homeFetched: null, bingoShown: false,
+  padlockId: null, hist: [], histKey: null, home: null, homeTried: 0, bingoShown: false,
   bridgeSeen: false, bridgeLostAt: null, seenHits: new Set(), status: null,
 };
 $("radarSel").value = S.radar;
@@ -125,8 +125,14 @@ map.on("click", async ({ px, py }) => {
   for (const h of ptrHits) {
     if (Math.hypot(h.x - px, h.y - py) > h.r) continue;
     if (h.item.home) return;
-    const nm = (h.item.range || 0) / 1852;
-    setRange(RANGES.find((r) => r >= nm * 1.1) || RANGES[RANGES.length - 1]);
+    // Pick the range at which the contact lands inside the arrow rectangle
+    // (not just inside the outer ring), and always zoom out at least a step.
+    const [fx, fy] = ptrFrom;
+    const avail = Math.max(40, Math.hypot(h.x - fx, h.y - fy)) * 0.9;
+    const ringPx = Math.min(map.w, map.h) * 0.45;
+    const need = ((h.item.range || 0) / 1852) * ringPx / avail;
+    const next = RANGES.find((r) => r >= need && r > S.rangeNm) || RANGES[RANGES.length - 1];
+    setRange(next);
     return;
   }
   let best = null, bd = 16;
@@ -151,15 +157,24 @@ function beep(freq = 1000, dur = 0.12) {
 // -- glance mode -----------------------------------------------------------------
 
 function setGlance(on, { auto = false } = {}) {
+  const wasAuto = S.glanceAuto && !on; // auto exit after an auto entry
   S.glance = on;
   S.glanceAuto = on && auto;
   document.body.classList.toggle("glance", on);
   $("btnGlance").classList.toggle("active", on);
-  setPref("glance", on ? "1" : "0");
+  if (!auto && !wasAuto) setPref("glance", on ? "1" : "0"); // automatic switching is never saved
   map.invalidate();
   if (S.snap) onSnapshot(S.snap, { redraw: true });
 }
 $("btnGlance").onclick = () => setGlance(!S.glance);
+// One listener for the threat list: rows are rebuilt five times a second, so a
+// per-row onclick would often be lost between mousedown and mouseup.
+$("threats").addEventListener("pointerdown", (e) => {
+  const row = e.target.closest(".threat[data-id]");
+  if (!row) return;
+  S.padlockId = row.dataset.id;
+  if (S.snap) { renderThreats(S.snap.threats); onSnapshot(S.snap, { redraw: true }); }
+});
 $("own").addEventListener("dblclick", () => setGlance(!S.glance));
 $("autoGlance").checked = pref("autoGlance", "0") === "1";
 $("autoGlance").onchange = (e) => setPref("autoGlance", e.target.checked ? "1" : "0");
@@ -238,11 +253,14 @@ watchRecordings({
   host: document.querySelector(".lv-map"), placement: "bottom",
   openHere: async (key) => {
     if (S.status?.desktop) {
-      try { await api("/api/open-debrief", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key }) }); return; } catch { /* fall through */ }
+      try {
+        const { body } = await api("/api/open-debrief", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key }) });
+        if (body?.ok) return; // no debrief window to switch (e.g. started with --live): open one below
+      } catch { /* fall through */ }
     }
     window.open(`/#rec=${key}`, "dcs-sa-debrief");
   },
-  onNew: () => { S.bridgeLostAt = null; },
+  onNew: () => { S.bridgeLostAt = null; S.bridgeSeen = false; },
 });
 api("/api/status").then(({ body }) => { S.status = body; }).catch(() => {});
 
@@ -262,7 +280,7 @@ function onSnapshot(snap, { redraw = false } = {}) {
       S.events = [];
       S.trails.clear();
       S.lastMissiles = new Set();
-      S.hist = []; S.home = null; S.homeFetched = null; S.bingoShown = false; S.seenHits.clear();
+      S.hist = []; S.home = null; S.homeTried = 0; S.bingoShown = false; S.seenHits.clear();
     }
     S.snap = snap;
     // Maintain trails client-side; the server only sends them occasionally.
@@ -286,7 +304,8 @@ function onSnapshot(snap, { redraw = false } = {}) {
       S.events.unshift(e);
       if (e.againstMe && e.kind === "DCS hit" && !S.seenHits.has(e.id ?? e.seq)) {
         S.seenHits.add(e.id ?? e.seq);
-        flashHit(e);
+        // Opening the page mid-mission replays old events: only alert on new hits.
+        if (!isNum(snap.time) || !isNum(e.time) || snap.time - e.time < 5) flashHit(e);
       }
     }
     S.events.length = Math.min(S.events.length, 40);
@@ -390,8 +409,9 @@ function fuelKg(own, v) {
 }
 
 function pushHist(me, own, snap) {
+  if (me && snap.ownId && me.id !== snap.ownId) own = null; // the player's bridge data is not the focused jet's
   const key = `${snap.session}|${snap.focus}`;
-  if (key !== S.histKey) { S.hist = []; S.histKey = key; S.home = null; S.homeFetched = null; }
+  if (key !== S.histKey) { S.hist = []; S.histKey = key; S.home = null; S.homeTried = 0; }
   if (!me && !own) return;
   const s = own?.self || {}, v = me?.v || {}, d = me?.d || {};
   const t = snap.time;
@@ -424,8 +444,9 @@ function updateHome(me, own) {
   const lon = me?.lon ?? s.lon, lat = me?.lat ?? s.lat;
   if (!isNum(lon)) return;
   if (isNum(agl) && agl < 15 && isNum(ias) && ias < 30) { S.home = { lon, lat, name: "HOME" }; return; }
-  if (!S.home && S.homeFetched !== S.session) {
-    S.homeFetched = S.session;
+  // Ask for the nearest airfield; retry every 30 s until DCS has sent its airbases.
+  if (!S.home && Date.now() - (S.homeTried || 0) > 30000) {
+    S.homeTried = Date.now();
     api(`/api/dcsmap?lon=${lon}&lat=${lat}`).then(({ body }) => {
       if (S.home) return;
       let best = null, bd = Infinity;
@@ -456,6 +477,7 @@ function homeText(me) {
 
 let hits = [];
 let ptrHits = [];
+let ptrFrom = [0, 0];
 map.scene = (ctx, m) => {
   const snap = S.snap;
   if (!snap) return;
@@ -493,6 +515,7 @@ map.scene = (ctx, m) => {
   const own = $("own");
   const top = own && !own.classList.contains("hidden") ? own.offsetTop + own.offsetHeight + 16 : 22;
   ptrHits = drawEdgePointers(ctx, m, from, list, { top, right: 22, bottom: 36, left: 22 });
+  ptrFrom = from;
 };
 
 function drawHome(ctx, x, y) {
@@ -551,6 +574,10 @@ function renderOwn(me, own) {
   box.innerHTML = "";
   if (!me && !own) { box.classList.add("hidden"); return; }
   box.classList.remove("hidden");
+  // Bridge values describe the player's own jet: use them only when that is
+  // the aircraft in focus, never mixed with a wingman's numbers.
+  const mine = !me || !S.snap?.ownId || me.id === S.snap.ownId;
+  if (!mine) own = null;
   const s = own?.self || {};
   const v = me?.v || {};
   const d = me?.d || {};
@@ -562,8 +589,8 @@ function renderOwn(me, own) {
 
   // Trends: IAS rate (kt/s or km/h per s), climb arrows, specific excess power.
   const dIas = slope("ias", 3), dTas = slope("tas", 3);
-  const iasTrend = trend(isNum(dIas) ? dIas * (units.metric ? 3.6 : 1.943844) : null,
-    { dead: 1, fast: -5, fmt: (x) => Math.round(x) });
+  // Thresholds in m/s (1 kt/s shown, red below -5 kt/s); only the number is converted.
+  const iasTrend = trend(dIas, { dead: 0.514, fast: -2.57, fmt: (x) => Math.round(x * (units.metric ? 3.6 : 1.943844)) });
   const altTrend = trend(isNum(vs) ? vs * 196.85 : null, { dead: 300, levels: [3000, 10000] });
   const ps = isNum(vs) && isNum(tas) && isNum(dTas) ? vs + (tas / 9.80665) * dTas : null;
   const psTxt = isNum(ps) ? `${ps >= 0 ? "+" : ""}${Math.round(units.metric ? ps : ps * M_TO_FT)}` : "—";
@@ -643,8 +670,7 @@ function renderThreats(threats) {
     const bits = [fmtHdg(t.bearing), fmtDist(t.range), alt];
     if (isNum(t.aspect)) bits.push(`asp ${Math.round(t.aspect)}°`);
     if (isNum(t.closure)) bits.push(`${t.closure >= 0 ? "+" : ""}${fmtSpeed(t.closure, { suffix: false })}`);
-    box.append(el("div", { class: `threat l${t.level}${t.id === pad ? " pad" : ""}`, title: "Click to padlock this contact in 3D",
-      onclick: () => { S.padlockId = t.id; if (S.snap) { renderThreats(S.snap.threats); onSnapshot(S.snap, { redraw: true }); } } },
+    box.append(el("div", { class: `threat l${t.level}${t.id === pad ? " pad" : ""}`, title: "Click to padlock this contact in 3D", "data-id": t.id },
       el("div", { class: "clock" }, `${t.clock}`, el("small", {}, "o'clock")),
       el("div", { class: "what" }, el("b", {}, who), el("span", {}, bits.filter(Boolean).join(" · "))),
       el("span", { class: "tag" }, tag)));

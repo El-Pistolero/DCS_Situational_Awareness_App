@@ -16,6 +16,7 @@ SEVERITY = {
     "kill": "high", "destroyed": "high", "shot": "medium", "hit": "high",
     "spiked": "medium", "lock": "low", "landing": "medium", "takeoff": "medium",
     "gun": "medium", "bookmark": "low", "message": "low", "radar": "low",
+    "release": "medium", "impact": "medium",
 }
 
 
@@ -29,8 +30,9 @@ def _nm(m: Optional[float]) -> str:
     return f"{m * geo.NM_PER_M:.1f} nm" if m is not None else "? nm"
 
 
-def build_timeline(rec: Recording, weapons, landings: Dict, radar: Dict) -> List[Dict]:
+def build_timeline(rec: Recording, weapons, landings: Dict, radar: Dict, strikes=None) -> List[Dict]:
     items: List[Dict] = []
+    strike_ids = {st.weapon_id for st in strikes or []}
     name = lambda oid: (rec.tracks[oid].display_name if oid in rec.tracks else oid)  # noqa: E731
 
     for e in rec.events:
@@ -42,6 +44,8 @@ def build_timeline(rec: Recording, weapons, landings: Dict, radar: Dict) -> List
         items.append(_item(e.time, "bookmark" if kind == "bookmark" else "message", text, e.object_ids))
 
     for s in weapons.shots:
+        if s.weapon_id in strike_ids:
+            continue  # air-to-ground: release/impact items below
         who = s.launcher_pilot or s.launcher_name or "Unknown"
         tgt = f" at {s.target_pilot or s.target_name}" if s.target_name else ""
         rng = f" ({_nm(s.geometry.get('range'))})" if s.geometry.get("range") else ""
@@ -52,6 +56,27 @@ def build_timeline(rec: Recording, weapons, landings: Dict, radar: Dict) -> List
             items.append(_item(s.end_time, "shot", f"{s.weapon_name} from {who}: {s.outcome}"
                                + (f" ({s.outcome_detail})" if s.outcome_detail else ""),
                                [s.weapon_id]))
+    for st in strikes or []:
+        who = st.launcher_pilot or st.launcher_name or "Unknown"
+        tgt = f" at {st.target_name}" if st.target_name else ""
+        rel = st.release
+        bits = []
+        if rel.get("altitude") is not None:
+            bits.append(f"{rel['altitude'] * 3.28084 / 1000:.1f}k ft")
+        if st.ground_range:
+            bits.append(_nm(st.ground_range))
+        items.append(_item(st.release_time, "release", f"{who} released {st.weapon_name}{tgt}"
+                           + (f" ({', '.join(bits)})" if bits else ""),
+                           [i for i in (st.launcher_id, st.target_id, st.weapon_id) if i]))
+        if st.dispense:
+            items.append(_item(st.dispense["time"], "impact", f"{st.weapon_name} opened: {st.submunitions} submunitions",
+                               [st.weapon_id]))
+        if st.result == "in flight":
+            continue
+        miss = f", {st.miss_distance:.0f} m from {st.target_name}" if st.miss_distance is not None and st.target_name else ""
+        dmg = f" - destroyed {', '.join(str(d['name']) for d in st.damage)}" if st.damage else ""
+        items.append(_item(st.impact_time, "impact", f"{st.weapon_name} from {who} impact{miss}{dmg}",
+                           [i for i in (st.weapon_id, st.target_id) if i], result=st.result))
     for b in weapons.bursts:
         who = b.launcher_pilot or b.launcher_name
         tgt = f" at {b.target_name}" if b.target_name else ""

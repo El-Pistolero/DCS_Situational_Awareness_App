@@ -908,7 +908,10 @@ function updateLegend() {
   const note = { g: " (magenta > 7.5)", aoa: " (magenta > 20°)", ps: " (grey = sustaining)" }[S.trailColor] || "";
   box.innerHTML = "";
   box.append(el("div", {}, `${def.title} ${ends[0]} ${S.trailColor === "ps" ? "…" : "–"} ${ends[1]}${note}`),
-    el("div", { class: "legend-bar", style: { background: rampCss(def.kind) } }),
+    el("div", { class: "legend-bar", style: { background: rampCss(def.kind, {
+      limitFrac: isNum(def.limit) && isNum(def.lo) ? (def.limit - def.lo) / (def.hi - def.lo) : 0.85,
+      deadFrac: def.kind === "div" ? def.limit / Math.max(Math.abs(def.lo), Math.abs(def.hi)) : 0.05,
+    }) } }),
     el("div", { class: "legend-ends" }, el("span", {}, ends[0]), el("span", {}, ends[1])));
   box.classList.remove("hidden");
 }

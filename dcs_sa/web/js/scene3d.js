@@ -571,7 +571,7 @@ export class Scene3D {
     const label = document.createElement("div");
     label.className = "lbl3d";
     this.labelLayer.append(label);
-    e = { ...(e || {}), group, model, mat, trail, dome, label, color: sideColor(o),
+    e = { ...(e || {}), group, model, mat, trail, dome, label, color: sideColor(o), sideCol: new THREE.Color(sideColor(o)),
       baseColor: mat.color.clone(), baseEmissive: mat.emissiveIntensity };
     this.objects.set(o.id, e);
     return e;
@@ -637,20 +637,22 @@ export class Scene3D {
       const colAttr = e.trail.geometry.attributes.color;
       const col = colAttr?.array;
       const tc = o.trailColors && o.trailColors.length === tr.length ? o.trailColors : null;
-      const base = e.baseColor;
+      const base = e.sideCol; // side colour (the F-16 body colour is mostly grey)
+      const lin = this._lin ||= new THREE.Color();
+      // Ramp colours are sRGB (as in the 2D map and legend); vertex colours are linear.
+      const put = (k, c) => {
+        if (c) { lin.setRGB(c[0], c[1], c[2], THREE.SRGBColorSpace); col[k] = lin.r; col[k + 1] = lin.g; col[k + 2] = lin.b; }
+        else { col[k] = base.r; col[k + 1] = base.g; col[k + 2] = base.b; }
+      };
       const start = Math.max(0, tr.length - 400);
       let k = 0;
       for (let i = start; i < tr.length; i++) {
         const v = this.toLocal(tr[i][0], tr[i][1], tr[i][2]);
-        if (col) {
-          const c = tc?.[i];
-          col[k] = c ? c[0] : base.r; col[k + 1] = c ? c[1] : base.g; col[k + 2] = c ? c[2] : base.b;
-        }
+        if (col) put(k, tc?.[i]);
         arr[k++] = v.x; arr[k++] = v.y; arr[k++] = v.z;
       }
       if (col) {
-        const c = tc?.[tc.length - 1];
-        col[k] = c ? c[0] : base.r; col[k + 1] = c ? c[1] : base.g; col[k + 2] = c ? c[2] : base.b;
+        put(k, tc?.[tc.length - 1]);
         colAttr.needsUpdate = true;
       }
       arr[k++] = p.x; arr[k++] = p.y; arr[k++] = p.z;
@@ -781,9 +783,9 @@ export class Scene3D {
       const behind = v.z > 1;
       if (behind) { x = -x; y = -y; }
       let k = 1 / Math.hypot(x / 0.92, y / 0.88);
-      if (!behind && k >= 1) { d.style.display = "none"; return; } // on screen: its label is enough
+      if (!behind && Math.abs(x) <= 1 && Math.abs(y) <= 1) { d.style.display = "none"; return; } // on screen: its label is enough
+      if (!behind) k = Math.min(k, 1); // off screen: onto the ellipse; behind: always on its edge
       if (!Number.isFinite(k) || Math.hypot(x, y) < 1e-6) { x = 0; y = -0.88; k = 1; }
-      if (behind) k = Math.min(k, 1 / Math.hypot(x / 0.92, y / 0.88));
       const X = x * k, Y = y * k;
       const px = ((X + 1) / 2) * w, py = ((1 - Y) / 2) * h;
       d.style.display = "block";
