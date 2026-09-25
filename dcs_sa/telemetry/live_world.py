@@ -645,14 +645,8 @@ class LiveWorld:
     def _launcher_of(self, w: LiveObject) -> Optional[str]:
         return w.props.get("Parent") or self.launchers.get(w.id)
 
-    def _surface_units(self) -> List[Tuple[LiveObject, Tuple[float, float, float]]]:
-        out = []
-        for obj in self.objects.values():
-            if obj.category in ("ground", "sea"):
-                pos = obj.position()
-                if pos is not None:
-                    out.append((obj, pos))
-        return out
+    def _surface_units(self) -> "_UnitIndex":
+        return _UnitIndex(o for o in self.objects.values() if o.category in ("ground", "sea"))
 
     def _ground_under(self, jet: Optional[LiveObject]) -> float:
         """Ground elevation under a jet from its AGL (Tacview or the bridge), else 0."""
@@ -689,7 +683,7 @@ class LiveWorld:
             track = w.heading()
         tti, lon, lat = _predict_impact(fam, pos, gs, vs, track, ground)
         # The ground there, from the unit standing nearest the first guess.
-        near = _nearest_unit(units, lon, lat, AIM_SEARCH)
+        near = units.nearest(lon, lat, AIM_SEARCH)
         if near is not None:
             ground = near[1][2]
             tti, lon, lat = _predict_impact(fam, pos, gs, vs, track, ground)
@@ -699,7 +693,7 @@ class LiveWorld:
 
     @staticmethod
     def _set_target(entry: Dict[str, Any], ref: LiveObject, units) -> None:
-        tgt = _nearest_unit(units, entry["impactLon"], entry["impactLat"], AIM_TARGET_RADIUS,
+        tgt = units.nearest(entry["impactLon"], entry["impactLat"], AIM_TARGET_RADIUS,
                             lambda o: _hostile(ref, o))
         entry["targetId"], entry["targetName"] = (tgt[0].id, tgt[0].name) if tgt else (None, None)
 
@@ -806,15 +800,35 @@ def _predict_impact(fam: str, pos: Tuple[float, float, float], gs: float, vs: fl
     return t, lon, lat
 
 
-def _nearest_unit(units, lon: float, lat: float, radius: float, keep=None):
-    best, best_d = None, radius
-    for obj, pos in units:
-        if keep is not None and not keep(obj):
-            continue
-        d = geo.ground_distance(lon, lat, pos[0], pos[1])
-        if d < best_d:
-            best, best_d = (obj, pos), d
-    return best
+class _UnitIndex:
+    """Surface units bucketed on a lat/lon grid: a rocket salvo in a mission
+    with thousands of units would otherwise cost ~100 ms per snapshot."""
+
+    CELL = 0.05  # degrees (~5.5 km north-south)
+
+    def __init__(self, objs) -> None:
+        self.cells: Dict[Tuple[int, int], List[Tuple[LiveObject, Tuple[float, float, float]]]] = {}
+        for obj in objs:
+            pos = obj.position()
+            if pos is not None:
+                key = (math.floor(pos[1] / self.CELL), math.floor(pos[0] / self.CELL))
+                self.cells.setdefault(key, []).append((obj, pos))
+
+    def nearest(self, lon: float, lat: float, radius: float, keep=None):
+        """The nearest (unit, position) within *radius* m that passes *keep*, else None."""
+        c = self.CELL
+        dlat = radius * 1.02 / geo.M_PER_DEG_LAT  # small margin: the box is flat, distances are not
+        dlon = radius * 1.02 / max(geo.m_per_deg_lon(lat), 1000.0)
+        best, best_d = None, radius
+        for i in range(math.floor((lat - dlat) / c), math.floor((lat + dlat) / c) + 1):
+            for j in range(math.floor((lon - dlon) / c), math.floor((lon + dlon) / c) + 1):
+                for obj, pos in self.cells.get((i, j), ()):
+                    if keep is not None and not keep(obj):
+                        continue
+                    d = geo.ground_distance(lon, lat, pos[0], pos[1])
+                    if d < best_d:
+                        best, best_d = (obj, pos), d
+        return best
 
 
 def _num(v: Any) -> bool:
