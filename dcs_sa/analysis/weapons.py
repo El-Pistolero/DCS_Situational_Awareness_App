@@ -902,25 +902,43 @@ def _norm(name: Optional[str]) -> str:
     return "".join(ch for ch in ammo_name(name).lower() if ch.isalnum())
 
 
-def apply_dcs_events(rep: WeaponReport, rec: Recording, events: List[Dict]) -> Dict[str, int]:
-    """Replace inferred hits/kills with what DCS reported, where it reported them."""
+def apply_dcs_events(rep: WeaponReport, rec: Recording, events: List[Dict],
+                     coverage: Optional[List[Tuple[float, float]]] = None) -> Dict[str, int]:
+    """Replace inferred hits/kills with what DCS reported, where it reported them.
+
+    *coverage* lists the recording-time spans the flight log(s) cover.  Outside
+    them DCS said nothing, so values stay unknown (None) rather than zero.
+    """
     hits = [e for e in events if e.get("kind") == "hit"]
     kills = [e for e in events if e.get("kind") == "kill"]
     shots = [e for e in events if e.get("kind") == "shot"]
     stats = {"hits": len(hits), "kills": len(kills), "shots": len(shots), "killsCorrected": 0, "killsAdded": 0}
 
+    def covered(t0: float, t1: Optional[float] = None) -> bool:
+        if coverage is None:
+            return True
+        t1 = t0 if t1 is None else t1
+        return any(a - 1.0 <= t0 and t1 <= b + 1.0 for a, b in coverage)
+
+    def target_name(e: Dict) -> str:
+        tgt = rec.tracks.get(e.get("targetId") or "")
+        return tgt.display_name if tgt else ((e.get("target") or {}).get("type") or "?")
+
     # Each DCS gun hit belongs to exactly one burst: the one whose rounds were
-    # in flight then (firing window shifted by the burst's time of flight).
+    # in flight then.
     def window(b: GunBurst) -> Tuple[float, float]:
         ends = [(rec.tracks[r].removed_at or rec.tracks[r].last_seen) for r in b.round_ids if r in rec.tracks]
         if ends:  # when the recorded rounds actually ended (impact or timeout)
             return min(ends) - 0.3, max(ends) + 0.5
-        tof = b.time_of_flight or 0.0
-        fire_end = b.start + (b.rounds / b.fire_rate if b.fire_rate else 0.0)
-        return b.start + 0.5 * tof, fire_end + 1.5 * tof + 0.3
+        # No rounds recorded (trigger-only burst): firing lasted to b.end, and
+        # rounds take a second or two to arrive.
+        tof = b.time_of_flight or 1.5
+        fire_end = max(b.end, b.start + (b.rounds / b.fire_rate if b.fire_rate else 0.0))
+        return b.start, fire_end + 1.5 * tof + 0.3
 
+    gun_hit_ids = set()
     per_burst: Dict[int, List[Dict]] = {id(b): [] for b in rep.bursts}
-    for e in hits:
+    for n, e in enumerate(hits):
         t = e["time"]
         scored = []
         for b in rep.bursts:
@@ -937,27 +955,39 @@ def apply_dcs_events(rep: WeaponReport, rec: Recording, events: List[Dict]) -> D
             d, _, _, bid = min(scored)
             if d < 1.0:
                 per_burst[bid].append(e)
+                gun_hit_ids.add(n)
     for b in rep.bursts:
         mine = per_burst[id(b)]
+        if not mine and not covered(b.start, b.end):
+            b.dcs_hits, b.dcs_hit_targets = None, {}
+            continue
         b.dcs_hits = len(mine)
         counts: Dict[str, int] = {}
         for e in mine:
-            tgt = rec.tracks.get(e.get("targetId") or "")
-            name = tgt.display_name if tgt else ((e.get("target") or {}).get("type") or "?")
-            counts[name] = counts.get(name, 0) + 1
+            counts[target_name(e)] = counts.get(target_name(e), 0) + 1
         b.dcs_hit_targets = counts
 
     for s in rep.shots:
+        if not covered(s.launch_time):
+            s.dcs_confirmed = None
+            continue
         s.dcs_confirmed = any(e.get("initiatorId") == s.launcher_id and abs(e["time"] - s.launch_time) <= 1.5
-                              and _norm(e.get("weapon")) == _norm(s.weapon_name) for e in shots) if shots else None
-        for e in hits:
-            if (e.get("initiatorId") == s.launcher_id and s.launch_time <= e["time"] <= s.end_time + 2.0
-                    and _norm(e.get("weapon")) == _norm(s.weapon_name)):
-                tgt = rec.tracks.get(e.get("targetId") or "")
-                s.dcs_hit = tgt.display_name if tgt else ((e.get("target") or {}).get("type") or "?")
-                if s.outcome == "miss":
-                    s.outcome, s.outcome_detail = "damage", "DCS reported a hit"
-                break
+                              and _norm(e.get("weapon")) == _norm(s.weapon_name) for e in shots)
+
+    # Each missile/bomb hit goes to one shot: the one aimed at that target,
+    # else the one whose flight ended nearest the hit.
+    for n, e in enumerate(hits):
+        if n in gun_hit_ids:
+            continue
+        cands = [s for s in rep.shots if e.get("initiatorId") == s.launcher_id
+                 and s.launch_time <= e["time"] <= s.end_time + 2.0 and _norm(e.get("weapon")) == _norm(s.weapon_name)
+                 and s.dcs_hit is None]
+        if not cands:
+            continue
+        s = min(cands, key=lambda x: (x.target_id != e.get("targetId"), abs(x.end_time - e["time"])))
+        s.dcs_hit = target_name(e)
+        if s.outcome == "miss":
+            s.outcome, s.outcome_detail = "damage", "DCS reported a hit"
 
     for e in kills:
         vid = e.get("targetId")
@@ -975,12 +1005,37 @@ def apply_dcs_events(rep: WeaponReport, rec: Recording, events: List[Dict]) -> D
             stats["killsAdded"] += 1
         existing.confirmed_by = "DCS"
         existing.confidence = "confirmed"
-        if killer is not None and existing.killer_id != killer.id:
-            if existing.killer_id:
-                existing.note = f"inferred {existing.killer_pilot or existing.killer_name}; DCS credits {killer.display_name}"
-                stats["killsCorrected"] += 1
-            existing.killer_id, existing.killer_name, existing.killer_pilot = killer.id, killer.name, killer.pilot
-            existing.weapon_name = gun_name(weapon or "") or weapon
-            existing.weapon_kind = "gun" if e.get("weaponCategory") == 0 else existing.weapon_kind
+        if killer is None or existing.killer_id == killer.id:
+            continue
+        if existing.killer_id:
+            existing.note = f"inferred {existing.killer_pilot or existing.killer_name}; DCS credits {killer.display_name}"
+            stats["killsCorrected"] += 1
+            # The weapon that lost the credit.
+            for s in rep.shots:
+                if s.killed_id == vid:
+                    s.outcome, s.killed_id, s.killed_name = "miss", None, None
+                    s.outcome_detail = f"DCS credits {killer.display_name}"
+            for b in rep.bursts:
+                if b.killed_id == vid:
+                    b.kill, b.killed_id = False, None
+        existing.killer_id, existing.killer_name, existing.killer_pilot = killer.id, killer.name, killer.pilot
+        existing.weapon_id = None
+        gun = e.get("weaponCategory") == 0 or (weapon and any(b.ammo and _norm(b.ammo) == _norm(weapon) for b in rep.bursts))
+        if gun:
+            existing.weapon_name, existing.weapon_kind = "Gun", "gun"
+            bs = [b for b in rep.bursts if b.launcher_id == killer.id and b.start <= e["time"] + 0.5]
+            if bs:
+                b = max(bs, key=lambda x: x.start)
+                b.kill, b.killed_id = True, vid
+        else:
+            existing.weapon_name = weapon or existing.weapon_name
+            ss = [s for s in rep.shots if s.launcher_id == killer.id and s.launch_time <= e["time"] + 0.5
+                  and (not weapon or _norm(s.weapon_name) == _norm(weapon))]
+            if ss:
+                s = min(ss, key=lambda x: abs(x.end_time - e["time"]))
+                s.outcome, s.killed_id, s.killed_name = "kill", vid, rec.tracks[vid].name
+                existing.weapon_id, existing.weapon_kind = s.weapon_id, s.kind
     rep.kills.sort(key=lambda k: k.time)
+    # Pk and kill counts per shooter follow the corrected credits.
+    rep.by_shooter = _tally(rep.shots, rep.bursts, rep.kills, rec)
     return stats

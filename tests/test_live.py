@@ -89,6 +89,22 @@ class LiveWorldTests(unittest.TestCase):
         self.assertEqual(snap["focus"], "self")
         self.assertIsNotNone(snap["ownship"])
 
+    def test_scan_zone_stays_on_own_jet_when_focus_moves(self):
+        w = LiveWorld()
+        w.set_status("tacview", "connected")
+        w.on_object(0, "A", {"Longitude": 41.6, "Latitude": 41.6, "Altitude": 5000, "Yaw": 90},
+                    {"Type": "Air+FixedWing", "Name": "F-16C_50", "Pilot": "Ethan", "Coalition": "Allies"})
+        w.on_object(0, "B", {"Longitude": 41.7, "Latitude": 41.7, "Altitude": 6000, "Yaw": 270},
+                    {"Type": "Air+FixedWing", "Name": "MiG-29S", "Pilot": "Ivanov", "Coalition": "Enemies"})
+        w.ingest_bridge({"t": 1, "self": {"lat": 41.6, "lon": 41.6, "alt": 5000, "pilot": "Ethan", "name": "F-16C_50"},
+                         "scan": {"on": True, "azHalf": 30.0, "elHalf": 4.0}})
+        w.set_focus("B")
+        snap = w.snapshot()
+        rows = {o["id"]: o for o in snap["objects"]}
+        self.assertEqual(snap["ownId"], "A")
+        self.assertIn("ScanAz", rows["A"]["v"])
+        self.assertNotIn("ScanAz", rows["B"]["v"])
+
     def test_event_kept(self):
         w = LiveWorld()
         w.on_event(Event(1.0, "Destroyed", ["5"], ""))

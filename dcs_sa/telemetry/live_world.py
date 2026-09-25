@@ -346,6 +346,7 @@ class LiveWorld:
             objs = []
             rounds = []
             bridge_fresh = (time.time() - self.ownship_time) < 3.0
+            own_id = self._ownship_id() if bridge_fresh else None
             focus_obj = self.objects.get(self.focus_id) if self.focus_id else None
             fpos = focus_obj.position() if focus_obj else None
             for obj in self.objects.values():
@@ -393,7 +394,9 @@ class LiveWorld:
                 if lock and v.get("LockedTargetMode", 1.0) > 0:
                     row["lock"] = lock
                 if bridge_fresh:
-                    if obj.id == self.focus_id and self.scan_values:
+                    if obj.id == own_id and self.scan_values:
+                        # The bridge's scan zone is the player's own radar,
+                        # whichever aircraft the view is focused on.
                         row["v"].update(self.scan_values)
                     elif obj.category in ("fixedwing", "rotorcraft", "air") and self.world_radar:
                         flag = _radar_flag_for(obj, pos, self.world_radar)
@@ -422,9 +425,29 @@ class LiveWorld:
                 "events": [{k: v for k, v in e.items() if k != "_key"} for e in self.events if e["seq"] > since_event],
                 "eventSeq": self.event_seq,
                 "threats": self._threats(focus) if focus else [],
+                "ownId": own_id,
                 "ownship": self.ownship if (time.time() - self.ownship_time) < 3.0 else None,
                 "destroyed": list(self.recently_destroyed)[-10:],
             }
+
+    def _ownship_id(self) -> Optional[str]:
+        """The object that is the DCS player's own aircraft (bridge data)."""
+        if "self" in self.objects:
+            return "self"
+        me = (self.ownship or {}).get("self") or {}
+        pilot, lat, lon = me.get("pilot"), me.get("lat"), me.get("lon")
+        best, best_d = None, 1500.0
+        for obj in self.objects.values():
+            if obj.category not in ("fixedwing", "rotorcraft", "air"):
+                continue
+            if pilot and obj.props.get("Pilot") == pilot:
+                return obj.id
+            pos = obj.position()
+            if pos is not None and isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
+                d = geo.ground_distance(lon, lat, pos[0], pos[1])
+                if d < best_d:
+                    best, best_d = obj.id, d
+        return best
 
     def _threats(self, me: LiveObject) -> List[Dict[str, Any]]:
         mp = me.position()

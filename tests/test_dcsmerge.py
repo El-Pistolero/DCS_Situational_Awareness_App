@@ -110,8 +110,11 @@ class MergeFlightLog(unittest.TestCase):
         i = me.index_at(200.0)
         self.assertAlmostEqual(me.channels["Elevator"][i], math.sin(me.t[i] / 7.0), delta=0.15)
         self.assertEqual(me.channels["ScanAz"][i], 60.0)
-        self.assertEqual(self.rec.tracks["302"].channels["RadarActive"][self.rec.tracks["302"].index_at(60.0)], 0.0)
-        self.assertEqual(self.rec.tracks["304"].channels["RadarActive"][self.rec.tracks["304"].index_at(60.0)], 1.0)
+        # Static units keep DCS's on/off changes as their own time series.
+        series = self.rec.extras["dcsRadar"]
+        self.assertEqual(series["302"][1], [0.0])
+        self.assertEqual(series["304"][1], [1.0])
+        self.assertNotIn("RadarActive", self.rec.tracks["304"].channels)
 
     def test_events_mapped_to_objects(self):
         kinds = [(e["kind"], e["initiatorId"], e["targetId"]) for e in self.merged["events"]]
@@ -154,6 +157,78 @@ class MergeFlightLog(unittest.TestCase):
         self.assertEqual(k["killerId"], "102")
         self.assertIn("DCS credits", k["note"])
         self.assertEqual(rep["dcs"]["killsCorrected"], 1)
+
+
+class ReviewRegressions(unittest.TestCase):
+    """Cases from the code review of the DCS merge."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not os.path.exists(SAMPLE):
+            write_sample(SAMPLE)
+
+    def test_every_hit_run_gets_text(self):
+        from dcs_sa.analysis.report import _add_dcs_timeline
+        rec = parse_file(SAMPLE)
+        ev = [{"kind": "hit", "time": t, "initiatorId": "101", "targetId": "301", "weapon": "M61_20_HE"}
+              for t in (100.0, 100.1, 110.0, 110.2)]
+        items = _add_dcs_timeline([], rec, {"events": ev})
+        self.assertEqual([i["text"] for i in items], ["DCS: Ethan hit BTR-80 x2 (M61_20_HE)"] * 2)
+
+    def test_parked_rows_do_not_fool_the_clock(self):
+        # Long parked stretches match any offset; only moving rows count.
+        rec = parse_file(SAMPLE)
+        me = rec.tracks["101"]
+        rows = []
+        for i in range(0, 200):  # parked at the start position for 200 s
+            p = me.position_interp(me.first_seen)
+            rows.append({"t": -500.0 + i, "lat": p[1], "lon": p[0], "tas": 0.0})
+        t = me.first_seen
+        while t <= me.ends_at:
+            lon, lat, _ = me.position_interp(t)
+            rows.append({"t": t - 20.0, "lat": lat, "lon": lon, "tas": 150.0 if 40 < t < 560 else 0.0})
+            t += 0.25
+        offset, err = align(me, rows)
+        self.assertAlmostEqual(offset, 20.0, delta=0.1)
+
+    def test_parked_only_log_is_rejected(self):
+        rec = parse_file(SAMPLE)
+        me = rec.tracks["101"]
+        p = me.position_interp(me.first_seen)
+        rows = [{"t": float(i), "lat": p[1], "lon": p[0], "tas": 0.0} for i in range(600)]
+        self.assertIsNone(align(me, rows)[0])
+
+    def test_one_hit_one_shot_and_credits_follow_dcs(self):
+        from dcs_sa.analysis.weapons import analyze_weapons, apply_dcs_events
+        rec = parse_file(SAMPLE)
+        rep = analyze_weapons(rec)
+        # DCS credits Viper 1-2 with the MiG: Ethan's AIM-120 loses the kill,
+        # and the shooter table follows.
+        apply_dcs_events(rep, rec, [{"kind": "kill", "time": 133.7, "initiatorId": "102", "targetId": "201",
+                                     "weapon": "AIM_120C", "weaponCategory": 1}])
+        self.assertEqual(rep.by_shooter["102"]["kills"], 1)
+        self.assertEqual(rep.by_shooter["101"]["kills"], 1)  # only the gun kill remains
+        aim = next(s for s in rep.shots if s.weapon_name == "AIM_120C")
+        self.assertEqual(aim.outcome, "miss")
+        self.assertIn("DCS credits", aim.outcome_detail)
+
+    def test_trigger_burst_counts_hits_over_its_whole_length(self):
+        from dcs_sa.analysis.weapons import GunBurst, WeaponReport, apply_dcs_events
+        rec = parse_file(SAMPLE)
+        b = GunBurst("101", "F-16C_50", "Ethan", 100.0, 103.0, 0, source="trigger")
+        rep = WeaponReport(shots=[], bursts=[b], kills=[], destructions=[], by_shooter={}, rounds={})
+        ev = [{"kind": "hit", "time": t, "initiatorId": "101", "targetId": "301", "weapon": "M61_20_HE", "weaponCategory": 0}
+              for t in (100.8, 101.5, 102.2, 103.0)]
+        apply_dcs_events(rep, rec, ev)
+        self.assertEqual(b.dcs_hits, 4)
+
+    def test_outside_log_coverage_is_unknown(self):
+        from dcs_sa.analysis.weapons import analyze_weapons, apply_dcs_events
+        rec = parse_file(SAMPLE)
+        rep = analyze_weapons(rec)
+        apply_dcs_events(rep, rec, [], coverage=[(0.0, 200.0)])  # log ends before the strafe
+        self.assertEqual([b.dcs_hits for b in rep.bursts], [None, None])
+        self.assertIsNotNone(next(s for s in rep.shots if s.launch_time < 200).dcs_confirmed)
 
 
 class RunwayFromDcs(unittest.TestCase):

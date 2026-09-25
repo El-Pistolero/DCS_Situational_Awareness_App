@@ -28,6 +28,8 @@ from ..flightlog import list_logs, read_log
 from . import geo
 
 MAX_MEDIAN_ERROR = 300.0
+MOVING_SPEED = 20.0      # m/s: only rows where the jet moves can pin the clock
+MIN_MOVING_ROWS = 10
 NAN = float("nan")
 
 
@@ -36,10 +38,26 @@ def _median(xs: List[float]) -> float:
     return xs[len(xs) // 2] if xs else math.inf
 
 
+def _moving_rows(selfs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Rows where the aircraft is moving.  Parked rows match any parked
+    stretch of the recording, so they cannot tell clock offsets apart."""
+    pts = [r for r in selfs if isinstance(r.get("lat"), (int, float)) and isinstance(r.get("lon"), (int, float))]
+    out = []
+    for i, r in enumerate(pts):
+        spd = r.get("tas") if isinstance(r.get("tas"), (int, float)) else r.get("ias")
+        if not isinstance(spd, (int, float)):
+            q = pts[i - 1] if i else (pts[i + 1] if i + 1 < len(pts) else None)
+            dt = abs(r["t"] - q["t"]) if q else 0.0
+            spd = geo.ground_distance(r["lon"], r["lat"], q["lon"], q["lat"]) / dt if q and dt > 1e-3 else 0.0
+        if spd >= MOVING_SPEED:
+            out.append(r)
+    return out
+
+
 def align(track: Track, selfs: List[Dict[str, Any]]) -> Tuple[Optional[float], float]:
     """Time offset (recording t = log t + offset) and median position error."""
-    pts = [r for r in selfs if isinstance(r.get("lat"), (int, float)) and isinstance(r.get("lon"), (int, float))]
-    if len(pts) < 5 or not len(track):
+    pts = _moving_rows(selfs)
+    if len(pts) < MIN_MOVING_ROWS or not len(track):
         return None, math.inf
     probe = pts[:: max(1, len(pts) // 60)]
 
@@ -68,8 +86,18 @@ def align(track: Track, selfs: List[Dict[str, Any]]) -> Tuple[Optional[float], f
                     best_t, best_d = track.t[i], d
             if best_t is not None:
                 candidates.append(best_t - anchor["t"])
-    scored = sorted((error(c), c) for c in candidates)
-    err, offset = scored[0]
+    err, offset = min((error(c), c) for c in candidates)
+    if err == math.inf:
+        return None, err
+    # Refine: the coarse candidates come from strided samples.
+    for span, step in ((3.0, 0.25), (0.3, 0.02)):
+        base = offset
+        k = int(span / step)
+        for i in range(-k, k + 1):
+            c = base + i * step
+            e = error(c)
+            if e < err:
+                err, offset = e, c
     return (offset, err) if err < MAX_MEDIAN_ERROR else (None, err)
 
 
@@ -91,60 +119,140 @@ def _channel_from_log(track: Track, times: List[float], values: List[float], off
     return out
 
 
-def _match_unit(rec: Recording, unit: Dict[str, Any], t: float) -> Optional[str]:
-    """A DCS unit (name/type/player/position) -> recording object id."""
-    if not unit:
-        return None
-    player = (unit.get("player") or "").strip()
-    typ = unit.get("type") or ""
-    lat, lon = unit.get("lat"), unit.get("lon")
-    best, best_d = None, 3000.0
-    for tr in rec.tracks.values():
-        if tr.category in ("round", "clutter", "countermeasure") or not tr.alive_at(t, grace=2.0):
-            continue
-        if player and tr.pilot and tr.pilot == player:
-            return tr.id
-        if typ and tr.name != typ:
-            continue
-        if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
+SKIP = ("round", "clutter", "countermeasure", "weapon", "bullseye", "navaid", "misc")
+
+
+class _UnitMatcher:
+    """DCS unit (name/type/player/position) -> recording object id, indexed."""
+
+    def __init__(self, rec: Recording) -> None:
+        self.rec = rec
+        self.by_name: Dict[str, List[Track]] = {}
+        self.by_pilot: Dict[str, Track] = {}
+        self.all: List[Track] = []
+        for tr in rec.tracks.values():
+            if tr.category in SKIP:
+                continue
+            self.all.append(tr)
+            self.by_name.setdefault(tr.name, []).append(tr)
+            if tr.pilot:
+                self.by_pilot.setdefault(tr.pilot, tr)
+        self.static: Dict[Tuple, Optional[str]] = {}
+
+    def match(self, unit: Dict[str, Any], t: float) -> Optional[str]:
+        if not unit:
+            return None
+        player = (unit.get("player") or "").strip()
+        if player and player in self.by_pilot and self.by_pilot[player].alive_at(t, grace=2.0):
+            return self.by_pilot[player].id
+        typ = unit.get("type") or ""
+        lat, lon = unit.get("lat"), unit.get("lon")
+        cands = self.by_name.get(typ) if typ else self.all
+        if not cands:
+            return None
+        if not (isinstance(lat, (int, float)) and isinstance(lon, (int, float))):
+            return None
+        key = (typ, round(lat, 4), round(lon, 4))
+        if key in self.static:  # ground units don't move: match once
+            tid = self.static[key]
+            if tid is None or self.rec.tracks[tid].alive_at(t, grace=2.0):
+                return tid
+        best, best_d = None, 3000.0
+        for tr in cands:
+            if not tr.alive_at(t, grace=2.0):
+                continue
             p = tr.position_interp(t)
             if p is None:
                 continue
             d = geo.ground_distance(lon, lat, p[0], p[1])
             if d < best_d:
-                best, best_d = tr.id, d
-    return best
+                best, best_d = tr, d
+        if best is not None and best.category in ("ground", "sea"):
+            self.static[key] = best.id
+        return best.id if best else None
+
+
+def _match_unit(rec: Recording, unit: Dict[str, Any], t: float) -> Optional[str]:
+    return _UnitMatcher(rec).match(unit, t)
+
+
+def _log_span(path: Path) -> Tuple[Optional[float], Optional[float]]:
+    """Wall-clock start (from the file name, UTC) and end (mtime) without reading it."""
+    try:
+        stamp = path.stem.split("-", 1)[1][:15]
+        start = datetime.strptime(stamp, "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc).timestamp()
+    except (IndexError, ValueError):
+        start = None
+    try:
+        end = path.stat().st_mtime
+    except OSError:
+        end = None
+    return start, end
 
 
 def find_and_merge(rec: Recording, log_dir: str, player: Optional[Track]) -> Optional[Dict[str, Any]]:
+    """Merge every flight log that lines up with this recording."""
     if player is None:
         return None
     rec_wall = _parse_iso8601(str(rec.globals.get("RecordingTime") or ""))
-    best: Optional[Tuple[float, Dict[str, Any], float]] = None
+    lo = hi = None
+    if rec_wall is not None:
+        # RecordingTime is the real time the file was made; allow for it
+        # being the start or the end of the recording.
+        lo = rec_wall.timestamp() - rec.duration - 3600
+        hi = rec_wall.timestamp() + rec.duration + 3600
+    aligned: List[Tuple[float, Dict[str, Any], float]] = []
     for path in list_logs(log_dir):
+        if lo is not None:
+            start, end = _log_span(path)  # cheap filter before parsing
+            if (start is not None and start > hi) or (end is not None and end < lo):
+                continue
         log = read_log(path)
         if not log["self"]:
             continue
-        if rec_wall is not None and log["wallStart"] is not None:
-            # RecordingTime is the real time the file was made; allow for it
-            # being the start or the end of the recording.
-            lo = rec_wall.timestamp() - rec.duration - 3600
-            hi = rec_wall.timestamp() + rec.duration + 3600
-            if log["wallEnd"] < lo or log["wallStart"] > hi:
-                continue
+        if lo is not None and log["wallStart"] is not None and (log["wallEnd"] < lo or log["wallStart"] > hi):
+            continue
         offset, err = align(player, log["self"])
-        if offset is not None and (best is None or err < best[0]):
-            best = (err, log, offset)
-    if best is None:
+        if offset is not None:
+            aligned.append((err, log, offset))
+    if not aligned:
         return None
-    err, log, offset = best
-    return apply(rec, log, offset, err, player)
+    # Keep logs that cover different parts of the flight (a pause or an app
+    # restart splits one flight into several); for overlaps, the best fit.
+    aligned.sort(key=lambda x: x[0])
+    chosen: List[Tuple[float, Dict[str, Any], float, Tuple[float, float]]] = []
+    for err, log, offset in aligned:
+        ts = [r["t"] for r in log["self"]]
+        span = (min(ts) + offset, max(ts) + offset)
+        overlap = sum(max(0.0, min(span[1], c[3][1]) - max(span[0], c[3][0])) for c in chosen)
+        if overlap < 0.5 * (span[1] - span[0]):
+            chosen.append((err, log, offset, span))
+    chosen.sort(key=lambda c: c[3][0])
+    merged: Dict[str, Any] = {"path": chosen[0][1]["path"], "meta": {}, "self": [], "events": [], "world": []}
+    for err, log, offset, span in chosen:
+        merged["meta"].update(log["meta"])
+        for key in ("self", "world", "events"):
+            for r in log[key]:
+                if isinstance(r.get("t"), (int, float)):
+                    merged[key].append({**r, "t": r["t"] + offset})  # now on the recording's clock
+    merged["self"].sort(key=lambda r: r["t"])
+    merged["world"].sort(key=lambda r: r["t"])
+    errs = [c[0] for c in chosen]
+    out = apply(rec, merged, 0.0, max(errs), player)
+    out.update({
+        "log": ", ".join(Path(c[1]["path"]).name for c in chosen),
+        "logs": [Path(c[1]["path"]).name for c in chosen],
+        "offset": chosen[0][2],
+        "coverage": [list(c[3]) for c in chosen],
+    })
+    return out
 
 
 def apply(rec: Recording, log: Dict[str, Any], offset: float, err: float, player: Track) -> Dict[str, Any]:
     selfs = log["self"]
     times = [r["t"] for r in selfs]
     added: List[str] = []
+    matcher = _UnitMatcher(rec)
 
     def put(tr: Track, name: str, series: array) -> None:
         if any(v == v for v in series):
@@ -169,24 +277,39 @@ def apply(rec: Recording, log: Dict[str, Any], offset: float, err: float, player
     for row in log.get("world", []):
         t = row["t"] + offset
         for name, lat, lon, _alt, radar in row.get("u", []):
-            tid = _match_unit(rec, {"type": name, "lat": lat, "lon": lon}, t)
+            tid = matcher.match({"type": name, "lat": lat, "lon": lon}, t)
             if tid is None or tid == player.id:
                 continue
             ts, vs = per_track.setdefault(tid, ([], []))
             ts.append(row["t"])
             vs.append(1.0 if radar else 0.0)
+    radar_series: Dict[str, List[List[float]]] = rec.extras.setdefault("dcsRadar", {})
     for tid, (ts, vs) in per_track.items():
-        put(rec.tracks[tid], "RadarActive", _channel_from_log(rec.tracks[tid], ts, vs, offset, hold=True))
+        tr = rec.tracks[tid]
+        if tr.category in ("ground", "sea"):
+            # Static units have one ACMI sample or so: keep DCS's changes as
+            # their own time series (recording clock) instead of resampling.
+            ct, cv = [], []
+            for t, v in zip(ts, vs):
+                if not cv or cv[-1] != v:
+                    ct.append(round(t + offset, 2))
+                    cv.append(v)
+            radar_series[tid] = [ct, cv]
+            added.append(f"{tid}:RadarActive")
+        else:
+            put(tr, "RadarActive", _channel_from_log(tr, ts, vs, offset, hold=True))
 
     events = []
     for ev in log["events"]:
         t = (ev.get("t") or 0.0) + offset
         events.append({
             "kind": ev.get("kind"), "time": t,
-            "initiatorId": _match_unit(rec, ev.get("initiator") or {}, t),
-            "targetId": _match_unit(rec, ev.get("target") or {}, t),
+            "initiatorId": matcher.match(ev.get("initiator") or {}, t),
+            "targetId": matcher.match(ev.get("target") or {}, t),
             "initiator": ev.get("initiator") or {}, "target": ev.get("target") or {},
             "weapon": ev.get("weapon") or "", "weaponCategory": ev.get("weaponCategory"),
         })
+    ts_all = [r["t"] + offset for r in selfs]
     return {"log": Path(log["path"]).name, "offset": offset, "medianError": err, "events": events,
-            "channels": added, "theatre": log["meta"].get("theatre")}
+            "channels": added, "theatre": log["meta"].get("theatre"),
+            "coverage": [[min(ts_all), max(ts_all)]] if ts_all else []}

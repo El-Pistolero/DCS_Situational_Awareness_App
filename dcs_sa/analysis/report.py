@@ -57,7 +57,7 @@ def analyze(rec: Recording, player_names: Iterable[str] = (), dcs: Optional[Dict
     flying, see :mod:`dcsmerge`); *airbases* are runways read from DCS."""
     destructions = find_destructions(rec)
     weapons = analyze_weapons(rec, destructions)
-    dcs_stats = apply_dcs_events(weapons, rec, dcs["events"]) if dcs else None
+    dcs_stats = apply_dcs_events(weapons, rec, dcs["events"], dcs.get("coverage")) if dcs else None
     landings = analyze_landings(rec, airbases=airbases)
     radar = analyze_radar(rec, {k: v.time for k, v in destructions.items()}, weapons.shots)
     timeline = build_timeline(rec, weapons, landings, radar)
@@ -102,7 +102,8 @@ def analyze(rec: Recording, player_names: Iterable[str] = (), dcs: Optional[Dict
             "spikes": radar["spikes"],
         },
         "timeline": timeline,
-        "dcs": ({"log": dcs["log"], "offset": dcs["offset"], "medianError": dcs["medianError"],
+        "dcs": ({"log": dcs["log"], "logs": dcs.get("logs") or [dcs["log"]], "coverage": dcs.get("coverage"),
+                 "offset": dcs["offset"], "medianError": dcs["medianError"],
                  "channels": len(dcs["channels"]), "channelList": dcs["channels"], "events": len(dcs["events"]),
                  "theatre": dcs.get("theatre"),
                  **(dcs_stats or {})} if dcs else None),
@@ -111,32 +112,29 @@ def analyze(rec: Recording, player_names: Iterable[str] = (), dcs: Optional[Dict
 
 
 def _add_dcs_timeline(items: List[Dict], rec: Recording, dcs: Dict) -> List[Dict]:
-    """DCS-reported hits (grouped per shooter/target) as timeline entries."""
+    """DCS-reported hits (runs per shooter/target/weapon) as timeline entries."""
     out = list(items)
-    groups: Dict[tuple, Dict] = {}
-    for e in dcs["events"]:
-        if e.get("kind") != "hit":
-            continue
-        who = rec.tracks.get(e.get("initiatorId") or "")
-        whom = rec.tracks.get(e.get("targetId") or "")
+    groups: List[Dict] = []
+    open_group: Dict[tuple, Dict] = {}
+    for e in sorted((e for e in dcs["events"] if e.get("kind") == "hit"), key=lambda e: e["time"]):
         key = (e.get("initiatorId"), e.get("targetId"), e.get("weapon"))
-        g = groups.get(key)
+        g = open_group.get(key)
         if g is not None and e["time"] - g["last"] < 3.0:
             g["count"] += 1
             g["last"] = e["time"]
             continue
-        wname = e.get("weapon") or "?"
-        g = groups[key] = {"count": 1, "last": e["time"], "item": {
-            "time": e["time"], "kind": "hit", "severity": "high",
-            "objectIds": [i for i in (e.get("initiatorId"), e.get("targetId")) if i],
-            "who": (who.pilot or who.name) if who else ((e.get("initiator") or {}).get("type") or "?"),
-            "whom": (whom.pilot or whom.name) if whom else ((e.get("target") or {}).get("type") or "?"),
-            "weapon": wname, "source": "DCS"}}
-        out.append(g["item"])
-    for g in groups.values():
-        it = g["item"]
+        who = rec.tracks.get(e.get("initiatorId") or "")
+        whom = rec.tracks.get(e.get("targetId") or "")
+        g = {"count": 1, "last": e["time"], "time": e["time"], "ids": [i for i in (e.get("initiatorId"), e.get("targetId")) if i],
+             "who": (who.pilot or who.name) if who else ((e.get("initiator") or {}).get("type") or "?"),
+             "whom": (whom.pilot or whom.name) if whom else ((e.get("target") or {}).get("type") or "?"),
+             "weapon": e.get("weapon") or "?"}
+        open_group[key] = g
+        groups.append(g)  # every run becomes an entry, not just the last per key
+    for g in groups:
         n = g["count"]
-        it["text"] = f"DCS: {it.pop('who')} hit {it.pop('whom')}" + (f" x{n}" if n > 1 else "") + f" ({it.pop('weapon')})"
+        out.append({"time": g["time"], "kind": "hit", "severity": "high", "objectIds": g["ids"], "source": "DCS",
+                    "text": f"DCS: {g['who']} hit {g['whom']}" + (f" x{n}" if n > 1 else "") + f" ({g['weapon']})"})
     out.sort(key=lambda d: (d["time"], d["kind"]))
     return out
 

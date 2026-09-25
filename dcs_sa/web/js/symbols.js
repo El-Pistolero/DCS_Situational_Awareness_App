@@ -225,7 +225,7 @@ export function radarVolume(o, { assumed = true } = {}) {
   }
   if (!air && on) {
     // Surface search radar reported on with no geometry: full circle up to 30 deg.
-    return { source: "recorded", surface: true, range, az: 180, el: 15, centerAz: 0, centerEl: 15, roll: 0, bodyFrame: false };
+    return { source: isNum(v.RadarMode) ? "recorded" : "dcs", surface: true, range, az: 180, el: 15, centerAz: 0, centerEl: 15, roll: 0, bodyFrame: false };
   }
   return null;
 }

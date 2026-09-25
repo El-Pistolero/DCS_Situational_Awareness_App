@@ -298,6 +298,7 @@ class RecordingStore:
                     out[tr.id]["pitch"] = [r(pitch[i], 1) for i in idx]
                 if roll is not None:
                     out[tr.id]["roll"] = [r(roll[i], 1) for i in idx]
+            dcs_radar = rec.extras.get("dcsRadar", {}).get(tr.id)
             radar = tr.channel("RadarMode")
             scan = tr.channel("ScanAz")
             active = tr.channel("RadarActive")
@@ -324,6 +325,9 @@ class RecordingStore:
                     if col is not None:
                         block[key] = [r(col[i], nd) for i in ridx]
                 out[tr.id]["radar"] = block
+            elif dcs_radar:
+                # Radar on/off as DCS reported it, at the times it changed.
+                out[tr.id]["radar"] = {"t": dcs_radar[0], "active": dcs_radar[1], "src": "dcs"}
             eng = tr.channel("EngagementRange")
             vals = [v for v in eng if v == v and v > 0] if eng is not None else []
             if vals:

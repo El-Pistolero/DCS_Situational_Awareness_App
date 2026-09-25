@@ -288,6 +288,8 @@ class Recording:
         self.end_time: float = 0.0
         self.source_path: Optional[str] = None
         self.parse_warnings: List[str] = []
+        # Data merged in from outside the ACMI (e.g. DCS flight logs).
+        self.extras: Dict[str, Any] = {}
 
     # -- metadata ----------------------------------------------------------
 
