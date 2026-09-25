@@ -571,8 +571,10 @@ def build_sample(duration: float = 1200.0, log: Optional[List[str]] = None) -> L
                     # recorder first sees it - how a 4 Hz sampler observes a
                     # 100 rds/s stream.
                     age = k * 0.01
-                    fire_e, fire_n = player.east - vel_e * age, player.north - vel_n * age
-                    fire_a = player.alt - player.vs * age
+                    # The jet is written after this frame's step: fire from
+                    # there, so round 0 sits at the recorded muzzle.
+                    fire_e, fire_n = player.east + vel_e * (DT - age), player.north + vel_n * (DT - age)
+                    fire_a = player.alt + player.vs * (DT - age)
                     # Dispersion ~5 mil, deterministic; burst 1 walks onto the
                     # target from short, burst 2 is centred.
                     rng_now = math.dist((fire_e, fire_n, fire_a), (tgt_e, tgt_n, tgt_a))
@@ -760,10 +762,8 @@ def build_sample(duration: float = 1200.0, log: Optional[List[str]] = None) -> L
 
         for sh in list(shells):
             if sh.get("seen") != t and t - sh["fired"] >= sh["flight"]:
-                # Impact: one last sample on the ground, then the round is gone.
-                pe, pn, pa = _round_pos(sh, sh["fired"] + sh["flight"])
-                lon, lat = geo.to_lonlat(pe, pn, FIELD_LON, FIELD_LAT)
-                em.update(sh["id"], (lon, lat, pa, None, None, None), {}, {})
+                # Impact: like DCS, the round is simply deleted - no sample
+                # at the impact point.
                 em.remove(sh["id"])
                 shells.remove(sh)
                 if sh["kills"]:

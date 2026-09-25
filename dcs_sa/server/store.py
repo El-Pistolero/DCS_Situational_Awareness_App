@@ -23,6 +23,7 @@ from ..analysis.kinematics import derive
 from .. import threatdb
 from ..analysis.dcsmerge import find_and_merge
 from ..analysis.report import analyze, guess_player, to_markdown
+from ..analysis.weapons import _weapon_samples as weapon_samples
 
 log = logging.getLogger(__name__)
 
@@ -240,8 +241,10 @@ class RecordingStore:
         total = 0
         for tr in rec.tracks.values():
             if tr.category == "round":
-                lon, lat, alt = tr.channel("Longitude"), tr.channel("Latitude"), tr.channel("Altitude")
-                if lon is None or lat is None or not len(tr):
+                # Recorded path, carried on to the removal time (DCS deletes a
+                # round when it hits, a frame after its last sample).
+                pts = weapon_samples(tr)
+                if not pts:
                     continue
                 total += 1
                 if len(rounds) >= MAX_ROUNDS:
@@ -251,13 +254,13 @@ class RecordingStore:
                     "shooter": tr.props.get("Parent") or shooter.get(tr.id),
                     "color": tr.props.get("Color"),
                     "coalition": tr.coalition,
-                    "t": [round(x, 3) for x in tr.t],
-                    "lon": [r(v, 7) for v in lon],
-                    "lat": [r(v, 7) for v in lat],
-                    "alt": [r(v, 1) for v in alt] if alt is not None else [0.0] * len(tr),
+                    "t": [round(p[0], 3) for p in pts],
+                    "lon": [round(p[1], 7) for p in pts],
+                    "lat": [round(p[2], 7) for p in pts],
+                    "alt": [round(p[3], 1) for p in pts],
                     # A round with no removal line would otherwise "fly" until
                     # the recording ends: it ended at its last sample.
-                    "end": tr.removed_at if tr.removed_at is not None else tr.last_seen,
+                    "end": pts[-1][0],
                 })
                 continue
             if tr.category in ("clutter",):

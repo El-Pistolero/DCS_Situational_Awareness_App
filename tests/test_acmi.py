@@ -81,6 +81,23 @@ class ParserTests(unittest.TestCase):
         self.assertTrue(rec.tracks["9"].alive_at(90))
 
 
+class InterpolationTests(unittest.TestCase):
+    def test_position_interp_between_samples(self):
+        b = RecordingBuilder()
+        p = AcmiParser(b)
+        for line in ("FileType=text/acmi/tacview", "FileVersion=2.2", "0,ReferenceLongitude=40", "0,ReferenceLatitude=40",
+                     "#0", "A,T=0|0|1000,Type=Air+FixedWing,Name=F-16C_50", "#2", "A,T=0.02|0.01|3000"):
+            p.feed(line)
+        tr = b.finish().tracks["A"]
+        lon, lat, alt = tr.position_interp(1.0)
+        self.assertAlmostEqual(lon, 40.01, places=6)
+        self.assertAlmostEqual(lat, 40.005, places=6)
+        self.assertAlmostEqual(alt, 2000.0, places=3)
+        # position_at holds the last sample; position_interp does not.
+        self.assertAlmostEqual(tr.position_at(1.0)[2], 1000.0, places=3)
+        self.assertAlmostEqual(tr.position_interp(5.0)[2], 3000.0, places=3)  # held after the last sample
+
+
 class ReaderTests(unittest.TestCase):
     def test_zip_and_plain_files_parse_identically(self):
         body = HEADER + "0,Title=Zip test\n#0\n1,T=1|2|3,Type=Air+FixedWing,Name=F-16C\n"

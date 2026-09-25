@@ -67,21 +67,36 @@ class SampleStrafe(unittest.TestCase):
         for tr in [t for t in self.rec.tracks.values() if t.category == "round"][:20]:
             alt, t = tr.series("Altitude"), list(tr.t)
             # Second difference of altitude ~ -g dt^2 on evenly spaced interior samples.
-            for i in range(1, len(alt) - 2):
+            for i in range(1, len(alt) - 1):
                 dt = t[i + 1] - t[i]
                 if abs((t[i] - t[i - 1]) - dt) > 1e-6:
                     continue
                 accel = (alt[i + 1] - 2 * alt[i] + alt[i - 1]) / (dt * dt)
                 self.assertAlmostEqual(accel, -9.81, delta=0.8)
 
-    def test_rounds_end_on_the_ground_near_the_target(self):
-        tgt = self.rec.tracks["301"].position_at(0)
+    def test_rounds_reach_the_target_although_deleted_before_impact(self):
+        # Like DCS, the sample deletes a round on impact without an impact
+        # sample; carried on to its removal time, each path reaches the target.
+        from dcs_sa.analysis.weapons import _closest_approach, _weapon_samples
+        tgt = self.rec.tracks["301"]
         kill_burst = self.report.bursts[1]
         for rid in kill_burst.round_ids:
-            end = self.rec.tracks[rid].position_at(self.rec.tracks[rid].last_seen)
-            self.assertAlmostEqual(end[2], tgt[2], delta=1.0)
-            d = math.hypot((end[0] - tgt[0]) * M_PER_DEG * math.cos(math.radians(tgt[1])), (end[1] - tgt[1]) * M_PER_DEG)
-            self.assertLess(d, 40.0)
+            tr = self.rec.tracks[rid]
+            self.assertLess(tr.t[-1], tr.removed_at)  # no sample at the impact point
+            _, miss, _ = _closest_approach(_weapon_samples(tr), [tgt], float("inf"))
+            self.assertLess(miss, 40.0)
+
+    def test_rounds_start_ahead_of_the_shooter(self):
+        jet = self.rec.tracks["101"]
+        for b in self.report.bursts:
+            for rid in b.round_ids[:12]:
+                tr = self.rec.tracks[rid]
+                p0, p1 = tr.position_at(tr.t[0]), tr.position_at(tr.t[1])
+                j = jet.position_interp(tr.t[0])
+                kx = M_PER_DEG * math.cos(math.radians(j[1]))
+                fwd = ((p1[0] - p0[0]) * kx, (p1[1] - p0[1]) * M_PER_DEG)
+                rel = ((p0[0] - j[0]) * kx, (p0[1] - j[1]) * M_PER_DEG)
+                self.assertGreaterEqual(fwd[0] * rel[0] + fwd[1] * rel[1], -1.0, rid)  # not behind the jet
 
 
 class AirToAirGunKill(unittest.TestCase):
