@@ -57,7 +57,21 @@ local function esc(s)
   return s
 end
 
+-- Lua has one table type, so an empty list and an empty object look alike.
+-- A list that can legitimately be empty is tagged, and encodes as [] either way.
+local function array(t)
+  t = t or {}
+  local mt = getmetatable(t) or {}
+  mt.__jsonarray = true
+  return setmetatable(t, mt)
+end
+DCSSA.array = array
+
 local function is_array(t)
+  local mt = getmetatable(t)
+  if mt and mt.__jsonarray then return true end
+  -- Empty and untagged: treat it as an object, so {} keeps meaning {}.
+  if next(t) == nil then return false end
   local n = 0
   for k, _ in pairs(t) do
     if type(k) ~= "number" or k < 1 or math.floor(k) ~= k then return false end
@@ -79,7 +93,7 @@ local function encode(v, depth)
   elseif tv == "string" then return '"' .. esc(v) .. '"'
   elseif tv == "table" then
     local parts = {}
-    if next(v) == nil then return "{}" end
+    if next(v) == nil then return is_array(v) and "[]" or "{}" end
     if is_array(v) then
       for i = 1, #v do parts[#parts + 1] = encode(v[i], depth + 1) end
       return "[" .. table.concat(parts, ",") .. "]"
@@ -198,7 +212,8 @@ end
 local function build_payload()
   local p = call("LoGetPayloadInfo")
   if type(p) ~= "table" then return nil end
-  local out = { current = p.CurrentStation, gun = num(pick(p, "Cannon", "shells")), stations = {} }
+  -- A jet with nothing on its pylons still has to send a list, not an object.
+  local out = { current = p.CurrentStation, gun = num(pick(p, "Cannon", "shells")), stations = array() }
   if type(p.Stations) == "table" then
     for i, st in ipairs(p.Stations) do
       if type(st) == "table" and (st.count or 0) > 0 then
@@ -236,7 +251,7 @@ local function build_rwr()
       signal = SIGNAL[e.SignalType] or e.SignalType, label = label,
     }
   end
-  return { mode = tws.Mode, emitters = list }
+  return { mode = tws.Mode, emitters = array(list) }
 end
 
 local function build_lock()

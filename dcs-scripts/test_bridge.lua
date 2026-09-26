@@ -60,3 +60,15 @@ local pkt = DCSSA.snapshot(5)
 assert(pkt.scan and pkt.scan.source == "F-16C FCR", "F-16 FCR scan must be parsed")
 assert(pkt.scan.azHalf == 30 and pkt.scan.bars == 2, "A3 2B -> +/-30 deg, 2 bars")
 print("f16 fcr:", DCSSA.encode(pkt.scan))
+
+-- An aircraft with nothing on its pylons must still send a list.
+do
+  local empty = DCSSA.encode({ stations = DCSSA.array(), emitters = DCSSA.array({}) })
+  assert(empty:find('"stations":%[%]'), "empty stations must encode as [], got " .. empty)
+  assert(empty:find('"emitters":%[%]'), "empty emitters must encode as [], got " .. empty)
+  local one = DCSSA.encode({ stations = DCSSA.array({ { station = 1 } }) })
+  assert(one:find('"stations":%[{'), "a filled list still encodes as an array, got " .. one)
+  local obj = DCSSA.encode({ a = 1 })
+  assert(obj:find('^{"a":1}'), "plain tables still encode as objects, got " .. obj)
+  print("empty list encoding ok")
+end

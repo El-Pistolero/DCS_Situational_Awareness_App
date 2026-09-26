@@ -906,9 +906,18 @@ function storeName(s) {
   return String(s?.name || s?.clsid || "store").replace(/[{}]/g, "").replace(/_/g, "-");
 }
 
+/**
+ * A list from the bridge, whatever shape it arrived in.
+ * Lua cannot tell an empty list from an empty object, so a jet with nothing
+ * on its pylons used to send {} and crash every render that touched it.
+ */
+function asList(v) {
+  return Array.isArray(v) ? v : v && typeof v === "object" ? Object.values(v) : [];
+}
+
 /** The selected store: its name, how many are left of it, and whether it is a JSOW. */
 function selectedStore(own) {
-  const stations = own?.payload?.stations || [];
+  const stations = asList(own?.payload?.stations);
   const cur = stations.find((s) => s?.selected && s.count > 0);
   if (!cur) return null;
   const name = storeName(cur);
@@ -1663,12 +1672,13 @@ function renderEvents() {
 function renderStores(own) {
   const sec = $("storesSec");
   const p = own?.payload;
-  if (!p?.stations?.length && !isNum(p?.gun)) { sec.classList.add("hidden"); return; }
+  const stations = asList(p?.stations);
+  if (!stations.length && !isNum(p?.gun)) { sec.classList.add("hidden"); return; }
   sec.classList.remove("hidden");
   const box = $("stores");
   box.innerHTML = "";
   const agg = new Map();
-  for (const s of p.stations || []) {
+  for (const s of stations) {
     if (!s || !s.count) continue;
     const name = s.name || s.clsid || "store";
     const a = agg.get(name) || { count: 0, sel: false };
@@ -1681,8 +1691,8 @@ function renderStores(own) {
 
 function renderRWR(own, me) {
   const sec = $("rwrSec");
-  const emitters = own?.rwr?.emitters;
-  if (!Array.isArray(emitters)) { sec.classList.add("hidden"); return; }
+  const emitters = asList(own?.rwr?.emitters);
+  if (!own?.rwr || !emitters.length) { sec.classList.add("hidden"); return; }
   sec.classList.remove("hidden");
   const c = $("rwr");
   const r = c.getBoundingClientRect();
