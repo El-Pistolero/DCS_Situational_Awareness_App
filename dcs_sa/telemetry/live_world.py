@@ -172,6 +172,8 @@ class LiveWorld:
             self.recently_destroyed: Deque[Dict[str, Any]] = deque(maxlen=50)
             # Afterburner from fuel flow, per aircraft (live: the dry plateau so far).
             self.ff_ab: Dict[str, IR.FuelFlowAB] = {}
+            # Flare / chaff id -> the jet it appeared next to (DCS writes no Parent on them).
+            self.cm_owner: Dict[str, Optional[str]] = {}
             # Weapon id -> the aircraft that released it, decided when first seen.
             self.launchers: Dict[str, Optional[str]] = {}
             # Weapon id -> (removal time, launcher id, final myWeapons entry).
@@ -220,9 +222,30 @@ class LiveWorld:
             if "Longitude" in numeric or "Latitude" in numeric or "Altitude" in numeric:
                 self._track_motion(obj, t)
             self._note_weapon(obj, t)
+            if obj.category == "countermeasure" and obj.id not in self.cm_owner:
+                self._note_countermeasure(obj, t)
             if self.focus_id is None or (not self.focus_locked and self._better_focus(obj)):
                 if T.is_aircraft(obj.tags):
                     self.focus_id = obj.id
+
+    def _note_countermeasure(self, obj: LiveObject, t: float) -> None:
+        """Who dropped it: the nearest aircraft within 60 m when it appears, unless two are that close."""
+        pos = obj.position()
+        if pos is None:
+            return
+        near = []
+        for ac in self.objects.values():
+            if ac.category not in _AIR or ac.dead:
+                continue
+            p = _position_at(ac, t)
+            if p is None:
+                continue
+            d = geo.slant_range(pos[0], pos[1], pos[2], p[0], p[1], p[2])
+            if d < IR.FLARE_OWNER_RADIUS:
+                near.append((d, ac.id))
+        near.sort()
+        ambiguous = len(near) > 1 and near[1][0] < max(near[0][0], 5.0) * IR.FLARE_OWNER_AMBIGUOUS
+        self.cm_owner[obj.id] = near[0][1] if near and not ambiguous else None
 
     def _mark_dead(self, obj: LiveObject, t: float) -> None:
         """A unit destroyed while its object stays in the stream (Tacview keeps wrecks)."""
@@ -246,6 +269,7 @@ class LiveWorld:
     def on_remove(self, t: float, obj_id: str) -> None:
         with self._lock:
             obj = self.objects.pop(obj_id, None)
+            self.cm_owner.pop(obj_id, None)
             if obj is not None and obj.category in _SURFACE:
                 self.unit_index = None
             if obj is not None and obj.category in ("fixedwing", "rotorcraft", "ground", "sea", "air"):
@@ -534,6 +558,10 @@ class LiveWorld:
                     row["sub"] = True
                 if obj.dead:
                     row["dead"] = True
+                if obj.category == "countermeasure":
+                    row["cmKind"] = "chaff" if "Chaff" in obj.tags else "flare"
+                    if self.cm_owner.get(obj.id):
+                        row["cmOwner"] = self.cm_owner[obj.id]
                 lock = obj.props.get("LockedTarget")
                 if lock and v.get("LockedTargetMode", 1.0) > 0:
                     row["lock"] = lock
@@ -599,10 +627,8 @@ class LiveWorld:
         airborne = (_num(v.get("AGL")) and v["AGL"] > 30) or (_num(v.get("IAS")) and v["IAS"] > 40)
         tracker = self.ff_ab.setdefault(obj.id, IR.FuelFlowAB())
         tracker.add(self.time, ff if _num(ff) else None, bool(airborne))
+        # Never the throttle: the F/A-18C records 1.00 all flight, the F-16C is in afterburner at 1.0.
         lit = tracker.lit(ff if _num(ff) else None)
-        # Tacview: a throttle above 1 is afterburner (never proof of dry: some jets sit at 1.0).
-        if _num(v.get("Throttle")) and v["Throttle"] > 1.005:
-            lit, src = True, "throttle"
         if lit is not None:
             out.update(ab=lit, src=src)
         return out
@@ -670,7 +696,7 @@ class LiveWorld:
                 sk = IR.seeker(obj.name)
                 if sk is not None:
                     # A heat-seeker: no RWR warning, flares work; which part of me it sees.
-                    row.update(ir=True, seeker=sk["display"], allAspect=sk["allAspect"], text="IR MISSILE")
+                    row.update(ir=True, seeker=sk["short"], allAspect=sk["allAspect"], text="IR MISSILE")
                     tail = IR.tail_angle_from(mp, my_hdg if me.heading() is not None else None, me.values.get("Pitch"), op)
                     if tail is not None:
                         row["sees"], row["heatFactor"] = IR.seen_from(tail), round(IR.aspect_factor(tail), 2)

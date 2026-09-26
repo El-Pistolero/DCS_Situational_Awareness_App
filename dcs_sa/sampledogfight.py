@@ -30,6 +30,7 @@ AIR_EVERY = 0.2      # aircraft samples
 MSL_EVERY = 0.15     # missile samples (DCS: ~7 Hz)
 FLARE_EVERY = 0.5    # flare samples (DCS: ~2 Hz)
 FLARE_LIFE = 9.0
+CHAFF_LIFE = 12.0
 
 
 def _v3(hdg: float, pitch: float, speed: float) -> Tuple[float, float, float]:
@@ -48,13 +49,21 @@ class Flare:
     vz: float
     born: float
     last: float = -1e9
+    chaff: bool = False
 
     def step(self, dt: float) -> None:
-        # A burning pellet: drag bleeds its launch speed in a few seconds.
-        k = math.exp(-dt / 1.2)
-        self.ve *= k
-        self.vn *= k
-        self.vz = self.vz * k - G * 0.35 * dt
+        if self.chaff:
+            # A chaff cloud stops almost at once and drifts down.
+            k = math.exp(-dt / 0.4)
+            self.ve *= k
+            self.vn *= k
+            self.vz = -3.0
+        else:
+            # A burning pellet: drag bleeds its launch speed in a few seconds.
+            k = math.exp(-dt / 1.2)
+            self.ve *= k
+            self.vn *= k
+            self.vz = self.vz * k - G * 0.35 * dt
         self.e += self.ve * dt
         self.n += self.vn * dt
         self.alt += self.vz * dt
@@ -132,6 +141,15 @@ def _off_nose(a: Entity, b: Entity) -> float:
 
 
 def build_dogfight_sample(duration: float = 150.0) -> List[str]:
+    # The player's afterburner only changes what the engine channels read, not
+    # the flight, so a first run finds the shot times the schedule hangs on.
+    shots = _run(duration, None)[1]
+    s2, s3 = shots["r73"], shots["aim9b"]
+    # Hot as the R-73 leaves the rail, out of it while flaring; then chasing the MiG.
+    return _run(duration, [(s2 - 8.0, s2 + 1.0), (s2 + 17.0, s3 + 0.5)])[0]
+
+
+def _run(duration: float, ab_spans: Optional[List[Tuple[float, float]]]) -> Tuple[List[str], Dict[str, float]]:
     em = Emitter(FIELD_LON, FIELD_LAT)
     em.raw("FileType=text/acmi/tacview")
     em.raw("FileVersion=2.2")
@@ -150,9 +168,9 @@ def build_dogfight_sample(duration: float = 150.0) -> List[str]:
         a.cmd_hdg, a.cmd_tas, a.cmd_alt, a.max_bank, a.max_accel = a.hdg, a.tas, a.alt, 80.0, 9.0
 
     flares: List[Flare] = []
+    chaff_due: List[Tuple[float, str]] = []
     missiles: List[HeatSeeker] = []
     next_id = [0x4000]
-    ab: Dict[str, bool] = {"101": False, "201": False}
     flare_due: List[Tuple[float, str]] = []
     decoy_at: Dict[str, Tuple[float, str]] = {}   # missile id -> (from time, jet whose next flare it takes)
     kill_pending: List[Tuple[float, str]] = []
@@ -173,7 +191,8 @@ def build_dogfight_sample(duration: float = 150.0) -> List[str]:
         return m
 
     def emit_flare(fl: Flare, first: bool = False) -> None:
-        text = {"Type": "Misc+Decoy+Flare", "Coalition": "Neutral", "Color": "Violet"} if first else {}
+        kind = "Misc+Decoy+Chaff" if fl.chaff else "Misc+Decoy+Flare"
+        text = {"Type": kind, "Coalition": "Neutral", "Color": "Violet"} if first else {}
         em.update(fl.obj_id, (*geo.to_lonlat(fl.e, fl.n, FIELD_LON, FIELD_LAT), fl.alt, None, None, None), {}, text)
 
     t = 0.0
@@ -218,20 +237,15 @@ def build_dogfight_sample(duration: float = 150.0) -> List[str]:
                     phase, t_phase = "break", t
             elif phase == "break":  # Ethan breaks hard into the R-73, flares going
                 ethan.cmd_hdg, ethan.cmd_tas = (ethan.hdg + 45.0) % 360.0, 240.0
-                ab["101"] = True
                 ivan.cmd_hdg = _bearing(ivan, ethan.east, ethan.north)
                 if t - t_phase > 9.0:
                     phase, t_phase = "extend", t
-                    ab["101"] = False
             else:  # the MiG runs in afterburner; Ethan follows it down its tail
                 away = (_bearing(ethan, ivan.east, ivan.north)) % 360.0
                 ivan.cmd_hdg, ivan.cmd_tas, ivan.max_bank = away, 330.0, 45.0
-                ab["201"] = True
                 ethan.cmd_hdg, ethan.cmd_tas = _bearing(ethan, ivan.east, ivan.north), 360.0
-                ab["101"] = True
         else:
             ethan.cmd_hdg, ethan.cmd_tas = ethan.hdg, 250.0
-            ab["101"] = False
 
         # --- shots: each when the geometry allows it ---------------------------------------
         if "aim9a" not in shots and ivan.alive and phase == "turn" and t > t_phase + 8.0 and rng < 3000.0 and _off_nose(ethan, ivan) < 12.0:
@@ -243,34 +257,40 @@ def build_dogfight_sample(duration: float = 150.0) -> List[str]:
             shots["r73"] = t
             m = launch(ivan, "P_73", ethan, t, 45.0, 22.0)
             flare_due.extend((t + 1.4 + k * 0.25, "101") for k in range(8))   # the player's burst
+            chaff_due.extend((t + 1.5 + k * 0.5, "101") for k in range(4))    # and chaff, for a radar missile
             decoy_at[m.obj_id] = (t + 2.6, "101")
         if ("aim9b" not in shots and ivan.alive and phase == "extend" and t > t_phase + 5.0 and 1000.0 < rng < 4500.0
                 and _off_nose(ethan, ivan) < 15.0 and _off_nose(ivan, ethan) > 130.0):  # Ethan in the MiG's rear quarter
             shots["aim9b"] = t
-            launch(ethan, "AIM_9", ivan, t, 40.0, 30.0)   # the MiG in afterburner, no flares left
+            launch(ethan, "AIM_9", ivan, t, 40.0, 30.0)   # the MiG in afterburner
+            flare_due.extend([(t + 2.5, "201"), (t + 2.85, "201")])  # too late: the seeker stays on the MiG
 
         # --- flares ----------------------------------------------------------------------------
-        for due, owner in sorted(flare_due):
+        for due, owner, is_chaff in sorted([(d, o, False) for d, o in flare_due] + [(d, o, True) for d, o in chaff_due]):
             if due > t:
                 continue
-            flare_due.remove((due, owner))
+            (chaff_due if is_chaff else flare_due).remove((due, owner))
             ent = ethan if owner == "101" else ivan
             if not ent.alive:
                 continue
             h = math.radians(ent.hdg)
             side = 1.0 if len(flares) % 2 else -1.0
-            back = 12.0 + (len(flares) % 3) * 4.0
+            # Real flares appear 8-14 m behind the jet.  The jet's sample for this
+            # frame is written after its step, so measure from there.
+            back = 8.0 + (len(flares) % 4) * 2.0 - ent.tas * DT
             fl = Flare(new_id(), ent.east - math.sin(h) * back + math.cos(h) * side * 3.0,
                        ent.north - math.cos(h) * back - math.sin(h) * side * 3.0, ent.alt - 3.0,
                        math.sin(h) * ent.tas * 0.85 + math.cos(h) * side * 20.0,
-                       math.cos(h) * ent.tas * 0.85 - math.sin(h) * side * 20.0, -15.0, t)
+                       math.cos(h) * ent.tas * 0.85 - math.sin(h) * side * 20.0, -15.0, t, chaff=is_chaff)
             fl.last = t
             flares.append(fl)
             emit_flare(fl, first=True)
+            if is_chaff:
+                continue
             # The seeker about to be seduced takes the next flare from that jet.
             for m in missiles:
                 d = decoy_at.get(m.obj_id)
-                if d and m.alive and d[1] == owner and t >= d[0] and not isinstance(m.target, Flare):
+                if d and m.alive and d[1] == owner and t >= d[0] and not isinstance(m.target, Flare) and not fl.chaff:
                     m.target = fl
 
         # --- step ------------------------------------------------------------------------------
@@ -279,7 +299,7 @@ def build_dogfight_sample(duration: float = 150.0) -> List[str]:
                 a.step(DT)
         for fl in list(flares):
             fl.step(DT)
-            if t - fl.born >= FLARE_LIFE:
+            if t - fl.born >= (CHAFF_LIFE if fl.chaff else FLARE_LIFE):
                 em.remove(fl.obj_id)
                 flares.remove(fl)
             elif t - fl.last >= FLARE_EVERY - 1e-9:
@@ -331,13 +351,19 @@ def build_dogfight_sample(duration: float = 150.0) -> List[str]:
                     # Engine data for the recording player's jet only, as DCS writes it: the
                     # F-16's throttle reads ~0.9 at military power and ~1.02 in afterburner,
                     # and fuel flow (kg/h) jumps about eightfold.
-                    num["Throttle"] = 1.02 if ab["101"] else 0.9
-                    num["FuelFlowWeight"] = 24900.0 if ab["101"] else 3100.0
+                    spans = ab_spans if ab_spans is not None else []
+                    num["Throttle"] = 1.02 if any(a <= t < b for a, b in spans) else 0.9
+                    num["FuelFlowWeight"] = round(3100.0 + (24900.0 - 3100.0) * _ab_fraction(spans, t), 1)
                 em.update(a.obj_id, (lon, lat, a.alt, a.bank, a.pitch, a.hdg), num,
                           {"Type": a.type_tags, "Name": a.name, "Pilot": a.pilot or "", "Group": a.group or "",
                            "Coalition": a.coalition, "Color": a.color, "Country": a.country})
         t = round(t + DT, 3)
-    return _tidy(em.lines)
+    return _tidy(em.lines), shots
+
+
+def _ab_fraction(spans: List[Tuple[float, float]], t: float) -> float:
+    """How far the afterburner is lit at t: fuel flow ramps over 1 s at each change."""
+    return max((max(0.0, min(1.0, t - a, b + 1.0 - t)) for a, b in spans), default=0.0)
 
 
 def _tidy(lines: List[str]) -> List[str]:

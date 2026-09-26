@@ -58,8 +58,19 @@ DECOY_SETTLE = 0.5
 DECOY_MIN_TGO = 0.3
 #: deg: velocity is not the missile's body axis (AoA): margin on the gimbal limit.
 GIMBAL_MARGIN = 8.0
-#: s: engine-data afterburner windows shorter than this are spool noise.
-AB_MIN_SPAN = 1.0
+#: deg: margin on the launch look angle (Fi_start).
+LOOK_MARGIN = 3.0
+#: m: the nearest flare pass is reported under this.
+NEAREST_FLARE = 100.0
+#: Afterburner from fuel flow ("two anchors"): at least this many airborne samples,
+AB_MIN_AIR = 30
+#: and a lit mode: the 95th percentile at least this many times the 25th, else unknown.
+AB_BIMODAL = 4.0
+#: Lit: flow >= max(5 x P25, 0.35 x P95).  Dry: flow <= min(2.5 x P25, 0.2 x P95).
+AB_HI_K, AB_HI_P95 = 5.0, 0.35
+AB_LO_K, AB_LO_P95 = 2.5, 0.2
+#: s: flow between the two keeps the last state this long, then it is unknown.
+AB_BAND_HOLD = 2.0
 #: s: the fly-out series step for the shot card.
 SERIES_STEP = 0.25
 
@@ -76,7 +87,7 @@ def _norm(s: str) -> str:
 def table() -> Dict:
     with open(IR_JSON, encoding="utf-8") as f:
         data = json.load(f)
-    data["_missiles"] = {_norm(k): k for k in data["missiles"]}
+    data["_missiles"] = {_norm(k): k for k in (*data["missiles"], *data.get("guidance", {}))}
     for alias, key in data.get("missileAliases", {}).items():
         data["_missiles"].setdefault(_norm(alias), key)
     data["_planes"] = {_norm(k): k for k in data["planes"]}
@@ -94,13 +105,40 @@ def seeker(name: Optional[str]) -> Optional[Dict]:
     if not name:
         return None
     t = table()
-    key = t["_missiles"].get(_norm(name))
-    if key is None:
+    key = _missile_key(name)
+    if key is None or key not in t["missiles"]:
         return None
     s = dict(t["missiles"][key])
     s["key"] = key
-    s["allAspect"] = s.get("aspectLimit", 0) >= 179.0
+    s["allAspect"] = (s.get("aspectLimit") or 0) >= 179.0
+    if s.get("fov") is None:
+        s["fov"] = t.get("fov", 2.0)
+    s["dcsVersion"] = t.get("dcsVersion")
+    s["short"] = short_name(s.get("display")) or key
     return s
+
+
+def _missile_key(name: str) -> Optional[str]:
+    t = table()
+    if name in t["missiles"] or name in t.get("guidance", {}):
+        return name
+    return t["_missiles"].get(_norm(name))
+
+
+def guidance(name: Optional[str]) -> Optional[int]:
+    """DCS Head_Type of a missile that is not IR (2 ARH, 6 SARH ...), or None.
+
+    Tells "not IR (DCS)" apart from "not in the DCS table" (both None from seeker()).
+    """
+    if not name:
+        return None
+    key = _missile_key(name)
+    return table().get("guidance", {}).get(key) if key else None
+
+
+def short_name(display: Optional[str]) -> str:
+    """"R-73 (AA-11 Archer)" -> "R-73": DCS display names without the NATO name."""
+    return re.sub(r"\s*\(.*\)\s*$", "", display or "")
 
 
 def airframe(type_name: Optional[str]) -> Optional[Dict]:
@@ -206,13 +244,13 @@ def is_ir_sam(name: Optional[str]) -> bool:
 class FuelFlowAB:
     """Afterburner from fuel flow as it streams in (live view).
 
-    Lit when the flow is far above the dry plateau seen while flying (DCS
-    jets burn five to eight times more in afterburner).  Until both modes have
-    been seen the answer is None: a jet that has only ever been in afterburner
-    and one that never lit it look the same.  Units do not matter (ratio).
+    The same two-anchor rule as :func:`ab_state`, over the last ten minutes
+    of airborne flow (sampled once a second).  Until the flow has shown both a
+    dry and a lit mode the answer is None: a jet that has only ever been in
+    afterburner and one that never lit it look the same.  Units do not matter.
     """
 
-    def __init__(self, keep: int = 1800) -> None:
+    def __init__(self, keep: int = 600) -> None:
         from collections import deque
         self.samples = deque(maxlen=keep)
         self.last_t: Optional[float] = None
@@ -226,14 +264,17 @@ class FuelFlowAB:
         self.samples.append(ff)
 
     def lit(self, ff: Optional[float]) -> Optional[bool]:
-        if ff is None or ff != ff or len(self.samples) < 20:
+        if ff is None or ff != ff or len(self.samples) < AB_MIN_AIR:
             return None
         s = sorted(self.samples)
-        thr = s[len(s) // 10] * 4.0
-        hi = [v for v in s if v > thr]
-        if not hi or hi[len(hi) // 2] < thr * 1.8:
+        p25, p95 = s[int(0.25 * (len(s) - 1))], s[int(0.95 * (len(s) - 1))]
+        if p95 < AB_BIMODAL * p25:
             return None
-        return ff > thr
+        if ff >= max(AB_HI_K * p25, AB_HI_P95 * p95):
+            return True
+        if ff <= min(AB_LO_K * p25, AB_LO_P95 * p95):
+            return False
+        return None  # between the two: not known
 
 
 def tail_angle(target: Track, t: float, viewer: Sequence[float]) -> Optional[float]:
@@ -255,30 +296,37 @@ def _type_key(tr: Track) -> str:
 def ab_state(tr: Track) -> Dict:
     """Afterburner over time, from recorded data only.
 
-    ``{"state": "noAB" | "recorded" | "unknown", "src": ..., "spans": [[t0, t1], ...]}``.
-    *spans* are the windows the afterburner was lit (``recorded`` only).
-    A type DCS gives no afterburner coefficient is ``noAB``: exact.  An AI
-    aircraft in a Tacview file has no engine data: ``unknown``, never guessed.
+    ``{"state": "noAB" | "recorded" | "unknown", "src", "spans", "unknownSpans"}``:
+    *spans* are the windows the afterburner was lit, *unknownSpans* stretches
+    where the flow sat between dry and lit for more than 2 s.  A type DCS
+    gives no afterburner coefficient is ``noAB`` (exact, whatever channels it
+    has).  An AI aircraft in a Tacview file has no engine data: ``unknown``,
+    never guessed.  Throttle is never used: the F/A-18C records 1.00 all
+    flight, the F-16C is in afterburner at 1.0, the AV-8B reaches 1.17.
     """
     af = airframe(_type_key(tr))
     if af is not None and af["irAB"] is None:
-        return {"state": "noAB", "src": "DCS", "spans": []}
+        return {"state": "noAB", "src": "DCS", "spans": [], "unknownSpans": []}
     ab = tr.channel("Afterburner")
     if ab is not None and any(v == v for v in ab):
-        return {"state": "recorded", "src": "Afterburner", "spans": _spans(tr.t, [v == v and v > 0.05 for v in ab], 0.0)}
-    ff = tr.channel("FuelFlowWeight")
-    if ff is not None:
-        lit = _ab_from_fuel_flow(tr, ff)
-        if lit is not None:
-            return {"state": "recorded", "src": "FuelFlowWeight", "spans": _spans(tr.t, lit, AB_MIN_SPAN)}
-    return {"state": "unknown", "src": None, "spans": []}
+        return {"state": "recorded", "src": "Afterburner", "unknownSpans": [],
+                "spans": _spans(tr.t, [v == v and v > 0.05 for v in ab])}
+    for ch in ("FuelFlowWeight", "DcsFuelFlow"):
+        ff = tr.channel(ch)
+        if ff is None:
+            continue
+        found = _ab_from_fuel_flow(tr, ff)
+        if found is not None:
+            return {"state": "recorded", "src": ch, "spans": found[0], "unknownSpans": found[1]}
+    return {"state": "unknown", "src": None, "spans": [], "unknownSpans": []}
 
 
-def _ab_from_fuel_flow(tr: Track, ff) -> Optional[List[bool]]:
-    """Lit where fuel flow is far above the dry plateau (DCS: x5-8 in AB).
+def _ab_from_fuel_flow(tr: Track, ff) -> Optional[Tuple[List[List[float]], List[List[float]]]]:
+    """(lit spans, unknown spans) from fuel flow, or None when it has no clean dry / lit split.
 
-    The dry reference is the 10th percentile of airborne fuel flow, and the
-    split must be clean: few samples in the gap between dry and lit.
+    DCS jets burn five to eight times more in afterburner.  Two anchors from the
+    airborne flow: its 25th percentile (dry) and 95th (lit, if it was ever lit).
+    A change of class counts from the first of two samples in the new class.
     """
     agl, ias = tr.channel("AGL"), tr.channel("IAS")
     air = []
@@ -288,19 +336,51 @@ def _ab_from_fuel_flow(tr: Track, ff) -> Optional[List[bool]]:
         up = (agl is not None and agl[i] == agl[i] and agl[i] > 30) or (ias is not None and ias[i] == ias[i] and ias[i] > 40)
         if up or (agl is None and ias is None):
             air.append(v)
-    if len(air) < 20:
+    if len(air) < AB_MIN_AIR:
         return None
     air.sort()
-    ref = air[len(air) // 10]
-    thr = max(ref * 4.0, 1.0)
-    # A bimodal split: the lit mode must sit well above the threshold.
-    lit = [v for v in air if v > thr]
-    if not lit or lit[len(lit) // 2] < thr * 1.8:
+    p25, p95 = air[int(0.25 * (len(air) - 1))], air[int(0.95 * (len(air) - 1))]
+    if p95 < AB_BIMODAL * p25:
         return None
-    return [v == v and v > thr for v in ff]
+    hi, lo = max(AB_HI_K * p25, AB_HI_P95 * p95), min(AB_LO_K * p25, AB_LO_P95 * p95)
+    changes: List[Tuple[float, Optional[str]]] = []
+    cur: Optional[str] = None
+    cand: Optional[str] = None
+    cand_t = band_t = None
+    last_t = None
+    for i, v in enumerate(ff):
+        if v != v:
+            continue
+        t = tr.t[i]
+        last_t = t
+        c = "lit" if v >= hi else "dry" if v <= lo else None
+        if c is None:
+            cand = None
+            band_t = t if band_t is None else band_t
+            if cur is not None and t - band_t > AB_BAND_HOLD:
+                changes.append((band_t + AB_BAND_HOLD, None))
+                cur = None
+            continue
+        band_t = None
+        if c == cur:
+            cand = None
+        elif cand == c:
+            changes.append((cand_t, c))
+            cur, cand = c, None
+        else:
+            cand, cand_t = c, t
+    lit: List[List[float]] = []
+    unknown: List[List[float]] = []
+    for k, (t0, st) in enumerate(changes):
+        t1 = changes[k + 1][0] if k + 1 < len(changes) else last_t
+        if st == "lit":
+            lit.append([round(t0, 2), round(t1, 2)])
+        elif st is None:
+            unknown.append([round(t0, 2), round(t1, 2)])
+    return lit, unknown
 
 
-def _spans(ts, flags: List[bool], min_len: float) -> List[List[float]]:
+def _spans(ts, flags: List[bool]) -> List[List[float]]:
     out: List[List[float]] = []
     start = None
     for i, on in enumerate(flags):
@@ -311,7 +391,7 @@ def _spans(ts, flags: List[bool], min_len: float) -> List[List[float]]:
             start = None
     if start is not None:
         out.append([start, ts[len(flags) - 1]])
-    return [[round(a, 2), round(b, 2)] for a, b in out if b - a >= min_len]
+    return [[round(a, 2), round(b, 2)] for a, b in out]
 
 
 def ab_at(state: Dict, t: float) -> Optional[bool]:
@@ -319,6 +399,8 @@ def ab_at(state: Dict, t: float) -> Optional[bool]:
     if state["state"] == "noAB":
         return False
     if state["state"] != "recorded":
+        return None
+    if any(a <= t <= b for a, b in state.get("unknownSpans") or []):
         return None
     return any(a <= t <= b for a, b in state["spans"])
 
@@ -424,7 +506,17 @@ def analyze_ir_shot(rec: Recording, shot, owners: Dict[str, Dict], heat: Dict[st
                     h["outsideAspect"] = th > sk["aspectLimit"]
         out["heat"] = h
 
-    # Flares by the target (and its side) around the flight.
+    # The launch: how far off the shooter's nose (3D) against the seeker's launch look angle.
+    if launcher is not None and lp is not None:
+        tp = target.position_interp(t0)
+        nose = _tail_vector(launcher, t0)
+        if tp is not None and nose is not None:
+            off = _angle((-nose[0], -nose[1], -nose[2]), _enu(tp, lp))
+            if off is not None:
+                out["launch"] = {"offBoresight3d": round(off, 1),
+                                 "outsideLookAngle": off > (sk.get("offBoresight") or 180.0) + LOOK_MARGIN}
+
+    # Flares by the target around the flight (chaff counted apart: it fools radars, not seekers).
     t_end = shot.end_time or (samples[-1][0] if samples else t0)
     mine = [(row["t"], fid) for fid, row in owners.items()
             if row["owner"] == target.id and row["kind"] == "flare"]
@@ -434,18 +526,40 @@ def analyze_ir_shot(rec: Recording, shot, owners: Dict[str, Dict], heat: Dict[st
         "first": min((round(t - t0, 2) for t, _ in mine if t0 <= t <= t_end), default=None),
         "chaff": sum(1 for row in owners.values()
                      if row["owner"] == target.id and row["kind"] == "chaff" and t0 <= row["t"] <= t_end),
+        "salvos": [sv for sv in salvos(owners).get(target.id, [])
+                   if sv["kind"] == "flare" and t0 - 5.0 <= sv["t0"] <= t_end],
     }
     weapon = rec.tracks.get(shot.weapon_id)
     if weapon is None or len(samples) < 3:
         return out
     fly = _fly_out(rec, weapon, target, samples, owners, t0, sk, af, tstate)
     out.update(fly)
+    # The closest the recorded missile came to a flare from the target's side (a fact).
+    side = _side(target)
+    cands = [rec.tracks[fid] for fid, row in owners.items()
+             if row["kind"] == "flare" and fid in rec.tracks and _flare_counts(row, target, side, rec)]
+    if cands:
+        from .weapons import _closest_approach
+        f, d, tf = _closest_approach(samples, cands, NEAREST_FLARE)
+        if f is not None:
+            out["nearestFlare"] = {"id": f.id, "owner": owners[f.id]["owner"], "dist": round(d, 1), "t": round(tf - t0, 2)}
+            dec = out.get("decoy")
+            if dec and d < DECOY_ZEM and tf - t0 >= dec["t"]:
+                # The flare it then flew past is the better answer to "which one".
+                dec["flareId"], dec["owner"] = f.id, owners[f.id]["owner"]
+    # A hit, or a pass inside the fuze distance, was not a decoy whatever the paths suggest.
+    fuze = sk.get("fuze") or 0.0
+    ca = shot.closest_approach
+    if out.get("decoy") and (shot.outcome == "kill" or (ca is not None and ca <= fuze + 2.0)):
+        del out["decoy"]
+    if out.get("decoy") and shot.outcome == "miss" and not shot.outcome_detail:
+        shot.outcome_detail = "likely went for a flare (est.)"
     return out
 
 
 def _seeker_row(sk: Dict) -> Dict:
-    keep = ("key", "display", "ssd", "ccm", "gen", "cooled", "offBoresight", "gimbal", "aspectLimit",
-            "trackRate", "dMax", "dMin", "rangeMax", "fuze", "life", "allAspect")
+    keep = ("key", "display", "short", "ssd", "ccm", "gen", "cooled", "offBoresight", "gimbal", "aspectLimit", "search",
+            "trackRate", "dMax", "dMin", "rangeMax", "fuze", "life", "power", "fov", "src", "dcsVersion", "allAspect")
     return {k: sk[k] for k in keep if k in sk}
 
 
@@ -503,7 +617,8 @@ def _fly_out(rec: Recording, weapon: Track, target: Track, samples, owners, t0: 
             zf, tf = _zem(_enu(fp, mp), (fv[0] - mv[0], fv[1] - mv[1], fv[2] - mv[2]))
             if tf > DECOY_MIN_TGO and (best is None or zf < best[0]):
                 best = (zf, f, _angle(mv, _enu(fp, mp)))
-        on_flare = best is not None and best[0] < DECOY_ZEM and best[0] < DECOY_RATIO * zt
+        on_flare = (best is not None and best[0] < DECOY_ZEM and best[0] < DECOY_RATIO * zt
+                    and zt > 2.0 * (sk.get("fuze") or 0.0))
         streak = streak + 1 if on_flare else 0
         if streak == DECOY_SAMPLES and decoy is None:
             # Decoyed from the first sample of the streak.
@@ -579,10 +694,10 @@ def analyze_ir(rec: Recording, weapons) -> Dict:
             decoys += bool(info.get("decoy"))
     return {
         "source": table()["source"],
+        "dcsVersion": table().get("dcsVersion"),
         "aspect": table()["aspect"],
         "heat": heat,
-        "flares": {fid: {k: v for k, v in row.items() if v is not None and v is not False}
-                   for fid, row in owners.items()},
         "salvos": salvos(owners),
         "decoys": decoys,
+        "_owners": owners,  # for the object rows; dropped from the report
     }

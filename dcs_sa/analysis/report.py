@@ -89,13 +89,16 @@ def analyze(rec: Recording, player_names: Iterable[str] = (), dcs: Optional[Dict
     weapons = analyze_weapons(rec, destructions)
     strikes = analyze_strikes(rec, weapons)
     credit_kills(rec, weapons, strikes)
-    ir = analyze_ir(rec, weapons)
     dcs_stats = apply_dcs_events(weapons, rec, dcs["events"], dcs.get("coverage")) if dcs else None
+    # After DCS's events: they can change which shot killed what.
+    ir = analyze_ir(rec, weapons)
+    owners = ir.pop("_owners")
     if dcs:
         _dcs_strike_hits(strikes, dcs["events"])
     landings = analyze_landings(rec, airbases=airbases)
     radar = analyze_radar(rec, {k: v.time for k, v in destructions.items()}, weapons.shots)
-    timeline = build_timeline(rec, weapons, landings, radar, strikes, ir)
+    player = guess_player(rec, player_names)
+    timeline = build_timeline(rec, weapons, landings, radar, strikes, ir, player.id if player else None)
     if dcs:
         timeline = _add_dcs_timeline(timeline, rec, dcs)
 
@@ -104,7 +107,6 @@ def analyze(rec: Recording, player_names: Iterable[str] = (), dcs: Optional[Dict
         stats = flight_stats(tr, derive(tr))
         aircraft.append({**tr.summary(), "stats": _json_safe(stats)})
 
-    player = guess_player(rec, player_names)
     sub_of = {sid: did for did, sids in weapons.submunitions.items() for sid in sids}
     bullseye = rec.bullseye()
     bpos = bullseye.position_at(bullseye.first_seen) if bullseye else None
@@ -126,7 +128,7 @@ def analyze(rec: Recording, player_names: Iterable[str] = (), dcs: Optional[Dict
         "player": player.id if player else None,
         "bullseye": {"id": bullseye.id, "longitude": bpos[0], "latitude": bpos[1]} if bpos else None,
         "bounds": list(box) if box else None,
-        "objects": [_object_row(tr, sub_of, ir["flares"]) for tr in sorted(rec.tracks.values(), key=lambda t: t.first_seen)
+        "objects": [_object_row(tr, sub_of, owners, ir["salvos"]) for tr in sorted(rec.tracks.values(), key=lambda t: t.first_seen)
                     if tr.category not in ("clutter", "round")],
         "aircraft": aircraft,
         "weapons": weapons.to_dict(),
@@ -150,18 +152,22 @@ def analyze(rec: Recording, player_names: Iterable[str] = (), dcs: Optional[Dict
     })
 
 
-def _object_row(tr: Track, sub_of: Dict[str, str], flares: Optional[Dict[str, Dict]] = None) -> Dict:
+def _object_row(tr: Track, sub_of: Dict[str, str], owners: Optional[Dict[str, Dict]] = None,
+                salvos: Optional[Dict[str, List[Dict]]] = None) -> Dict:
     row = tr.summary()
     if tr.id in sub_of:
         row["dispenser"] = sub_of[tr.id]  # a bomblet: drawn with its dispenser, not listed
-    cm = (flares or {}).get(tr.id)
+    cm = (owners or {}).get(tr.id)
     if cm is not None:
-        # DCS writes no Parent on flares: who dropped it, from where it appeared.
+        # DCS writes no Parent on flares: who dropped it, from the jet it appeared next to.
         row["cmKind"] = cm["kind"]
         if cm.get("owner"):
-            row["owner"] = cm["owner"]
+            row["cmOwner"], row["cmDist"] = cm["owner"], cm["distance"]
+            sv = next((x for x in (salvos or {}).get(cm["owner"], []) if tr.id in x["ids"]), None)
+            if sv is not None:
+                row["cmSalvo"] = sv["n"]
         elif cm.get("ambiguous"):
-            row["ownerAmbiguous"] = True
+            row["cmAmbiguous"] = True
     return row
 
 
