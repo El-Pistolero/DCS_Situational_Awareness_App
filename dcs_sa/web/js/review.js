@@ -2293,9 +2293,15 @@ function renderObjectList() {
     if (chip === "weapons" && o.category !== "weapon") continue;
     if (chip === "hostile" && !(me && isHostile(me, o))) continue;
     if (chip === "alive" && S.deaths.has(o.id) && S.t >= S.deaths.get(o.id)) continue;
+    // Tacview names sides absolutely (Allies = the blue coalition), so flying
+    // red listed your own jet under "ENEMIES".  Label them relative to you,
+    // and keep the coalition's own name in the row's tooltip.
+    const side = !me || !o.coalition ? (o.coalition || "Unknown")
+      : o.coalition === me.coalition ? "Friendly"
+      : isHostile(me, o) ? "Hostile" : (o.coalition || "Unknown");
     const g = o.category === "weapon" ? "Weapons"
       : o.category === "person" ? "Ejected pilots"
-      : `${o.coalition || "Unknown"} · ${surface ? "surface" : "air"}`;
+      : `${side} · ${surface ? "surface" : "air"}`;
     if (!groups.has(g)) groups.set(g, []);
     groups.get(g).push(o);
   }
@@ -2326,6 +2332,8 @@ function renderObjectList() {
       grp.append(el("div", {
         class: `objrow${o.id === S.selected ? " selected" : ""}${dead ? " dead" : ""}${dim ? " gone" : ""}${S.hidden.has(o.id) ? " hid" : ""}`,
         "data-id": o.id,
+        // What DCS calls the side, since the heading now says friendly/hostile.
+        title: o.coalition ? `Coalition: ${o.coalition}` : "",
         onclick: (e) => {
           if (e.shiftKey) { setPadlock(o.id); return; }
           select(o.id); const p = sampleTrack(o.pb, S.t) || sampleTrack(o.pb, o.pb.t[0]); if (p) map.setView(p.lon, p.lat);
