@@ -1,8 +1,8 @@
 """Merge what DCS reported during the flight into a recording's analysis.
 
 A flight log (see :mod:`dcs_sa.flightlog`) holds values read from DCS while
-flying - your control deflections and radar scan zone, every unit's radar
-on/off flag, and DCS's own shot/hit/kill events.  This module finds the log
+flying - your control deflections, radar scan zone and engine, every unit's
+radar on/off flag, and DCS's own shot/hit/kill events.  This module finds the log
 that belongs to a Tacview recording, works out the time offset between the
 two by matching your aircraft's flight path, and then:
 
@@ -36,6 +36,17 @@ NAN = float("nan")
 def _median(xs: List[float]) -> float:
     xs = sorted(xs)
     return xs[len(xs) // 2] if xs else math.inf
+
+
+def _num(v: Any) -> Optional[float]:
+    return float(v) if isinstance(v, (int, float)) and v == v else None
+
+
+def _engine1(rpm: Any) -> Optional[float]:
+    """Engine 1 from the log's [left, right] RPM: the left, else the right."""
+    if not isinstance(rpm, list):
+        return None
+    return next((_num(v) for v in rpm[:2] if _num(v) is not None), None)
 
 
 def _moving_rows(selfs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -271,6 +282,14 @@ def apply(rec: Recording, log: Dict[str, Any], offset: float, err: float, player
     for ch, key in (("ChaffCount", "chaff"), ("FlareCount", "flare")):
         put(player, ch, _channel_from_log(player, times, [(r.get("cm") or {}).get(key) for r in selfs], offset))
     put(player, "GunAmmo", _channel_from_log(player, times, [r.get("gun") for r in selfs], offset))
+    # Engine, where the recording has none: DCS's fuel flow (left + right, in
+    # DCS's raw units - not kg/h, hence its own channel, not FuelFlowWeight)
+    # and engine 1's RPM (the left engine, else the right; DCS gives percent).
+    engs = [r.get("eng") if isinstance(r.get("eng"), dict) else {} for r in selfs]
+    if "FuelFlowWeight" not in player.channels:
+        put(player, "DcsFuelFlow", _channel_from_log(player, times, [_num(e.get("ff")) for e in engs], offset))
+    if "EngineRPM" not in player.channels:
+        put(player, "EngineRPM", _channel_from_log(player, times, [_engine1(e.get("rpm")) for e in engs], offset))
 
     # Every other unit's radar on/off flag (0.5 Hz snapshots).
     per_track: Dict[str, Tuple[List[float], List[float]]] = {}
@@ -308,6 +327,10 @@ def apply(rec: Recording, log: Dict[str, Any], offset: float, err: float, player
             "targetId": matcher.match(ev.get("target") or {}, t),
             "initiator": ev.get("initiator") or {}, "target": ev.get("target") or {},
             "weapon": ev.get("weapon") or "", "weaponCategory": ev.get("weaponCategory"),
+            # Shots (newer hooks): Weapon.GuidanceType and what the weapon
+            # itself was guiding on at launch.
+            "guidance": ev.get("guidance"),
+            "weaponTargetId": matcher.match(ev.get("weaponTarget") or {}, t),
         })
     ts_all = [r["t"] + offset for r in selfs]
     return {"log": Path(log["path"]).name, "offset": offset, "medianError": err, "events": events,

@@ -4,8 +4,8 @@ While DCS runs, the Export.lua bridge (your aircraft) and the hook (DCS
 combat events) stream to the app.  Everything worth keeping is written to a
 JSON-lines file per session in ``Documents/DCS-SA/flightlogs``, so a later
 debrief of the matching Tacview recording can use the values DCS actually
-reported - real hits and kills, control deflections, radar scan zone - rather
-than estimating them from the recording's geometry.
+reported - real hits and kills, control deflections, radar scan zone, fuel
+flow - rather than estimating them from the recording's geometry.
 """
 
 from __future__ import annotations
@@ -52,6 +52,20 @@ def compact_self(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     pl = payload.get("payload")
     if isinstance(pl, dict) and _num(pl.get("gun")) is not None:
         row["gun"] = pl["gun"]
+    e = payload.get("engine")
+    if isinstance(e, dict):
+        # Fuel flow in DCS's own units (left + right, whichever it reports)
+        # and RPM per engine, as [left, right].
+        flow = e.get("flow") if isinstance(e.get("flow"), dict) else {}
+        rpm = e.get("rpm") if isinstance(e.get("rpm"), dict) else {}
+        ff = [flow[k] for k in ("left", "right") if _num(flow.get(k)) is not None]
+        eng: Dict[str, Any] = {}
+        if ff:
+            eng["ff"] = round(sum(ff), 4)
+        if any(_num(rpm.get(k)) is not None for k in ("left", "right")):
+            eng["rpm"] = [round(rpm[k], 2) if _num(rpm.get(k)) is not None else None for k in ("left", "right")]
+        if eng:
+            row["eng"] = eng
     return row
 
 

@@ -6,13 +6,14 @@ import os
 import shutil
 import tempfile
 import unittest
+from array import array
 from datetime import datetime, timezone
 
 from dcs_sa.acmi import parse_file
 from dcs_sa.analysis import geo
-from dcs_sa.analysis.dcsmerge import align, find_and_merge
+from dcs_sa.analysis.dcsmerge import align, apply, find_and_merge
 from dcs_sa.analysis.report import analyze, guess_player
-from dcs_sa.flightlog import FlightRecorder, list_logs, read_log
+from dcs_sa.flightlog import FlightRecorder, compact_self, list_logs, read_log
 from dcs_sa.samplegen import FIELD_LAT, FIELD_LON, RWY_HDG, RWY_LEN, write_sample
 
 SAMPLE = os.path.join(os.path.dirname(__file__), "..", "samples", "sample_sortie.acmi")
@@ -37,7 +38,7 @@ def write_log(path, rec, offset=OFFSET, shift_deg=0.0, events=()):
         rows.append({"k": "self", "t": lt, "lat": lat + shift_deg, "lon": lon, "alt": alt, "wall": WALL0 + t,
                      "ctl": {"pitch": round(math.sin(t / 7.0), 3), "roll": 0.1, "yaw": 0.0},
                      "scan": {"on": True, "azHalf": 60.0, "elHalf": 4.3, "centerAz": 0.0, "centerEl": -2.0},
-                     "cm": {"chaff": 60, "flare": 60}, "gun": 510})
+                     "cm": {"chaff": 60, "flare": 60}, "gun": 510, "eng": {"ff": 1.25, "rpm": [88.5, 0.0]}})
         if int(t * 4) % 8 == 0:
             u = []
             for oid, radar in (("201", True), ("304", True), ("302", False)):
@@ -68,8 +69,13 @@ class MergeFlightLog(unittest.TestCase):
                        "target": unit(rec, "301", tt), "weapon": "M61_20_HE", "weaponCategory": 0})
         ev.append({"kind": "kill", "t": 281.75 - OFFSET, "initiator": unit(rec, "101", 281.75, "Ethan"),
                    "target": unit(rec, "301", 281.75), "weapon": "M61_20_HE", "weaponCategory": 0})
+        # A current hook's shot: guidance and the missile's own target.
         ev.append({"kind": "shot", "t": 102.0 - OFFSET, "initiator": unit(rec, "101", 102.0, "Ethan"),
-                   "weapon": "AIM_120C", "weaponCategory": 1})
+                   "weapon": "AIM_120C", "weaponCategory": 1, "guidance": 3, "weaponTarget": unit(rec, "201", 102.0)})
+        # An older hook's shot (18-field line): neither.
+        ev.append({"kind": "shot", "t": 112.5 - OFFSET, "initiator": unit(rec, "201", 112.5),
+                   "target": {"name": "", "type": "", "player": "", "coalition": None, "lat": None, "lon": None, "alt": None},
+                   "weapon": "R-27ER", "weaponCategory": 1})
         ev.append({"kind": "kill", "t": 133.7 - OFFSET, "initiator": unit(rec, "101", 133.7, "Ethan"),
                    "target": unit(rec, "201", 133.7), "weapon": "AIM_120C", "weaponCategory": 1})
         cls.events = ev
@@ -104,12 +110,16 @@ class MergeFlightLog(unittest.TestCase):
     def test_read_values_become_channels(self):
         chans = set(self.merged["channels"])
         for c in ("101:Elevator", "101:ScanAz", "101:ScanEl", "101:RadarActive", "101:GunAmmo", "201:RadarActive",
-                  "304:RadarActive", "302:RadarActive"):
+                  "304:RadarActive", "302:RadarActive", "101:DcsFuelFlow", "101:EngineRPM"):
             self.assertIn(c, chans)
         me = self.rec.tracks["101"]
         i = me.index_at(200.0)
         self.assertAlmostEqual(me.channels["Elevator"][i], math.sin(me.t[i] / 7.0), delta=0.15)
         self.assertEqual(me.channels["ScanAz"][i], 60.0)
+        # No FuelFlowWeight in this recording: DCS's fuel flow (its units), engine 1 RPM.
+        self.assertEqual(me.channels["DcsFuelFlow"][i], 1.25)
+        self.assertEqual(me.channels["EngineRPM"][i], 88.5)
+        self.assertNotIn("DcsFuelFlow", self.rec.tracks["102"].channels)
         # Static units keep DCS's on/off changes as their own time series.
         series = self.rec.extras["dcsRadar"]
         self.assertEqual(series["302"][1], [0.0])
@@ -121,6 +131,21 @@ class MergeFlightLog(unittest.TestCase):
         self.assertIn(("kill", "101", "301"), kinds)
         self.assertIn(("kill", "101", "201"), kinds)
         self.assertEqual(sum(1 for k in kinds if k == ("hit", "101", "301")), 3)
+
+    def test_shot_carries_the_missiles_own_target(self):
+        shot = next(e for e in self.merged["events"] if e["kind"] == "shot" and e["weapon"] == "AIM_120C")
+        self.assertEqual((shot["guidance"], shot["weaponTargetId"]), (3, "201"))
+        aim = next(s for s in self.report["weapons"]["shots"] if s["weaponName"] == "AIM_120C")
+        self.assertEqual((aim["targetId"], aim["targetSource"], aim["dcsGuidance"]), ("201", "dcs", 3))
+
+    def test_older_hook_shots_still_merge(self):
+        old = next(e for e in self.merged["events"] if e["kind"] == "shot" and e["weapon"] == "R-27ER")
+        self.assertEqual((old["initiatorId"], old["guidance"], old["weaponTargetId"]), ("201", None, None))
+        hit = next(e for e in self.merged["events"] if e["kind"] == "hit")
+        self.assertIsNone(hit["weaponTargetId"])
+        r27 = next(s for s in self.report["weapons"]["shots"] if s["weaponName"] == "R-27ER")
+        self.assertTrue(r27["dcsConfirmed"])
+        self.assertEqual((r27["targetId"], r27["targetSource"], r27["dcsGuidance"]), ("101", "lock", None))
 
     def test_gun_hits_counted_per_burst(self):
         bursts = self.report["weapons"]["bursts"]
@@ -222,6 +247,27 @@ class ReviewRegressions(unittest.TestCase):
         apply_dcs_events(rep, rec, ev)
         self.assertEqual(b.dcs_hits, 4)
 
+    def test_weapon_target_from_dcs_replaces_the_guess(self):
+        from dcs_sa.analysis.weapons import analyze_weapons, apply_dcs_events
+        rec = parse_file(SAMPLE)
+        rep = analyze_weapons(rec)
+        r27 = next(s for s in rep.shots if s.weapon_name == "R-27ER")
+        self.assertEqual((r27.target_id, r27.target_source), ("101", "lock"))
+        # Two DCS shot events near the launch: the nearer one is this missile's.
+        apply_dcs_events(rep, rec, [
+            {"kind": "shot", "time": 113.9, "initiatorId": "201", "weapon": "R-27ER", "weaponCategory": 1,
+             "guidance": 4, "weaponTargetId": "101"},
+            {"kind": "shot", "time": 112.6, "initiatorId": "201", "weapon": "R-27ER", "weaponCategory": 1,
+             "guidance": 4, "weaponTargetId": "102"}])
+        self.assertTrue(r27.dcs_confirmed)
+        self.assertEqual((r27.target_id, r27.target_name, r27.target_pilot), ("102", "F-16C_50", "Viper 1-2"))
+        self.assertEqual((r27.target_source, r27.dcs_guidance), ("dcs", 4))
+        # Launch geometry and miss distance are measured against DCS's target.
+        lp, tp = rec.tracks["201"].position_at(r27.launch_time), rec.tracks["102"].position_at(r27.launch_time)
+        self.assertAlmostEqual(r27.geometry["range"], geo.slant_range(*lp, *tp), delta=1.0)
+        self.assertIsNotNone(r27.closest_approach)
+        self.assertEqual(r27.to_dict()["targetSource"], "dcs")
+
     def test_outside_log_coverage_is_unknown(self):
         from dcs_sa.analysis.weapons import analyze_weapons, apply_dcs_events
         rec = parse_file(SAMPLE)
@@ -260,6 +306,32 @@ class RunwayFromDcs(unittest.TestCase):
         self.assertIsNone(ld.get("runway"))
 
 
+class EngineFromDcs(unittest.TestCase):
+    def test_bridge_engine_block_is_kept(self):
+        base = {"t": 1.0, "self": {"lat": 35.0, "lon": 36.0}}
+        row = compact_self({**base, "engine": {"fuel_internal": 3000, "rpm": {"left": 88.456, "right": 0},
+                                               "temp": {"left": 700}, "flow": {"left": 0.61234, "right": 0.5}}})
+        self.assertEqual(row["eng"], {"ff": 1.1123, "rpm": [88.46, 0.0]})
+        # Only the numbers present; nothing when DCS gave none.
+        self.assertEqual(compact_self({**base, "engine": {"flow": {"right": 2.0}, "rpm": {}}})["eng"], {"ff": 2.0})
+        self.assertNotIn("eng", compact_self({**base, "engine": {"flow": {}, "rpm": {}}}))
+        self.assertNotIn("eng", compact_self(base))
+
+    def test_no_dcs_fuel_flow_over_a_recorded_one(self):
+        rec = parse_file(SAMPLE)
+        me = rec.tracks["101"]
+        me.channels["FuelFlowWeight"] = array("d", [3100.0] * len(me.t))
+        selfs = [{"t": t, "eng": {"ff": 1.5, "rpm": [None, 91.0]}} for t in me.t]
+        out = apply(rec, {"path": "flight-x.jsonl", "meta": {}, "self": selfs, "world": [], "events": []}, 0.0, 0.0, me)
+        self.assertNotIn("101:DcsFuelFlow", out["channels"])
+        self.assertNotIn("DcsFuelFlow", me.channels)
+        self.assertIn("101:EngineRPM", out["channels"])
+        self.assertEqual(me.channels["EngineRPM"][10], 91.0)  # the right engine when the left is missing
+        me.channels["EngineRPM"] = array("d", [50.0] * len(me.t))
+        apply(rec, {"path": "flight-x.jsonl", "meta": {}, "self": selfs, "world": [], "events": []}, 0.0, 0.0, me)
+        self.assertEqual(me.channels["EngineRPM"][10], 50.0)  # a recorded RPM is never replaced
+
+
 class ThreatDatabase(unittest.TestCase):
     def test_lookup_by_dcs_type_name(self):
         from dcs_sa import threatdb
@@ -288,6 +360,7 @@ class Recorder(unittest.TestCase):
             r.on_bridge({"t": 10.0, "self": {"lat": 35.0, "lon": 36.0, "alt": 1000, "pilot": "Ethan", "name": "F-16C_50",
                                              "g": {"y": 1.2}},
                          "controls": {"pitch": 0.25, "roll": -0.1}, "scan": {"on": True, "azHalf": 30.0},
+                         "engine": {"rpm": {"left": 90.0, "right": 0.0}, "flow": {"left": 1.5, "right": 0.0}},
                          "world": [{"name": "MiG-29S", "lat": 35.1, "lon": 36.1, "alt": 5000, "radar": True}]})
             r.on_events([{"kind": "hit", "t": 10.5, "weapon": "M61_20_HE"}])
             r.close()
@@ -298,6 +371,7 @@ class Recorder(unittest.TestCase):
             self.assertEqual(log["meta"]["player"], "Ethan")
             self.assertEqual(log["self"][0]["ctl"]["pitch"], 0.25)
             self.assertEqual(log["self"][0]["g"], 1.2)
+            self.assertEqual(log["self"][0]["eng"], {"ff": 1.5, "rpm": [90.0, 0.0]})
             self.assertEqual(log["world"][0]["u"][0][4], True)
             self.assertEqual(log["events"][0]["kind"], "hit")
         finally:

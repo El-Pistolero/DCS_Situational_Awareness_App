@@ -140,6 +140,7 @@ class Shot:
     killed_name: Optional[str] = None
     dcs_confirmed: Optional[bool] = None   # DCS reported the launch
     dcs_hit: Optional[str] = None          # what DCS says this weapon hit
+    dcs_guidance: Optional[int] = None     # Weapon.GuidanceType DCS reported at launch
     submunitions: int = 0                  # bomblets it dispensed (AGM-154A, CBUs)
     ir: Optional[Dict] = None              # IR missiles: seeker, target heat, flares (analysis.ir)
 
@@ -1041,12 +1042,50 @@ def apply_dcs_events(rep: WeaponReport, rec: Recording, events: List[Dict],
             counts[target_name(e)] = counts.get(target_name(e), 0) + 1
         b.dcs_hit_targets = counts
 
-    for s in rep.shots:
+    # A shot is confirmed when DCS reported its launch.  Each DCS shot event
+    # then goes to one shot, nearest in time first (a ripple of one missile
+    # type has an event per missile), with what DCS knew at launch.
+    by_launcher: Dict[Optional[str], List[Tuple[int, Dict]]] = {}
+    for j, e in enumerate(shots):
+        by_launcher.setdefault(e.get("initiatorId"), []).append((j, e))
+    pairs = []
+    for i, s in enumerate(rep.shots):
         if not covered(s.launch_time):
             s.dcs_confirmed = None
             continue
-        s.dcs_confirmed = any(e.get("initiatorId") == s.launcher_id and abs(e["time"] - s.launch_time) <= 1.5
-                              and _norm(e.get("weapon")) == _norm(s.weapon_name) for e in shots)
+        near = [(abs(e["time"] - s.launch_time), i, j) for j, e in by_launcher.get(s.launcher_id, [])
+                if abs(e["time"] - s.launch_time) <= 1.5 and _norm(e.get("weapon")) == _norm(s.weapon_name)]
+        s.dcs_confirmed = bool(near)
+        pairs.extend(near)
+    paired_shots, paired_events = set(), set()
+    for _, i, j in sorted(pairs):
+        if i in paired_shots or j in paired_events:
+            continue
+        paired_shots.add(i)
+        paired_events.add(j)
+        s, e = rep.shots[i], shots[j]
+        g = e.get("guidance")
+        if isinstance(g, (int, float)) and g == g:
+            s.dcs_guidance = int(g)
+        tgt = rec.tracks.get(e.get("weaponTargetId") or "")
+        if tgt is None or tgt.id == s.launcher_id:
+            continue
+        # The weapon's own target at launch is a fact: it replaces the lock or
+        # closest-approach guess, and what was measured against the guess.
+        if tgt.id != s.target_id:
+            launcher, w = rec.tracks.get(s.launcher_id or ""), rec.tracks.get(s.weapon_id)
+            s.geometry = _launch_geometry(launcher, tgt, s.launch_time) if launcher is not None else {}
+            ca, ct = (_closest_approach(_weapon_samples(w), [tgt], float("inf"))[1:] if w is not None
+                      else (math.inf, NAN))
+            s.closest_approach, s.closest_time = (ca, ct) if ca < math.inf else (None, None)
+            if s.outcome == "miss" or (s.outcome == "damage" and s.outcome_detail.startswith("health")):
+                # Damage read from the target's health: read the real target's.
+                before, after = tgt.value_at("Health", s.launch_time), tgt.value_at("Health", s.end_time + 2.0)
+                if before == before and after == after and after < before - 0.01:
+                    s.outcome, s.outcome_detail = "damage", f"health {before:.2f} -> {after:.2f}"
+                elif s.outcome == "damage":
+                    s.outcome, s.outcome_detail = "miss", ""
+        s.target_id, s.target_name, s.target_pilot, s.target_source = tgt.id, tgt.name, tgt.pilot, "dcs"
 
     # Each missile/bomb hit goes to one shot: the one aimed at that target,
     # else the one whose flight ended nearest the hit.

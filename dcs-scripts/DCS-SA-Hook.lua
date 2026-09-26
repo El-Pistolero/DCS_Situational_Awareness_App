@@ -7,7 +7,8 @@
 --   * airbases: every airfield, helipad and ship deck with its runways
 --   * combat events as DCS itself reports them (shots, hits, kills, gun
 --     start/stop, takeoffs, landings, crashes, ejections), so the debrief can
---     say "DCS confirmed" instead of inferring hits and kills from geometry
+--     say "DCS confirmed" instead of inferring hits and kills from geometry;
+--     shots also carry the weapon's guidance type and its target at launch
 -- Replies go to the app on UDP 127.0.0.1:42680.
 --
 -- Uses only the official scripting API - no game files are read.  Works in
@@ -30,7 +31,11 @@ local theatre = nil
 local events_installed = false
 
 -- Installed once into the mission scripting environment: queues DCS events
--- as '|'-separated lines for the hook to drain.
+-- as '|'-separated lines for the hook to drain:
+--   kind|time|initiator (7)|target (7)|weapon|weaponCategory            18 fields
+-- Shots add, at the end (older hooks stop at 18):
+--   ...|guidance|weapon's own target (7)                                26 fields
+-- The unit groups are name|type|player|coalition|lat|lon|alt.
 local EVENT_INSTALL = [[
 if DCSSA_EVENTS then return "ok" end
 local NAMES = { [1]="shot", [2]="hit", [3]="takeoff", [4]="land", [5]="crash", [6]="ejection",
@@ -61,17 +66,26 @@ world.addEventHandler({ onEvent = function(self, e)
   local kind = NAMES[e.id]
   if not kind then return end
   local ok, line = pcall(function()
-    local w, wcat = "", ""
+    local w, wcat, guid = "", "", ""
     if e.weapon then
       local okw, n = pcall(function() return e.weapon:getTypeName() end)
       if okw then w = clean(n) end
       local okd, d = pcall(function() return e.weapon:getDesc() end)
       if okd and d and d.category then wcat = tostring(d.category) end
+      if okd and d and d.guidance then guid = clean(d.guidance) end
     elseif e.weapon_name then
       w = clean(e.weapon_name)
     end
-    return table.concat({ kind, string.format("%.3f", e.time or timer.getTime()),
-      table.concat(obj(e.initiator), "|"), table.concat(obj(e.target), "|"), w, wcat }, "|")
+    local f = { kind, string.format("%.3f", e.time or timer.getTime()),
+      table.concat(obj(e.initiator), "|"), table.concat(obj(e.target), "|"), w, wcat }
+    if kind == "shot" then
+      -- A shot event has no target: add the weapon's guidance type and what
+      -- the weapon itself is guiding on at launch.
+      local okt, wt = pcall(function() return obj(e.weapon:getTarget()) end)
+      f[#f + 1] = guid
+      f[#f + 1] = table.concat(okt and wt or obj(nil), "|")
+    end
+    return table.concat(f, "|")
   end)
   if ok and line then
     q[#q + 1] = line
@@ -198,6 +212,14 @@ local function unit_json(parts, first)
   return "{" .. table.concat(out, ",") .. "}"
 end
 
+-- A unit, or null when all its fields are empty (no such object).
+local function unit_or_null(parts, first)
+  for k = first, first + #UNIT_FIELDS - 1 do
+    if (parts[k] or "") ~= "" then return unit_json(parts, first) end
+  end
+  return "null"
+end
+
 local function drain_events()
   if not events_installed then
     events_installed = in_mission(EVENT_INSTALL) == "ok"
@@ -207,19 +229,26 @@ local function drain_events()
   if not ok or res == nil then return end
   if res == "gone" then events_installed = false return end
   if res == "" then return end
-  local batch = {}
+  local batch, size = {}, 0
   local function flush()
     if #batch > 0 then send('{"type":"dcs-events","events":[' .. table.concat(batch, ",") .. ']}') end
-    batch = {}
+    batch, size = {}, 0
   end
   for line in string.gmatch(res, "[^\n]+") do
     local parts = {}
     for f in string.gmatch(line .. "|", "([^|]*)|") do parts[#parts + 1] = f end
     if #parts >= 18 then
-      batch[#batch + 1] = '{"kind":' .. jstr(parts[1]) .. ',"t":' .. (tonumber(parts[2]) and parts[2] or "null") ..
+      local ev = '{"kind":' .. jstr(parts[1]) .. ',"t":' .. (tonumber(parts[2]) and parts[2] or "null") ..
         ',"initiator":' .. unit_json(parts, 3) .. ',"target":' .. unit_json(parts, 10) ..
-        ',"weapon":' .. jstr(parts[17]) .. ',"weaponCategory":' .. (tonumber(parts[18]) and parts[18] or "null") .. '}'
-      if #batch >= 150 then flush() end
+        ',"weapon":' .. jstr(parts[17]) .. ',"weaponCategory":' .. (tonumber(parts[18]) and parts[18] or "null")
+      if #parts >= 26 then  -- shots: guidance and the weapon's own target
+        ev = ev .. ',"guidance":' .. (tonumber(parts[19]) and parts[19] or "null") ..
+          ',"weaponTarget":' .. unit_or_null(parts, 20)
+      end
+      batch[#batch + 1] = ev .. '}'
+      size = size + #ev
+      -- Stay well inside one UDP datagram (64 KB).
+      if #batch >= 150 or size > 48000 then flush() end
     end
   end
   flush()

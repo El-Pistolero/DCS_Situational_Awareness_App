@@ -76,3 +76,47 @@ mission_env.DCSSA_EVENTS = nil; handler = nil
 t = 22; CB.onSimulationFrame(); t = 23; CB.onSimulationFrame()
 assert(handler, "handler must be reinstalled after the mission environment resets")
 print("events ok")
+
+-- ---- shots: guidance and the weapon's own target (DCS's shot event has none) ----
+local function nfields(line) local n = 0 for _ in string.gmatch(line .. "|", "([^|]*)|") do n = n + 1 end return n end
+local bandit = unit("Bandit 1", "MiG-29S", nil, 1, 41900, 41950)
+local aim9 = { getTypeName = function() return "AIM_9X" end, getDesc = function() return { category = 1, guidance = 2 } end,
+  getTarget = function() return bandit end }
+local rocket = { getTypeName = function() return "HYDRA_70_M151" end, getDesc = function() return { category = 2 } end,
+  getTarget = function() return nil end }
+local function fire()
+  handler:onEvent({ id = 1, time = 300.5, initiator = me, weapon = aim9 })
+  handler:onEvent({ id = 1, time = 301.0, initiator = me, weapon = rocket })         -- no target
+  handler:onEvent({ id = 1, time = 301.2, initiator = me, weapon_name = "AGM_65D" })  -- no weapon object
+  handler:onEvent({ id = 2, time = 301.5, initiator = me, target = btr, weapon = shell })
+end
+fire()
+local lines = {}
+for l in string.gmatch(mission_env.DCSSA_EVENTS.drain(), "[^\n]+") do lines[#lines + 1] = l end
+assert(#lines == 4, "every event queued")
+for i = 1, 3 do assert(nfields(lines[i]) == 26, "shot line has 26 fields: " .. lines[i]) end
+assert(nfields(lines[4]) == 18, "other events keep 18 fields: " .. lines[4])
+sent = {}
+fire()
+t = 24; CB.onSimulationFrame()
+got = nil
+for _, d in ipairs(sent) do if string.find(d, '"dcs-events"', 1, true) then got = d end end
+assert(got, "events packet must be sent")
+print(got)
+assert(string.find(got, '"weapon":"AIM_9X","weaponCategory":1,"guidance":2,"weaponTarget":{"name":"Bandit 1","type":"MiG-29S",', 1, true),
+  "IR shot carries guidance 2 and the missile's target")
+assert(string.find(got, '"weapon":"HYDRA_70_M151","weaponCategory":2,"guidance":null,"weaponTarget":null}', 1, true))
+assert(string.find(got, '"weapon":"AGM_65D","weaponCategory":null,"guidance":null,"weaponTarget":null}', 1, true))
+assert(string.find(got, '"weapon":"M61_20_HE","weaponCategory":0}', 1, true), "hits carry no shot fields")
+-- A handler installed by an older hook writes 18-field shot lines: still read.
+local old = table.concat({ "shot", "102.000", "Viper 1-1", "F-16C_50", "Ethan", "2", "41.610000", "41.600000", "1000.0",
+  "", "", "", "", "", "", "", "AIM_120C", "1" }, "|")
+mission_env.DCSSA_EVENTS = { drain = function() local s = old; old = ""; return s end }
+sent = {}
+t = 25; CB.onSimulationFrame()
+got = nil
+for _, d in ipairs(sent) do if string.find(d, '"dcs-events"', 1, true) then got = d end end
+assert(got and string.find(got, '"weapon":"AIM_120C","weaponCategory":1}]}', 1, true), "old 18-field line still parsed")
+assert(not string.find(got, '"guidance"', 1, true))
+print(got)
+print("shot guidance ok")
