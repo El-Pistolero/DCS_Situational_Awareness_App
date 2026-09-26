@@ -372,6 +372,22 @@ class WrecksAndTypes(unittest.TestCase):
         self.assertTrue(e["impacted"])
         self.assertEqual(e["targetId"], "651")
 
+    def test_missile_nearly_level_comes_down_at_the_minimum_slope(self):
+        # 1 m/s down (the top of a loft) must not put the impact hours away.
+        w = LiveWorld(["Ethan"])
+        for i in range(5):
+            t = i * 0.5
+            w.on_frame(t)
+            w.on_object(t, "101", _pos(*geo.destination(LON0, LAT0, 90.0, 250.0 * t), 3000.0, Yaw=90.0), F16)
+            if t >= 1.0:
+                tau = t - 1.0
+                w.on_object(t, "3200", _pos(*geo.destination(LON0, LAT0, 90.0, 250.0 + 300.0 * tau), 2990.0 - tau, Yaw=90.0),
+                            {"Type": "Weapon+Missile", "Name": "AGM_65D", "Parent": "101", "Coalition": "Allies"})
+        e = _mine(w, "3200")
+        self.assertEqual(e["family"], "maverick")
+        expect = 2989.0 / math.tan(math.radians(3.0)) / 300.0
+        self.assertAlmostEqual(e["tti"], expect, delta=0.02 * expect)
+
 
 class BridgeWeapons(unittest.TestCase):
     def test_repeated_world_sweep_does_not_stop_a_falling_bomb(self):

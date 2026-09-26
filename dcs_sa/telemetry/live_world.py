@@ -362,6 +362,8 @@ class LiveWorld:
             seen = {f"w{o.get('id')}" for o in world}
             for oid in [k for k, o in self.objects.items() if o.source == "bridge" and oid_is_world(k) and k not in seen]:
                 gone = self.objects.pop(oid)
+                if gone.category in _SURFACE:
+                    self.unit_index = None
                 if gone.category == "weapon":
                     self._retire_weapon(gone, t)  # keeps its myWeapons row for IMPACT_KEEP
 
@@ -703,7 +705,7 @@ class LiveWorld:
         if jet is None:
             return 0.0
         v = jet.values
-        if "AGL" in v and "Altitude" in v:
+        if _num(v.get("AGL")) and _num(v.get("Altitude")):
             return v["Altitude"] - v["AGL"]
         if (time.time() - self.ownship_time) < 3.0 and jet.id == self._ownship_id():
             me = (self.ownship or {}).get("self") or {}
@@ -837,19 +839,20 @@ def _predict_impact(fam: str, pos: Tuple[float, float, float], gs: float, vs: fl
                     track: Optional[float], ground: float) -> Tuple[float, float, float]:
     """(time to impact, lon, lat) of a weapon reaching altitude *ground*.
 
-    Glide weapons keep their glide slope (at least MIN_GLIDE_DEG down);
-    powered missiles fly a straight line; everything else falls in a vacuum.
+    Glide weapons keep their glide slope and powered missiles fly a straight
+    line, both at least MIN_GLIDE_DEG down; everything else falls in a vacuum.
     """
     h = pos[2] - ground
     if h <= 0.0:
         return 0.0, pos[0], pos[1]
     slope = -vs / gs if gs > 1.0 else None  # descent per metre travelled
-    if fam in _POWERED_FAMILIES and vs < 0.0:
-        t = h / -vs
-    elif (fam in _GLIDE_FAMILIES or fam in _POWERED_FAMILIES) and slope is not None:
-        # A powered missile that is not descending (loft, level cruise) is
-        # assumed to come down like a glider.
+    guided = fam in _GLIDE_FAMILIES or fam in _POWERED_FAMILIES
+    if guided and slope is not None:
+        # A missile level or lofting (or nearly so: 1 m/s down would put the
+        # impact hours away) is assumed to come down like a glider.
         t = h / max(slope, math.tan(math.radians(MIN_GLIDE_DEG))) / gs
+    elif fam in _POWERED_FAMILIES and vs < 0.0:
+        t = h / -vs
     else:
         t = (vs + math.sqrt(vs * vs + 2.0 * G * h)) / G  # vs positive up
     dist = gs * t
