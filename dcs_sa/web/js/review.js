@@ -697,6 +697,15 @@ async function showLibrary() {
   }
 }
 
+// A recording dropped anywhere on the window opens it (the start page has its own drop area).
+window.addEventListener("dragover", (e) => { if ([...(e.dataTransfer?.types || [])].includes("Files")) e.preventDefault(); });
+window.addEventListener("drop", (e) => {
+  const f = e.dataTransfer?.files?.[0];
+  if (!f) return;
+  e.preventDefault();
+  if ($("welcome").classList.contains("hidden")) upload(f);
+});
+
 async function upload(file) {
   try {
     const { body } = await api("/api/upload", { method: "POST", headers: { "X-Filename": encodeURIComponent(file.name) }, body: file });

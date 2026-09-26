@@ -18,14 +18,19 @@ SAVED_GAMES_VARIANTS = ("DCS", "DCS.openbeta", "DCS.release_server")
 
 
 def saved_games_dirs() -> List[Path]:
-    homes = []
+    from .winpaths import SAVED_GAMES, known_folder
+
+    roots = []
+    moved = known_folder(SAVED_GAMES)  # "Saved Games" moved to another drive
+    if moved:
+        roots.append(moved)
     if os.environ.get("USERPROFILE"):
-        homes.append(Path(os.environ["USERPROFILE"]))
-    homes.append(Path.home())
+        roots.append(Path(os.environ["USERPROFILE"]) / "Saved Games")
+    roots.append(Path.home() / "Saved Games")
     out: List[Path] = []
-    for home in homes:
+    for root in roots:
         for variant in SAVED_GAMES_VARIANTS:
-            p = home / "Saved Games" / variant
+            p = root / variant
             if p.is_dir() and p not in out:
                 out.append(p)
     return out
@@ -145,3 +150,29 @@ def install_bridge(saved_games: Optional[Path] = None) -> Dict[str, object]:
             export.write_text(f"{text}{sep}{BRIDGE_LINE}\n", encoding="utf-8")
         done.append(str(scripts))
     return {"ok": True, "installed": done}
+
+
+def refresh_bridge(saved_games: Optional[Path] = None) -> List[str]:
+    """After an app update: bring already-installed bridge scripts up to date.
+
+    Only touches folders where the bridge was installed before, and only the
+    two DCS SA script files (never Export.lua).  DCS reads them at start, so
+    the new versions are used from the next DCS start.  Returns the files
+    that were rewritten.
+    """
+    updated: List[str] = []
+    for sg in ([saved_games] if saved_games else saved_games_dirs()):
+        scripts = Path(sg) / "Scripts"
+        if not (scripts / BRIDGE_NAME).is_file():
+            continue
+        for name, dest in ((BRIDGE_NAME, scripts / BRIDGE_NAME), (HOOK_NAME, scripts / "Hooks" / HOOK_NAME)):
+            try:
+                new = bridge_source(name).read_bytes()
+                if dest.is_file() and dest.read_bytes() == new:
+                    continue
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(new)
+                updated.append(str(dest))
+            except OSError:
+                continue  # file locked or folder read-only: the old one keeps working
+    return updated

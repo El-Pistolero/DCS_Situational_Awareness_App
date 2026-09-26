@@ -30,6 +30,13 @@ def default_recording_dirs() -> List[str]:
     user_profile = os.environ.get("USERPROFILE")
     if user_profile:
         candidates.insert(0, Path(user_profile) / "Documents" / "Tacview")
+    # Documents / Saved Games moved to another drive: Windows knows where.
+    from .winpaths import DOCUMENTS, SAVED_GAMES, known_folder
+    docs, saved = known_folder(DOCUMENTS), known_folder(SAVED_GAMES)
+    if saved:
+        candidates[2:2] = [saved / "DCS" / "Tacview", saved / "DCS.openbeta" / "Tacview"]
+    if docs:
+        candidates.insert(0, docs / "Tacview")
     out: List[str] = []
     for c in candidates:
         s = str(c)

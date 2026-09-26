@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from dcs_sa.dcs_profile import install_bridge, parse_logbook
+from dcs_sa.dcs_profile import BRIDGE_NAME, HOOK_NAME, bridge_source, install_bridge, parse_logbook, refresh_bridge
 
 LOGBOOK = '''logbook = {
     ["players"] = {
@@ -35,6 +35,25 @@ class ProfileTests(unittest.TestCase):
             self.assertTrue((sg / "Scripts" / "DCS-SA-Export.lua").is_file())
             self.assertTrue((sg / "Scripts" / "Hooks" / "DCS-SA-Hook.lua").is_file())
             self.assertTrue((sg / "Scripts" / "Export.lua.before-dcs-sa").is_file())
+
+    def test_refresh_bridge_updates_only_installed_scripts(self):
+        with tempfile.TemporaryDirectory() as d:
+            fresh = Path(d) / "DCS.openbeta"
+            (fresh / "Scripts").mkdir(parents=True)
+            self.assertEqual(refresh_bridge(fresh), [])  # never installed: left alone
+            self.assertFalse((fresh / "Scripts" / BRIDGE_NAME).exists())
+
+            sg = Path(d) / "DCS"
+            (sg / "Scripts").mkdir(parents=True)
+            install_bridge(sg)
+            export = (sg / "Scripts" / "Export.lua").read_text()
+            self.assertEqual(refresh_bridge(sg), [])  # already current
+            (sg / "Scripts" / BRIDGE_NAME).write_text("-- old version")
+            (sg / "Scripts" / "Hooks" / HOOK_NAME).unlink()
+            self.assertEqual(len(refresh_bridge(sg)), 2)
+            self.assertEqual((sg / "Scripts" / BRIDGE_NAME).read_bytes(), bridge_source().read_bytes())
+            self.assertTrue((sg / "Scripts" / "Hooks" / HOOK_NAME).is_file())
+            self.assertEqual((sg / "Scripts" / "Export.lua").read_text(), export)
 
 
 if __name__ == "__main__":

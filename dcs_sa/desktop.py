@@ -55,8 +55,43 @@ def _chromium_app_browser() -> Optional[str]:
     return next((c for c in candidates if c and os.path.isfile(c)), None)
 
 
+def _running_instance(port: int) -> Optional[str]:
+    """URL of a DCS SA desktop app already running on this PC, or None."""
+    import json
+    import urllib.request
+
+    url = f"http://127.0.0.1:{port}/"
+    try:
+        with urllib.request.urlopen(url + "api/status", timeout=1.5) as r:
+            body = json.loads(r.read().decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+    return url if isinstance(body, dict) and body.get("desktop") else None
+
+
+def _ask_instance(url: str, live_only: bool) -> bool:
+    """Ask a running DCS SA to open the window this launch was for."""
+    import json
+    import urllib.request
+
+    req = urllib.request.Request(url + ("api/open-live" if live_only else "api/open-debrief"), data=b"{}",
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=3.0) as r:
+            return bool(json.loads(r.read().decode("utf-8")).get("ok"))
+    except (OSError, ValueError):
+        return False
+
+
 def run(cfg: Config, live_only: bool = False) -> int:
     from .server.app import start, stop
+
+    # One copy at a time: a second one (the Live icon while the debrief is open,
+    # or an impatient double-click) would compete with the first for DCS's data.
+    existing = _running_instance(cfg.port)
+    if existing and _ask_instance(existing, live_only):
+        log.info("DCS SA is already running at %s: opened its window instead", existing)
+        return 0
 
     cfg.host = "127.0.0.1"
     cfg.port = _free_port(cfg.port)
@@ -80,16 +115,29 @@ def run(cfg: Config, live_only: bool = False) -> int:
                                      width=1480, height=920, min_size=(900, 600),
                                      background_color="#0b0f14")
 
-        def open_debrief(key: str) -> None:
-            # Switch the main window to that recording and bring it forward.
-            for step in (lambda: main.evaluate_js(f"location.hash='rec={key}'"), main.restore, main.show):
+        def open_debrief(key: Optional[str]) -> None:
+            if live_only:
+                # Started from the Live icon: the debrief gets a window of its own.
+                webview.create_window("DCS SA - Debrief", url + (f"#rec={key}" if key else ""), width=1480, height=920,
+                                      min_size=(900, 600), background_color="#0b0f14")
+                return
+            # Switch the main window to that recording (if any) and bring it forward.
+            steps = [main.restore, main.show]
+            if key:
+                steps.insert(0, lambda: main.evaluate_js(f"location.hash='rec={key}'"))
+            for step in steps:
                 try:
                     step()
                 except Exception:  # noqa: BLE001 - window may be closed or the backend lacks the call
                     pass
 
-        app.open_debrief = None if live_only else open_debrief
+        app.open_debrief = open_debrief
+        # Keep settings (modes, Display choices) between runs: pywebview 5 is private by default.
+        storage = os.path.join(os.path.expanduser("~"), ".dcs-sa", "webview")
+        os.makedirs(storage, exist_ok=True)
         try:
+            webview.start(private_mode=False, storage_path=storage)
+        except TypeError:  # an older pywebview without these options
             webview.start()
         finally:
             stop(app, httpd)
@@ -106,7 +154,7 @@ def run(cfg: Config, live_only: bool = False) -> int:
                                            "--window-size=1480,920"]))
 
         app.open_live_window = lambda: launch(url + "live")
-        app.open_debrief = lambda key: launch(f"{url}#rec={key}")
+        app.open_debrief = lambda key: launch(f"{url}#rec={key}" if key else url)
         launch(first)
         print(f"DCS SA running at {url} - close the window to quit.")
         try:

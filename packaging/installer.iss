@@ -13,9 +13,8 @@ AppComments=DCS World situational awareness and debrief
 DefaultDirName={autopf}\DCS SA
 DefaultGroupName=DCS SA
 DisableProgramGroupPage=yes
-; Per-user install by default: no admin prompt.
+; Per-user install: no admin prompt, and no "install for all users?" question.
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=..\dist
 OutputBaseFilename=DCS-SA-Setup
 SetupIconFile=dcs-sa.ico

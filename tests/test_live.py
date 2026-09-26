@@ -156,15 +156,18 @@ class ServerTests(unittest.TestCase):
                 req = urllib.request.Request(url.rstrip("/") + path, data=json.dumps(body).encode(), method="POST")
                 return json.loads(urllib.request.urlopen(req, timeout=5).read())
 
-            for bad in ("../../etc", "0123456789abcdef", ""):
+            for bad in ("../../etc", "0123456789abcdef"):
                 with self.assertRaises(urllib.error.HTTPError) as ctx:
                     post("/api/open-debrief", {"key": bad})
                 self.assertEqual(ctx.exception.code, 404)
             self.assertEqual(post("/api/open-debrief", {"key": key}), {"ok": False})  # no desktop window
+            self.assertEqual(post("/api/open-debrief", {}), {"ok": False})
             opened = []
             app.open_debrief = opened.append
             self.assertEqual(post("/api/open-debrief", {"key": key}), {"ok": True})
-            self.assertEqual(opened, [key])
+            # No key: a second launch asking the running copy to show its window.
+            self.assertEqual(post("/api/open-debrief", {"key": ""}), {"ok": True})
+            self.assertEqual(opened, [key, None])
             html = urllib.request.urlopen(url, timeout=5).read()
             self.assertIn(b"review.js", html)
             with self.assertRaises(urllib.error.HTTPError):

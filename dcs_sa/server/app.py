@@ -270,6 +270,12 @@ def make_handler(app: App):
                     return self._json({"ok": False})
                 if path == "/api/open-debrief":
                     key = str(self._body_json().get("key") or "")
+                    if not key:
+                        # No recording: just bring the debrief window forward (a second launch).
+                        if app.open_debrief:
+                            app.open_debrief(None)
+                            return self._json({"ok": True})
+                        return self._json({"ok": False})
                     if not re.fullmatch(r"[0-9a-f]{16}", key) or app.store.path_for(key) is None:
                         return self._error(404, "unknown recording")
                     if app.open_debrief:
@@ -464,6 +470,12 @@ def start(cfg: Config):
     desktop shell.
     """
     app = App(cfg)
+    try:
+        from ..dcs_profile import refresh_bridge
+        for path in refresh_bridge():
+            log.info("Updated DCS bridge script %s", path)
+    except Exception as exc:  # noqa: BLE001 - never stop the app over this
+        log.warning("Could not update the DCS bridge scripts: %s", exc)
     err = app.live.start_bridge()
     if err:
         app.warnings.append(err)

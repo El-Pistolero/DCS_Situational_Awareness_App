@@ -1,11 +1,12 @@
 body.live { overflow: hidden; }
-.lv { display: grid; grid-template-columns: 1fr 360px; grid-template-rows: 46px 1fr; height: 100vh; }
-.lv-top { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; padding: 0 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.lv { display: grid; grid-template-columns: 1fr 360px; grid-template-rows: auto 1fr; height: 100vh; }
+/* Wraps to a second row in narrow windows instead of pushing buttons (Connect) off-screen. */
+.lv-top { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-height: 46px; padding: 4px 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
 .lv-top .spacer { flex: 1; }
 .lv-top .rec { width: 10px; height: 10px; border-radius: 50%; background: var(--faint); display: inline-block; }
 .lv-top .rec.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
 .lv-top .rec.stale { background: var(--warn); }
-.lv-status { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 0; }
+.lv-status { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 120px; flex: 1 1 0; }
 /* Controls keep their size; the status text is what gives way. */
 .lv-top > :not(.lv-status):not(.spacer) { flex-shrink: 0; }
 .lv-top .spacer { display: none; }
