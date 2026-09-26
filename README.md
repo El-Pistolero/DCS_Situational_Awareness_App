@@ -88,7 +88,7 @@ The demo `samples/sample_strike.acmi` has a full JSOW strike: two JSOW-As on a m
 
 ## Heat-seekers (AIM-9, R-73) and heat
 
-DCS gives every aircraft type a heat value (its *IR emission coefficient*: 1.0 is a Su-27 at military power; an F-16 is 0.6 dry and 3.0 in afterburner, an A-10 0.53) and makes a jet look **×1.5 hotter from the tail, ×1 from the beam and ×0.5 nose-on**. Each IR missile has its own seeker data: how far it sees a heat-1.0 target, how easily flares fool it, its gimbal limit and whether it is all-aspect. The app ships these numbers from DCS's own files (`dcs_sa/web/data/ir.json`) and draws them:
+DCS gives every aircraft type a heat value (its *IR emission coefficient*: 1.0 is a Su-27 without afterburner; an F-16 is 0.6 dry and 3.0 in afterburner, an A-10 0.53) and makes a jet look **×1.5 hotter from the tail, ×1 from the beam and ×0.5 nose-on**. Each IR missile has its own seeker data: how far it sees a heat-1.0 target, how easily flares fool it, its gimbal limit and whether it is all-aspect. The app ships these numbers from DCS's own files (`dcs_sa/web/data/ir.json`) and draws them:
 
 * **Heat lobes** around jets (Display → Heat (IR); the selected jet and anything an IR missile is chasing, plus you in A-A): the teardrop points out of the tailpipe and its area is the heat DCS gives the jet, so afterburner makes it five times bigger on an F-16. Label: "IR 0.6", "IR 3.0 AB". The selection card adds how hot the jet looks from you ("seen from me ×1.35, 40° off its tail").
 * **Afterburner is never guessed.** Tacview files carry engine data only for the recording player's jet, so the app knows *your* afterburner, from fuel flow (never the throttle, which some jets record wrongly). For everyone else the dry lobe is solid and the afterburner one is a dotted outline: "IR 0.77 · 4.0 if AB". Trail colour **Heat (afterburner)** shows when you had it lit (grey where it's not recorded), and the Flight tab's afterburner bar reads ON / OFF.
@@ -99,7 +99,7 @@ DCS gives every aircraft type a heat value (its *IR emission coefficient*: 1.0 i
 
 **Live:** a heat-seeker coming at you is tagged **IR** (amber) with its own three-beep warning, since your RWR can't see it: "IR MISSILE 3 O'CLOCK · 3s · NO RWR", plus "AB!" when your afterburner is lit. Its row says which part of your jet it's looking at ("sees your TAIL ×1.5"). IR SAMs (SA-9, SA-13, MANPADS, Chaparral, Avenger) are tagged too. The A-A strip shows **HEAT AB 3.0 / DRY 0.6** once your fuel flow has shown both, your heat lobe is drawn with a tick towards each IR missile, and in Glance the fuel cell becomes your flare count while one is inbound.
 
-Everything from DCS carries a small **DCS** badge; everything worked out from the recorded paths is dashed or marked *est.* DCS records no lock or tone, so the app never claims one.
+Chips built on DCS's own seeker data carry a small **DCS** badge (on a warning, it means the limit it is compared with comes from DCS); estimates worked out from the recorded paths are dashed and marked *est.* DCS records no lock or tone, so the app never claims one.
 
 The demo `samples/sample_dogfight.acmi` is an F-16 against a MiG-29: the first AIM-9M goes for the MiG's flares, the MiG's R-73 is beaten by a break and a flare burst, and the second AIM-9M kills the MiG from its six.
 
@@ -107,7 +107,7 @@ The demo `samples/sample_dogfight.acmi` is an F-16 against a MiG-29: the first A
 
 The **ALL | A-A | A-G** switch in the top bar (keys **Shift+A** / **Shift+G**; press again to go back to ALL) changes what the map concentrates on. It only changes when you change it.
 
-* **A-A:** aircraft, missiles and guns; ground units only where they can shoot at you; SAM rings only when you're near them; bandits get **BRAA** and bullseye calls; 10-second velocity vectors; energy-coloured trails; heat lobes on every jet and every IR missile's seeker; the Weapons tab shows the air-to-air shots.
+* **A-A:** aircraft, missiles and guns; ground units only where they can shoot at you; SAM rings only when you're near them; bandits get **BRAA** and bullseye calls; 10-second velocity vectors; energy-coloured trails; heat lobes on the selected jet, on you and on any jet an IR missile is chasing, and the seekers of IR missiles aimed at you or the selected jet; the Weapons tab shows the air-to-air shots.
 * **A-G:** every strike mark, the JSOW launch zone, hostile SAM rings, ground-unit labels near the targets, 5-minute altitude-coloured trails, altitude stalks in 3D; opens the Strike tab.
 * **ALL** is exactly your own settings. Anything you change while in A-A or A-G is remembered for that mode only (a coloured dot marks those rows in **Display**); **Reset** puts a mode back to its defaults.
 * No mode ever hides a missile aimed at you, a spike, the missile warning or bingo.

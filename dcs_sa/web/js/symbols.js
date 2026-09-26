@@ -471,7 +471,7 @@ export function drawScene(ctx, map, objects, opts = {}) {
             ctx.beginPath(); ctx.arc(x, y, 3.6, 0, TAU); ctx.stroke();
           }
           ctx.globalAlpha = fade(o);
-          hits.push({ id: o.id, x, y, r: 6 });
+          hits.push({ id: o.id, x, y, r: 6, cm: true }); // picked only when nothing else is there
         }
         break;
       default:

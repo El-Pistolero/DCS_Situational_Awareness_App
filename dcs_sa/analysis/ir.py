@@ -3,7 +3,7 @@
 What DCS itself defines (``web/data/ir.json``, read from DCS 2.9.29's Lua):
 
 * every aircraft type has an IR emission coefficient, dry and in afterburner,
-  on one scale where 1.0 is a Su-27 at military power;
+  on one scale where 1.0 is a Su-27 without afterburner;
 * the heat a seeker sees depends on aspect: x1.5 from the tail, x1 from the
   beam, x0.5 nose-on (``prbCoeff.lua`` k7 = 0.5);
 * every IR missile has a seeker sensitivity distance, a flare-resistance
@@ -146,7 +146,7 @@ def airframe(type_name: Optional[str]) -> Optional[Dict]:
     if not type_name:
         return None
     t = table()
-    key = t["_planes"].get(_norm(type_name))
+    key = type_name if type_name in t["planes"] else t["_planes"].get(_norm(type_name))
     if key is None:
         return None
     ir, ir_ab = t["planes"][key]
@@ -233,8 +233,8 @@ def seen_from(tail_deg: float) -> str:
     return "tail" if tail_deg < 60.0 else "nose" if tail_deg > 120.0 else "beam"
 
 
-#: DCS ground units that fire IR missiles (SA-9, SA-13, MANPADS, Chaparral, Avenger).
-IR_SAM_RE = re.compile(r"Strela|Igla|Stinger|Avenger|Chaparral|9P31|9A35|\bSA-(9|13|18)\b|Mistral", re.I)
+#: DCS ground units that fire IR missiles (SA-9, SA-13, MANPADS, Chaparral, Avenger, Linebacker).
+IR_SAM_RE = re.compile(r"Strela|Igla|Stinger|Avenger|Linebacker|Chaparral|9P31|9A35|\bSA-(9|13|18)\b|Mistral", re.I)
 
 
 def is_ir_sam(name: Optional[str]) -> bool:
@@ -244,16 +244,19 @@ def is_ir_sam(name: Optional[str]) -> bool:
 class FuelFlowAB:
     """Afterburner from fuel flow as it streams in (live view).
 
-    The same two-anchor rule as :func:`ab_state`, over the last ten minutes
-    of airborne flow (sampled once a second).  Until the flow has shown both a
-    dry and a lit mode the answer is None: a jet that has only ever been in
-    afterburner and one that never lit it look the same.  Units do not matter.
+    The same two-anchor rule as :func:`ab_state`, over the last ten minutes of
+    airborne flow (sampled once a second).  The anchors (dry 25th and lit 95th
+    percentile) are kept once found, so a long stretch in afterburner does not
+    lose the dry reference.  Until the flow has shown both a dry and a lit mode
+    the answer is None: a jet that has only ever been in afterburner and one
+    that never lit it look the same.  Units do not matter.
     """
 
     def __init__(self, keep: int = 600) -> None:
         from collections import deque
         self.samples = deque(maxlen=keep)
         self.last_t: Optional[float] = None
+        self.anchor: Optional[Tuple[float, float]] = None
 
     def add(self, t: float, ff: Optional[float], airborne: bool) -> None:
         if ff is None or ff != ff or ff <= 0 or not airborne:
@@ -264,12 +267,17 @@ class FuelFlowAB:
         self.samples.append(ff)
 
     def lit(self, ff: Optional[float]) -> Optional[bool]:
-        if ff is None or ff != ff or len(self.samples) < AB_MIN_AIR:
+        if ff is None or ff != ff:
             return None
-        s = sorted(self.samples)
-        p25, p95 = s[int(0.25 * (len(s) - 1))], s[int(0.95 * (len(s) - 1))]
-        if p95 < AB_BIMODAL * p25:
+        if len(self.samples) >= AB_MIN_AIR:
+            s = sorted(self.samples)
+            p25, p95 = s[int(0.25 * (len(s) - 1))], s[int(0.95 * (len(s) - 1))]
+            # A new anchor only while the window still has a dry mode like the last one.
+            if p95 >= AB_BIMODAL * p25 and (self.anchor is None or p25 <= 1.5 * self.anchor[0]):
+                self.anchor = (p25, p95)
+        if self.anchor is None:
             return None
+        p25, p95 = self.anchor
         if ff >= max(AB_HI_K * p25, AB_HI_P95 * p95):
             return True
         if ff <= min(AB_LO_K * p25, AB_LO_P95 * p95):
@@ -343,7 +351,9 @@ def _ab_from_fuel_flow(tr: Track, ff) -> Optional[Tuple[List[List[float]], List[
     if p95 < AB_BIMODAL * p25:
         return None
     hi, lo = max(AB_HI_K * p25, AB_HI_P95 * p95), min(AB_LO_K * p25, AB_LO_P95 * p95)
-    changes: List[Tuple[float, Optional[str]]] = []
+    # Unknown until a class is confirmed, and wherever there is no data (a
+    # flight log covering part of the recording, a gap in it).
+    changes: List[Tuple[float, Optional[str]]] = [(tr.t[0], None)]
     cur: Optional[str] = None
     cand: Optional[str] = None
     cand_t = band_t = None
@@ -352,6 +362,10 @@ def _ab_from_fuel_flow(tr: Track, ff) -> Optional[Tuple[List[List[float]], List[
         if v != v:
             continue
         t = tr.t[i]
+        if last_t is not None and t - last_t > AB_BAND_HOLD:
+            if cur is not None:
+                changes.append((last_t + AB_BAND_HOLD, None))
+            cur = cand = band_t = None
         last_t = t
         c = "lit" if v >= hi else "dry" if v <= lo else None
         if c is None:
@@ -369,10 +383,15 @@ def _ab_from_fuel_flow(tr: Track, ff) -> Optional[Tuple[List[List[float]], List[
             cur, cand = c, None
         else:
             cand, cand_t = c, t
+    end = tr.t[len(tr) - 1]
+    if last_t is not None and end - last_t > AB_BAND_HOLD and cur is not None:
+        changes.append((last_t, None))  # the data stops before the recording does
     lit: List[List[float]] = []
     unknown: List[List[float]] = []
     for k, (t0, st) in enumerate(changes):
-        t1 = changes[k + 1][0] if k + 1 < len(changes) else last_t
+        t1 = changes[k + 1][0] if k + 1 < len(changes) else end
+        if t1 <= t0:
+            continue
         if st == "lit":
             lit.append([round(t0, 2), round(t1, 2)])
         elif st is None:
@@ -474,7 +493,7 @@ def salvos(owners: Dict[str, Dict]) -> Dict[str, List[Dict]]:
 def analyze_ir_shot(rec: Recording, shot, owners: Dict[str, Dict], heat: Dict[str, Dict],
                     samples: List[Tuple[float, float, float, float]]) -> Optional[Dict]:
     """Seeker facts, target heat and the flare fight for one IR missile shot."""
-    sk = seeker(shot.weapon_name)
+    sk = seeker(shot.weapon_name) or _event_seeker(shot)
     if sk is None:
         return None
     out: Dict = {"seeker": _seeker_row(sk)}
@@ -502,19 +521,21 @@ def analyze_ir_shot(rec: Recording, shot, owners: Dict[str, Dict], heat: Dict[st
                 h["seen"] = round(c * aspect_factor(th), 3)
                 if lit is None and af["irAB"]:
                     h["seenAB"] = round(af["irAB"] * aspect_factor(th), 3)
-                if not sk["allAspect"]:
+                if not sk.get("allAspect", True) and isinstance(sk.get("aspectLimit"), (int, float)):
                     h["outsideAspect"] = th > sk["aspectLimit"]
         out["heat"] = h
 
     # The launch: how far off the shooter's nose (3D) against the seeker's launch look angle.
-    if launcher is not None and lp is not None:
+    # Aircraft only: a soldier's or a turreted launcher's heading is not where the tube points.
+    if launcher is not None and lp is not None and launcher.category in ("fixedwing", "rotorcraft", "air") \
+            and isinstance(sk.get("offBoresight"), (int, float)):
         tp = target.position_interp(t0)
         nose = _tail_vector(launcher, t0)
         if tp is not None and nose is not None:
             off = _angle((-nose[0], -nose[1], -nose[2]), _enu(tp, lp))
             if off is not None:
                 out["launch"] = {"offBoresight3d": round(off, 1),
-                                 "outsideLookAngle": off > (sk.get("offBoresight") or 180.0) + LOOK_MARGIN}
+                                 "outsideLookAngle": off > sk["offBoresight"] + LOOK_MARGIN}
 
     # Flares by the target around the flight (chaff counted apart: it fools radars, not seekers).
     t_end = shot.end_time or (samples[-1][0] if samples else t0)
@@ -544,7 +565,7 @@ def analyze_ir_shot(rec: Recording, shot, owners: Dict[str, Dict], heat: Dict[st
         if f is not None:
             out["nearestFlare"] = {"id": f.id, "owner": owners[f.id]["owner"], "dist": round(d, 1), "t": round(tf - t0, 2)}
             dec = out.get("decoy")
-            if dec and d < DECOY_ZEM and tf - t0 >= dec["t"]:
+            if dec and d < DECOY_ZEM and tf - t0 >= dec["t"] and f.first_seen <= t0 + dec["t"]:
                 # The flare it then flew past is the better answer to "which one".
                 dec["flareId"], dec["owner"] = f.id, owners[f.id]["owner"]
     # A hit, or a pass inside the fuze distance, was not a decoy whatever the paths suggest.
@@ -557,9 +578,18 @@ def analyze_ir_shot(rec: Recording, shot, owners: Dict[str, Dict], heat: Dict[st
     return out
 
 
+def _event_seeker(shot) -> Optional[Dict]:
+    """A missile DCS's own shot event called IR (Weapon.GuidanceType 2) that the table doesn't know."""
+    if getattr(shot, "dcs_guidance", None) != 2:
+        return None
+    return {"key": shot.weapon_name, "display": shot.weapon_name, "short": shot.weapon_name,
+            "fromEvent": True, "src": "DCS shot event (guidance: IR)"}
+
+
 def _seeker_row(sk: Dict) -> Dict:
     keep = ("key", "display", "short", "ssd", "ccm", "gen", "cooled", "offBoresight", "gimbal", "aspectLimit", "search",
-            "trackRate", "dMax", "dMin", "rangeMax", "fuze", "life", "power", "fov", "src", "dcsVersion", "allAspect")
+            "trackRate", "dMax", "dMin", "rangeMax", "fuze", "life", "power", "fov", "src", "dcsVersion", "allAspect",
+            "fromEvent")
     return {k: sk[k] for k in keep if k in sk}
 
 
@@ -578,6 +608,7 @@ def _fly_out(rec: Recording, weapon: Track, target: Track, samples, owners, t0: 
     gimbal_exceeded: Optional[float] = None
     last_series = -1e9
     passed = False
+    closed = False  # has the missile started closing? (not yet during boost or a MANPADS ejection)
     for i in range(1, len(samples)):
         t, lo, la, al = samples[i]
         if t - t0 < DECOY_SETTLE:
@@ -597,10 +628,13 @@ def _fly_out(rec: Recording, weapon: Track, target: Track, samples, owners, t0: 
         rel = _enu(tp, mp)
         zt, tgo = _zem(rel, (tv[0] - mv[0], tv[1] - mv[1], tv[2] - mv[2]))
         if tgo <= 0.0:
-            passed = True
-            break
+            if closed:
+                passed = True
+                break
+            continue  # still slower than the target: not a pass
+        closed = True
         look = _angle(mv, rel)
-        if look is not None and look > sk.get("gimbal", 90.0) + GIMBAL_MARGIN:
+        if look is not None and look > (sk.get("gimbal") or 90.0) + GIMBAL_MARGIN:
             beyond += 1
             if beyond >= 2 and gimbal_exceeded is None:
                 gimbal_exceeded = round(t - t0, 2)
@@ -684,7 +718,7 @@ def analyze_ir(rec: Recording, weapons) -> Dict:
     from .weapons import _weapon_samples
     decoys = 0
     for shot in weapons.shots:
-        if seeker(shot.weapon_name) is None:
+        if seeker(shot.weapon_name) is None and _event_seeker(shot) is None:
             continue
         w = rec.tracks.get(shot.weapon_id)
         samples = _weapon_samples(w) if w is not None else []

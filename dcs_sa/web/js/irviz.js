@@ -1,7 +1,7 @@
 // Heat (IR) overlay for the 2D map.
 //
 // What is DCS data (drawn solid): each aircraft type's IR emission
-// coefficient, dry and in afterburner (1.0 = a Su-27 at military power), the
+// coefficient, dry and in afterburner (1.0 = a Su-27 without afterburner), the
 // aspect factor (x1.5 from the tail, x1 beam, x0.5 nose-on: DCS prbCoeff k7),
 // and each IR missile's seeker limits (gimbal, launch look angle).
 // What is recorded: positions, flares, and afterburner for the recording
@@ -41,6 +41,7 @@ export function abAt(h, t) {
   if (!h) return null;
   if (h.state === "noAB") return false;
   if (h.state !== "recorded") return null;
+  if ((h.unknownSpans || []).some(([a, b]) => a <= t && t <= b)) return null; // flow between dry and lit, or not logged
   return h.spans.some(([a, b]) => a <= t && t <= b);
 }
 

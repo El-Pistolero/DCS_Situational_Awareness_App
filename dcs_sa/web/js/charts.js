@@ -59,6 +59,8 @@ export class LineChart {
   setVBands(bands) { this.vbands = bands || []; this.draw(); }
   /** Short vertical marks at x positions: [{x, color, w}]. */
   setMarks(marks) { this.marks = marks || []; this.draw(); }
+  /** Labelled vertical lines: [{x, label, color, dash}]. */
+  setVLines(lines) { this.vlines = lines || []; this.draw(); }
 
   _sx(x) {
     const { l, r } = this.pad;
@@ -150,6 +152,20 @@ export class LineChart {
       const xa = this._sx(mk.x), xb = this._sx(mk.x + (mk.w || 0));
       ctx.fillStyle = mk.color;
       ctx.fillRect(Math.min(xa, xb), this.h - b - 8, Math.max(2, Math.abs(xb - xa)), 8);
+    }
+    for (const vl of this.vlines || []) {
+      const x = Math.round(this._sx(vl.x)) + 0.5;
+      ctx.strokeStyle = vl.color || "rgba(255,255,255,0.8)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash(vl.dash || []);
+      ctx.beginPath(); ctx.moveTo(x, t); ctx.lineTo(x, this.h - b); ctx.stroke();
+      ctx.setLineDash([]);
+      if (vl.label) {
+        ctx.font = "10px ui-monospace, monospace";
+        ctx.fillStyle = vl.color || "rgba(255,255,255,0.85)";
+        ctx.textAlign = "left"; ctx.textBaseline = "top";
+        ctx.fillText(vl.label, x + 3, t + 2);
+      }
     }
     for (const s of this.series) {
       ctx.strokeStyle = s.color;

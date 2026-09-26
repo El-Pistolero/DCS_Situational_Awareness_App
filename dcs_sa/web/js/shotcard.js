@@ -121,9 +121,9 @@ export function buildShotCard(shot, ctx) {
   // -- (2) fly-out charts ----------------------------------------------------------
   if (xs.length > 1) {
     const vb = [...beams.map((w) => ({ ...w, color: BEAM })), ...colds.map((w) => ({ ...w, color: COLD }))];
-    // Flare releases amber, chaff grey, the estimated decoy moment white.
-    const marks = [...cms.map((x) => ({ x, w: 1, color: "rgba(255,159,67,0.95)" })), ...chaff.map((x) => ({ x, w: 1, color: "rgba(154,164,177,0.9)" })),
-      ...(ir?.decoy ? [{ x: ir.decoy.t, w: 1, color: "rgba(255,255,255,0.8)" }] : [])];
+    // Flare releases amber, chaff grey; the estimated decoy moment is a labelled dashed line.
+    const marks = [...cms.map((x) => ({ x, w: 1, color: "rgba(255,159,67,0.95)" })), ...chaff.map((x) => ({ x, w: 1, color: "rgba(154,164,177,0.9)" }))];
+    const vlines = ir?.decoy ? [{ x: ir.decoy.t, label: "decoy (est.)", dash: [3, 3] }] : [];
     const mk = (title, series, yFormat, { yMin, yMax, xMax, bands } = {}) => {
       const c = el("canvas", { class: "flyout" });
       card.append(c);
@@ -132,6 +132,7 @@ export function buildShotCard(shot, ctx) {
       ch.setData(series, { xMin: 0, xMax: x1, yMin, yMax });
       ch.setVBands(bands ?? vb);
       ch.setMarks(marks.filter((m) => m.x <= x1));
+      ch.setVLines(vlines.filter((v) => v.x <= x1));
       ch._markerFn = (t) => (t >= t0 && t <= t1 ? t - t0 : null);
       ctx.charts.push(ch);
     };
@@ -277,7 +278,8 @@ function irChips(ir, shot, chip, cms, chaff, T) {
   const src = `DCS ${sk.dcsVersion || "2.9"} · ${sk.src || "rockets"}`;
   const dcs = (text, cls = "") => chip(text, `${cls} dcs`.trim(), src);
   const est = (text, cls = "", title = null) => chip(`~ ${text}`, `${cls} est`.trim(), title);
-  dcs(sk.allAspect ? `${name} · IR seeker · all-aspect` : `${name} · IR seeker · rear-aspect only (within ${Math.round(sk.aspectLimit)}° of the tail)`);
+  if (sk.fromEvent) dcs(`${name} · IR (DCS shot event) · not in the DCS seeker table, so no seeker limits`);
+  else dcs(sk.allAspect ? `${name} · IR seeker · all-aspect` : `${name} · IR seeker · rear-aspect only (within ${Math.round(sk.aspectLimit)}° of the tail)`);
   if (isNum(sk.ccm)) dcs(`flare resistance ${sk.ccm} (DCS ccm_k0: 0 immune · 1 medium · higher = easier to decoy)`);
   const lim = [isNum(sk.gimbal) ? `gimbal ${Math.round(sk.gimbal)}°` : "", isNum(sk.trackRate) ? `${Math.round(sk.trackRate)}°/s` : "",
     isNum(sk.offBoresight) ? `launch look angle ${Math.round(sk.offBoresight)}°` : "", isNum(sk.fuze) ? `fuze ${sk.fuze} m` : "",
@@ -312,7 +314,8 @@ function irChips(ir, shot, chip, cms, chaff, T) {
   if (nf && nf.dist < 50) chip(`Passed ${fmtShort(nf.dist)} from a flare at ${fmtRel(nf.t)}`, "", "Recorded: the closest the missile's path came to a flare from the target's side");
   if (isNum(ir.gimbalExceeded)) dcs(`look angle beyond the DCS gimbal (+8° margin) at ${fmtRel(ir.gimbalExceeded)}`, "warn");
   if (isNum(sk.power) && isNum(shot.timeOfFlight) && shot.timeOfFlight > sk.power) dcs("flight time longer than the seeker power time", "warn");
-  if (isNum(sk.fuze) && isNum(shot.closestApproach) && shot.outcome !== "kill" && shot.closestApproach > 2 * sk.fuze + 10) {
+  // Misses only: a hit or kill that detonated between samples also shows a large recorded closest approach.
+  if (isNum(sk.fuze) && isNum(shot.closestApproach) && shot.outcome === "miss" && !shot.dcsHit && shot.closestApproach > 2 * sk.fuze + 10) {
     dcs(`passed outside the DCS fuze distance (${sk.fuze} m)`);
   }
 }
@@ -328,10 +331,12 @@ function irCharts(ir, card, mk, xs) {
   const xMax = Math.min(xs[xs.length - 1], x[x.length - 1] + 1);
   const bands = ir.decoy ? [{ x0: ir.decoy.t, x1: xMax, color: "rgba(255,159,67,.14)" }] : [];
   const flareSeen = ser.some((r) => isNum(r.zemFlare));
-  mk("Predicted miss (est., log scale)", [
+  const unit = units.metric ? "m" : "ft";
+  const compact = (v) => { const u = 10 ** v * (units.metric ? 1 : M_TO_FT); return u >= 1000 ? `${(u / 1000).toFixed(1)}k` : `${Math.round(u)}`; };
+  mk(`Predicted miss (${unit}, est., log scale)`, [
     { name: "jet", color: "#ffd166", x, y: ser.map((r) => lg(r.zem)) },
     flareSeen ? { name: "best flare", color: "#ff9f43", x, y: ser.map((r) => lg(r.zemFlare)), dash: [4, 3] } : null,
-  ].filter(Boolean), (v) => fmtShort(10 ** v), { yMin: 0, yMax: Math.log10(3000), xMax, bands });
+  ].filter(Boolean), compact, { yMin: 0, yMax: Math.log10(3000), xMax, bands });
   const gim = ir.seeker?.gimbal;
   mk("Seeker look angle (°)", [
     { name: "jet", color: "#ffd166", x, y: ser.map((r) => (isNum(r.look) ? r.look : null)) },

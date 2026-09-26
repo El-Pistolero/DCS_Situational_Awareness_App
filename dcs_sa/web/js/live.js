@@ -1015,7 +1015,7 @@ function sceneObjects(snap, { for3d = false } = {}) {
     if (o.category === "countermeasure") {
       // Ringed in the colour of the jet it came from (the server's guess: nearest jet when it appeared).
       const owner = o.cmOwner && snap.objects.find((x) => x.id === o.cmOwner);
-      row.cmColor = flareColor(owner || null);
+      row.cmColor = flareColor(owner || o.cmOwnerSide || null); // the side stays after the jet is gone
     }
     if (targets && isSurface(o) && !dead && me && (aimed.has(o.id) || (isHostile(me, o) && distance(me.lon, me.lat, o.lon, o.lat) <= 10 * NM))) row.labelMe = true;
     if (o.id === S.target?.id) row.labelMe = true;
@@ -1436,7 +1436,8 @@ function renderOwn(me, own) {
       return;
     }
     // An IR missile inbound: flares matter more than fuel.
-    box.append(...iasCell(), ...altCell(), ...gCell(), ...(irIn ? flrCell() : fuelCell()));
+    // An IR missile inbound: flares matter more than fuel (when the bridge gives the count).
+    box.append(...iasCell(), ...altCell(), ...gCell(), ...(irIn && isNum(own?.cm?.flare) ? flrCell() : fuelCell()));
     return;
   }
   if (mode === "a2g") {

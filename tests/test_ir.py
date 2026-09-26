@@ -285,3 +285,126 @@ class DecoySuppression(unittest.TestCase):
         out = IR.analyze_ir_shot(rec, shot, owners, {}, samples)
         self.assertNotIn("decoy", out)
         self.assertIn("nearestFlare", out)
+
+
+def _acmi(lines):
+    """Parse a small hand-written ACMI (frames: list of (t, [object lines]))."""
+    import tempfile
+    txt = ["FileType=text/acmi/tacview", "FileVersion=2.2", "0,ReferenceTime=2026-09-26T09:00:00Z",
+           "0,ReferenceLongitude=41", "0,ReferenceLatitude=41"]
+    for t, objs in lines:
+        txt.append(f"#{t:g}")
+        txt.extend(objs)
+    with tempfile.NamedTemporaryFile("w", suffix=".acmi", delete=False, encoding="utf-8") as f:
+        f.write("\n".join(txt) + "\n")
+    return parse_file(f.name)
+
+
+class ReviewFixes(unittest.TestCase):
+    """Cases the adversarial review found."""
+
+    def _chase(self, launcher_type="Air+FixedWing", launcher_name="F-16C_50", weapon="AIM_9", pilot="Ethan"):
+        # A target 2 km ahead running north at 250 m/s; the missile leaves at 150 m/s (slower,
+        # like a MANPADS ejection), speeds up slowly for 2 s, then hard up to 800 m/s.
+        m_per_deg = 111320.0
+        air = (launcher_type or "").startswith("Air")
+        y0 = 250.0 * 5.0 if air else 2000.0 + 250.0 * 5.0 - 2500.0  # where the missile leaves
+        frames = []
+        mt, mv = 0.0, 150.0
+        for k in range(0, 101):
+            t = k * 0.1
+            ty = 2000.0 + 250.0 * (t + 5.0)
+            objs = [f"201,T=0|{ty / m_per_deg:.7f}|6000|0|0|0,Type=Air+FixedWing,Name=MiG-29S,Pilot=Ivanov,Coalition=Enemies,Color=Red"]
+            if launcher_type:
+                ly = 250.0 * (t + 5.0) if air else y0
+                objs.append(f"101,T=0|{ly / m_per_deg:.7f}|6000|0|0|0,Type={launcher_type},"
+                            f"Name={launcher_name},Pilot={pilot},Coalition=Allies,Color=Blue")
+            if t >= 5.0:
+                tau = t - 5.0
+                if tau > 0:
+                    mv = min(800.0, mv + (60.0 if tau < 2.0 else 200.0) * 0.1)
+                    mt += mv * 0.1
+                objs.append(f"3001,T=0|{(y0 + 3.0 + mt) / m_per_deg:.7f}|6000|0|0|0,Type=Weapon+Missile,Name={weapon},Coalition=Allies,Color=Blue")
+            frames.append((t, objs))
+        return frames
+
+    def test_a_missile_slower_than_its_target_at_first_has_not_passed_it(self):
+        rep = analyze(_acmi(self._chase()), ["Ethan"])
+        [s] = rep["weapons"]["shots"]
+        self.assertTrue(s["ir"]["series"])            # the fly-out is analysed, not cut at the first sample
+        self.assertGreater(s["ir"]["series"][-1]["t"], 2.0)
+
+    def test_no_launch_look_angle_for_ground_launchers(self):
+        rep = analyze(_acmi(self._chase("Ground+AntiAircraft", "SA-18 Igla manpad", "Igla_1E", "")), [])
+        shots = [s for s in rep["weapons"]["shots"] if s.get("ir")]
+        self.assertTrue(shots)
+        self.assertEqual(shots[0]["launcherId"], "101")
+        self.assertNotIn("launch", shots[0]["ir"])  # a soldier's heading is not where the tube points
+
+    def test_dcs_event_ir_guidance_marks_an_unknown_missile(self):
+        from dcs_sa.analysis.weapons import analyze_weapons
+        rec = _acmi(self._chase(weapon="MOD_HEATSEEKER"))
+        rep = analyze_weapons(rec)
+        [shot] = rep.shots
+        self.assertIsNone(IR.seeker(shot.weapon_name))
+        shot.dcs_guidance = 2  # DCS's own shot event said: IR
+        IR.analyze_ir(rec, rep)
+        self.assertTrue(shot.ir["seeker"]["fromEvent"])
+        self.assertNotIn("launch", shot.ir)  # no DCS seeker limits to compare with
+
+    def test_decoy_flare_existed_at_the_decoy_moment(self):
+        rec = load()
+        rep = analyze(rec, ["Ethan"])
+        for s in rep["weapons"]["shots"]:
+            d = s["ir"].get("decoy")
+            if d:
+                self.assertLessEqual(rec.tracks[d["flareId"]].first_seen, s["launchTime"] + d["t"] + 1e-6)
+
+    def test_exact_type_name_wins(self):
+        self.assertEqual(IR.airframe("OH-58D")["ir"], 0.2)   # not the OH58D module's 0.07
+        self.assertEqual(IR.airframe("OH58D")["ir"], 0.07)
+
+    def test_ir_sam_names(self):
+        for n in ("M6 Linebacker", "M1097 Avenger", "Stinger manpad", "Strela-10M3", "SA-18 Igla manpad"):
+            self.assertTrue(IR.is_ir_sam(n), n)
+        for n in ("SA-11 Buk LN 9A310M1", "Tor 9A331", "ZSU-23-4 Shilka"):
+            self.assertFalse(IR.is_ir_sam(n), n)
+
+    def test_afterburner_unknown_where_the_flight_log_has_no_data(self):
+        # Bridge fuel flow logged only from 60 s on; the recording starts at 0.
+        t = [i * 0.5 for i in range(240)]
+        ff = [float("nan") if ti < 60 else (24.0 if 80 <= ti < 90 else 3.0) for ti in t]
+        st = IR.ab_state(AfterburnerRules.track("F-16C_50", t, DcsFuelFlow=ff, IAS=[200.0] * 240))
+        self.assertEqual((st["state"], st["src"]), ("recorded", "DcsFuelFlow"))
+        self.assertIsNone(IR.ab_at(st, 30.0))      # before the log: not known, never "dry"
+        self.assertIs(IR.ab_at(st, 70.0), False)
+        self.assertIs(IR.ab_at(st, 85.0), True)
+
+    def test_live_tracker_keeps_its_dry_anchor_through_a_long_burn(self):
+        tr = IR.FuelFlowAB()
+        for i in range(60):
+            tr.add(float(i), 3000.0, True)
+        for i in range(60, 700):  # ten minutes in afterburner: the window alone has no dry mode left
+            tr.add(float(i), 25000.0, True)
+            tr.lit(25000.0)
+        self.assertIs(tr.lit(25000.0), True)
+        self.assertIs(tr.lit(3000.0), False)
+
+
+class LiveFeed(unittest.TestCase):
+    def test_afterburner_known_without_a_browser_watching(self):
+        from dcs_sa.acmi.parser import AcmiParser
+        from dcs_sa.acmi.reader import iter_lines
+        from dcs_sa.telemetry.live_world import LiveWorld
+        load()
+        w = LiveWorld(["Ethan"])
+        p = AcmiParser(w)
+        snap = None
+        for line in iter_lines(SAMPLE):
+            if line.startswith("#") and float(line[1:]) >= 131.0:
+                snap = w.snapshot()  # the first snapshot of the whole stream
+                break
+            p.feed(line)
+        self.assertIs(snap["heat"]["ab"], True)
+        flares = [o for o in snap["objects"] if o.get("cmKind") == "flare" and o.get("cmOwner")]
+        self.assertTrue(all(o["cmOwnerSide"]["coalition"] for o in flares))

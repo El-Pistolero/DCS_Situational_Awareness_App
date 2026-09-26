@@ -172,8 +172,9 @@ class LiveWorld:
             self.recently_destroyed: Deque[Dict[str, Any]] = deque(maxlen=50)
             # Afterburner from fuel flow, per aircraft (live: the dry plateau so far).
             self.ff_ab: Dict[str, IR.FuelFlowAB] = {}
-            # Flare / chaff id -> the jet it appeared next to (DCS writes no Parent on them).
-            self.cm_owner: Dict[str, Optional[str]] = {}
+            # Flare / chaff id -> (the jet it appeared next to, that jet's Color, Coalition)
+            # (DCS writes no Parent on them; the side is kept for after the jet is gone).
+            self.cm_owner: Dict[str, Optional[Tuple[str, str, str]]] = {}
             # Weapon id -> the aircraft that released it, decided when first seen.
             self.launchers: Dict[str, Optional[str]] = {}
             # Weapon id -> (removal time, launcher id, final myWeapons entry).
@@ -215,6 +216,8 @@ class LiveWorld:
                     obj.sub = _is_submunition(obj)
             obj.values.update(numeric)
             obj.last_update = t
+            if obj.category in _AIR and _num(obj.values.get("FuelFlowWeight")):
+                self._feed_ab(obj, t, obj.values["FuelFlowWeight"])
             if obj.category in _SURFACE:
                 self.unit_index = None
             if numeric.get("Health") == 0.0:
@@ -245,7 +248,8 @@ class LiveWorld:
                 near.append((d, ac.id))
         near.sort()
         ambiguous = len(near) > 1 and near[1][0] < max(near[0][0], 5.0) * IR.FLARE_OWNER_AMBIGUOUS
-        self.cm_owner[obj.id] = near[0][1] if near and not ambiguous else None
+        owner = self.objects.get(near[0][1]) if near and not ambiguous else None
+        self.cm_owner[obj.id] = (owner.id, owner.props.get("Color") or "", owner.coalition) if owner else None
 
     def _mark_dead(self, obj: LiveObject, t: float) -> None:
         """A unit destroyed while its object stays in the stream (Tacview keeps wrecks)."""
@@ -367,6 +371,12 @@ class LiveWorld:
                 "last": self.ownship_time,
             }
             me = payload.get("self") or {}
+            # My engines' fuel flow, for afterburner when the Tacview stream has none.
+            flow = (payload.get("engine") or {}).get("flow") or {}
+            parts = [x for x in (flow.get("left"), flow.get("right")) if _num(x)]
+            own = self.objects.get(self._ownship_id() or "")
+            if parts and own is not None and not _num(own.values.get("FuelFlowWeight")):
+                self._feed_ab(own, self.time, sum(parts))
             # With no Tacview stream, synthesise objects so the map still works.
             acmi_live = self.status.get("state") == "connected" or self.status.get("source") == "replay"
             if acmi_live or "lat" not in me:
@@ -560,8 +570,10 @@ class LiveWorld:
                     row["dead"] = True
                 if obj.category == "countermeasure":
                     row["cmKind"] = "chaff" if "Chaff" in obj.tags else "flare"
-                    if self.cm_owner.get(obj.id):
-                        row["cmOwner"] = self.cm_owner[obj.id]
+                    own = self.cm_owner.get(obj.id)
+                    if own:
+                        row["cmOwner"] = own[0]
+                        row["cmOwnerSide"] = {"color": own[1], "coalition": own[2]}
                 lock = obj.props.get("LockedTarget")
                 if lock and v.get("LockedTargetMode", 1.0) > 0:
                     row["lock"] = lock
@@ -624,14 +636,18 @@ class LiveWorld:
             flow = ((self.ownship or {}).get("engine") or {}).get("flow") or {}
             parts = [x for x in (flow.get("left"), flow.get("right")) if _num(x)]
             ff = sum(parts) if parts else None
-        airborne = (_num(v.get("AGL")) and v["AGL"] > 30) or (_num(v.get("IAS")) and v["IAS"] > 40)
-        tracker = self.ff_ab.setdefault(obj.id, IR.FuelFlowAB())
-        tracker.add(self.time, ff if _num(ff) else None, bool(airborne))
+        tracker = self.ff_ab.get(obj.id)  # fed as the data arrives (_feed_ab)
         # Never the throttle: the F/A-18C records 1.00 all flight, the F-16C is in afterburner at 1.0.
-        lit = tracker.lit(ff if _num(ff) else None)
+        lit = tracker.lit(ff if _num(ff) else None) if tracker is not None else None
         if lit is not None:
             out.update(ab=lit, src=src)
         return out
+
+    def _feed_ab(self, obj: LiveObject, t: float, ff: float) -> None:
+        """One fuel-flow sample for an aircraft's afterburner tracker (once a second at most)."""
+        v = obj.values
+        airborne = (_num(v.get("AGL")) and v["AGL"] > 30) or (_num(v.get("IAS")) and v["IAS"] > 40)
+        self.ff_ab.setdefault(obj.id, IR.FuelFlowAB()).add(t, ff, bool(airborne))
 
     def _ownship_id(self) -> Optional[str]:
         """The object that is the DCS player's own aircraft (bridge data)."""
