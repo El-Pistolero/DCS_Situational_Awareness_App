@@ -1,4 +1,5 @@
 import json
+import os
 import socket
 import threading
 import time
@@ -631,6 +632,45 @@ class UpdateDownloadTests(unittest.TestCase):
             time.sleep(0.02)
         self.assertEqual(d.status()["state"], "failed")
         self.assertIsNone(d.ready_file())
+
+    def test_the_install_helper_waits_for_this_process_first(self):
+        """Windows will not replace a running exe, and a failed install rolls back."""
+        import os
+        from unittest import mock
+
+        from dcs_sa import update
+
+        seen = {}
+
+        class FakePopen:
+            def __init__(self, args, **kw):
+                seen["args"] = args
+
+        with mock.patch.object(update.os, "name", "nt"), \
+             mock.patch("subprocess.Popen", FakePopen):
+            # A plain string stands in for a Windows path; PureWindowsPath would
+            # need a Windows host to build.
+            update.launch_installer(r"C:\Users\Me\DCS-SA-Setup.exe", app_exe=r"C:\App\DCS-SA.exe")
+        cmd = " ".join(seen["args"])
+        self.assertIn("powershell", seen["args"][0])
+        self.assertIn(f"Wait-Process -Id {os.getpid()}", cmd)   # let go before installing
+        self.assertIn("-Wait", cmd)                              # and finish before restarting
+        self.assertIn("DCS-SA-Setup.exe", cmd)
+        self.assertIn(r"C:\App\DCS-SA.exe", cmd)               # the app comes back by itself
+        self.assertNotIn("/CLOSEAPPLICATIONS", cmd)              # we sequence it, not Restart Manager
+
+    def test_a_path_with_a_quote_in_it_cannot_break_the_helper(self):
+        from dcs_sa.update import _ps_quote
+
+        self.assertEqual(_ps_quote("C:\\Users\\O'Brien\\x.exe"), "'C:\\Users\\O''Brien\\x.exe'")
+
+    def test_the_installer_is_refused_off_windows(self):
+        from dcs_sa.update import launch_installer
+
+        if os.name == "nt":
+            self.skipTest("this is the Windows path")
+        with self.assertRaises(RuntimeError):
+            launch_installer(self.dir / "setup.exe")
 
     def test_install_refuses_when_nothing_was_downloaded(self):
         from dcs_sa.config import Config

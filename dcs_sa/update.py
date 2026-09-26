@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import threading
 import time
 import urllib.error
@@ -118,22 +119,40 @@ def download(url: str, dest: "Path", sha256: Optional[str] = None,
     return dest
 
 
-def launch_installer(path: "Path", silent: bool = True) -> None:
-    """Start the downloaded installer and let it replace this app.
+def _ps_quote(text: str) -> str:
+    return "'" + str(text).replace("'", "''") + "'"
 
-    The running exe cannot be overwritten while it is running, so the caller
-    shuts the app down immediately afterwards; Inno Setup waits and then
-    starts the new version.
+
+def launch_installer(path: "Path", app_exe: Optional[str] = None) -> None:
+    """Replace this app with the downloaded version, then start it again.
+
+    Windows will not let the installer overwrite an exe that is still
+    running, and an install that trips over that rolls itself back.  Simply
+    closing the app first is a race: the process takes a moment to go.  So a
+    small helper is started that waits for *this* process to exit, runs the
+    installer, and launches the new version.
     """
     import subprocess
 
     if os.name != "nt":
         raise RuntimeError("the installer only runs on Windows")
-    args = [str(path)]
-    if silent:
-        args += ["/SILENT", "/SUPPRESSMSGBOXES", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS", "/NORESTART"]
+    exe = app_exe or (sys.executable if getattr(sys, "frozen", False) else None)
     flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    subprocess.Popen(args, close_fds=True, creationflags=flags)
+    script = (
+        f"Wait-Process -Id {os.getpid()} -Timeout 120 -ErrorAction SilentlyContinue; "
+        f"Start-Process -FilePath {_ps_quote(path)} "
+        "-ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait"
+    )
+    if exe:
+        script += f"; Start-Process -FilePath {_ps_quote(exe)}"
+    try:
+        subprocess.Popen(["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
+                          "-Command", script], close_fds=True, creationflags=flags)
+        return
+    except OSError as exc:      # no PowerShell: run it directly and hope the timing holds
+        log.warning("Could not schedule the install helper (%s); running the installer directly", exc)
+    subprocess.Popen([str(path), "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
+                     close_fds=True, creationflags=flags)
 
 
 def fetch_latest(url: str = API) -> Dict[str, Any]:
