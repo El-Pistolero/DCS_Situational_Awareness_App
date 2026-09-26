@@ -57,6 +57,8 @@ From now on, open the app from the **DCS SA** icon on your desktop, or press the
 
 To go back to the list, click **Recordings** (top left). To read this guide inside the app, click **Guide** on the Flight debrief page.
 
+**Career:** the **Career** button at the top keeps a running record of every flight you open — kills, accuracy per weapon, what you were up against, hours and landing grades, per DCS pilot. It fills up as you review your flights, so the demos above are already in it.
+
 ## Step 4: Record your own flights
 
 The recordings are made by **Tacview's recorder**, a small add-on that sits inside DCS. DCS SA reads what it writes. You install it once, switch it on once, then forget about it.

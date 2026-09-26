@@ -26,6 +26,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from .. import __version__
 from ..config import Config
 from .. import usersettings
+from ..career import CareerStore, totals as career_totals
 from ..diagnostics import console, install as install_console
 from ..update import REPO as UPDATE_REPO, RELEASES_PAGE, Downloader, UpdateChecker, launch_installer
 from ..dcs_profile import read_profile
@@ -145,6 +146,8 @@ class App:
         self.profile = read_profile()
         self.updates = UpdateChecker(cfg.update_check)
         self.downloads = Downloader(Path(cfg.upload_dir).parent / "updates")
+        self.career = CareerStore(str(Path(cfg.upload_dir).parent / "career.json"))
+        self.store.career = self.career
         self.quit: Any = None   # set by the desktop shell, to close for an install
         self.tiles = TileCache(str(Path(cfg.upload_dir).parent / "tilecache"))
         self.dcsmap = DcsMapStore(str(Path(cfg.upload_dir).parent / "tilecache" / "dcs"))
@@ -241,6 +244,18 @@ def make_handler(app: App):
                     return self._static("live.html")
                 if path in ("/guide", "/guide.html"):
                     return self._static("guide.html")
+                if path in ("/career", "/career.html"):
+                    return self._static("career.html")
+                if path == "/api/career":
+                    profile = q.get("profile") or "all"
+                    rows = app.career.records(profile)
+                    return self._json({
+                        "profiles": app.career.profiles(),
+                        "profile": profile,
+                        "current": (app.cfg.player_names or [None])[0],
+                        "totals": career_totals(rows),
+                        "missions": rows,
+                    })
                 if path == "/api/guide":
                     if not GUIDE.is_file():
                         return self._error(404, "guide not found")

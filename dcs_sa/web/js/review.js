@@ -567,6 +567,7 @@ async function init() {
     onClose: () => { if (S.selTarget?.kind === "point") { S.selTarget = null; sel.set(null); } else select(null); },
   });
   wireSettingsButton("btnSettings");
+  $("btnCareer").onclick = () => { location.href = "/career"; };
   reportPageErrors();
   $("btnFollow").onclick = () => setFollow(!S.follow);
   $("btn2d").onclick = () => setView("2d");

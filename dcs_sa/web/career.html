@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DCS SA Career</title>
+<link rel="icon" type="image/png" href="/static/favicon-32.png">
+<script>
+  try {
+    var t = localStorage.getItem("dcs-sa.theme");
+    document.documentElement.dataset.theme = ["green", "bright", "blue"].indexOf(t) >= 0 ? t : "green";
+  } catch (e) { document.documentElement.dataset.theme = "green"; }
+</script>
+<link rel="stylesheet" href="/static/css/app.css">
+<style>
+  /* Like the guide, this page scrolls; the app's own pages never do. */
+  html, body { height: auto; }
+  body { overflow: visible; }
+  .cr-top { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 12px; padding: 8px 16px;
+    background: var(--panel); border-bottom: 1px solid var(--line); }
+  .cr-top .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  .cr-top .brand img { width: 22px; height: 22px; }
+  .cr-top .sp { flex: 1; }
+  .cr-wrap { max-width: 1100px; margin: 0 auto; padding: 18px 16px 80px; }
+  .cr-wrap h2 { font-size: 15px; margin: 26px 0 8px; color: var(--muted); font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.06em; }
+  .cr-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 10px; }
+  .cr-tile { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .cr-tile .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .cr-tile .v { font: 600 22px/1.25 var(--mono); }
+  .cr-tile .s { font-size: 11px; color: var(--faint); }
+  table.cr { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.cr th, table.cr td { padding: 5px 8px; border-bottom: 1px solid var(--line); text-align: right; }
+  table.cr th:first-child, table.cr td:first-child { text-align: left; }
+  table.cr th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+  table.cr td.num { font-family: var(--mono); }
+  table.cr tr.click:hover { background: var(--panel); cursor: pointer; }
+  .bar-cell { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+  .bar-cell .b { height: 6px; background: var(--green); border-radius: 3px; min-width: 2px; }
+  .cr-empty { padding: 28px 0; color: var(--muted); }
+  .cr-note { color: var(--faint); font-size: 12px; margin-top: 6px; }
+</style>
+</head>
+<body>
+<header class="cr-top">
+  <button id="back">← Back to DCS SA</button>
+  <div class="brand"><img src="/static/icon.png" alt="">Career</div>
+  <span class="sp"></span>
+  <label class="muted" style="font-size:12px">Pilot <select id="profile"></select></label>
+</header>
+<main class="cr-wrap" id="career">Loading…</main>
+<script type="module" src="/static/js/career.js"></script>
+</body>
+</html>

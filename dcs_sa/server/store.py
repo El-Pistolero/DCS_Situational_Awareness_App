@@ -23,6 +23,7 @@ from ..analysis.kinematics import derive
 from .. import threatdb
 from ..analysis.dcsmerge import find_and_merge
 from ..analysis.report import analyze, guess_player, to_markdown
+from ..career import CareerStore, summarise
 from ..analysis.weapons import _weapon_samples as weapon_samples
 
 log = logging.getLogger(__name__)
@@ -67,6 +68,7 @@ class RecordingStore:
         # extras() -> {"flightlog_dir": str, "airbases": [...]}: what DCS itself
         # reported, merged into each analysis.
         self.extras = extras or (lambda: {})
+        self.career: Optional[CareerStore] = None   # set by the app
         self.dirs = dirs
         self.upload_dir = upload_dir
         self.player_names = player_names
@@ -213,6 +215,14 @@ class RecordingStore:
                 while len(self._parsed) > MAX_PARSED:
                     self._parsed.popitem(last=False)
             job.state, job.progress = "ready", 1.0
+            # Remember the mission for the Career page.  A bad record must
+            # never spoil a debrief that otherwise worked.
+            if self.career is not None:
+                try:
+                    self.career.remember(summarise(key, report, path=path,
+                                                   modified=os.path.getmtime(path)))
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("could not record this mission in the career: %s", exc)
         except Exception as exc:  # surface any parse failure to the UI
             log.exception("failed to load %s", path)
             job.state, job.error = "error", f"{exc.__class__.__name__}: {exc}"
