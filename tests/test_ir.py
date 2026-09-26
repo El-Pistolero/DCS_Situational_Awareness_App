@@ -116,6 +116,99 @@ class DogfightSample(unittest.TestCase):
                 self.assertEqual(a.read(), b.read())
 
 
+class DecoyedShotIsAMiss(unittest.TestCase):
+    """A missile that chased a flare must not be credited with a hit."""
+
+    def _acmi(self, lines):
+        import tempfile
+
+        from dcs_sa.acmi import parse_file
+
+        with tempfile.NamedTemporaryFile("w", suffix=".acmi", delete=False, encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+            path = fh.name
+        self.addCleanup(lambda: os.unlink(path))
+        return parse_file(path)
+
+    def test_health_lost_to_someone_else_is_not_my_hit(self):
+        """A wingman's missile kills; mine went wide.  Mine is still a miss."""
+        from dcs_sa.analysis.weapons import HEALTH_DAMAGE_RADIUS, analyze_weapons, find_destructions
+
+        lines = ["FileType=text/acmi/tacview", "FileVersion=2.2",
+                 "0,ReferenceLongitude=41,ReferenceLatitude=41,ReferenceTime=2026-01-01T00:00:00Z"]
+        lines += ["#0",
+                  "101,T=0.00|0.00|3000,Name=F-16C_50,Pilot=Me,Coalition=Allies,Type=Air+FixedWing",
+                  "201,T=0.20|0.00|3000,Name=MiG-29S,Pilot=Bandit,Coalition=Enemies,Type=Air+FixedWing,Health=1.0"]
+        # My AIM-9 flies past, never nearer than ~1.5 km.
+        for i, t in enumerate([1.0, 2.0, 3.0, 4.0]):
+            lon = 0.02 * (i + 1)
+            lines += [f"#{t}", f"4001,T={lon:.5f}|0.02|3000,Name=AIM_9,Coalition=Allies,Type=Weapon+Missile",
+                      f"201,T=0.20|0.00|3000,Health={1.0 if t < 3 else 0.4}"]
+        lines += ["#5", "-4001"]
+        rec = self._acmi(lines)
+        rep = analyze_weapons(rec, find_destructions(rec))
+        mine = [s for s in rep.shots if s.weapon_name == "AIM_9"]
+        self.assertTrue(mine)
+        self.assertGreater(mine[0].closest_approach or 0, HEALTH_DAMAGE_RADIUS)
+        self.assertEqual(mine[0].outcome, "miss", mine[0].outcome_detail)
+
+    def test_a_close_pass_still_counts_as_damage(self):
+        """The proximity rule must not throw away real damage."""
+        from dcs_sa.analysis.weapons import analyze_weapons, find_destructions
+
+        lines = ["FileType=text/acmi/tacview", "FileVersion=2.2",
+                 "0,ReferenceLongitude=41,ReferenceLatitude=41,ReferenceTime=2026-01-01T00:00:00Z",
+                 "#0",
+                 "101,T=0.00|0.00|3000,Name=F-16C_50,Pilot=Me,Coalition=Allies,Type=Air+FixedWing",
+                 "201,T=0.01|0.00|3000,Name=MiG-29S,Pilot=Bandit,Coalition=Enemies,Type=Air+FixedWing,Health=1.0"]
+        for t, lon in ((1.0, 0.004), (2.0, 0.008), (3.0, 0.00999)):
+            lines += [f"#{t}", f"4001,T={lon:.5f}|0.00|3000,Name=AIM_9,Coalition=Allies,Type=Weapon+Missile"]
+        lines += ["#4", "201,T=0.01|0.00|3000,Health=0.4", "-4001"]
+        rec = self._acmi(lines)
+        rep = analyze_weapons(rec, find_destructions(rec))
+        mine = [s for s in rep.shots if s.weapon_name == "AIM_9"][0]
+        self.assertEqual(mine.outcome, "damage", (mine.closest_approach, mine.outcome_detail))
+
+    def test_a_decoyed_shot_is_reported_as_a_miss(self):
+        """Even where health fell, a shot the IR analysis says was decoyed is a miss."""
+        from dcs_sa.analysis import ir as IR
+
+        class Shot:
+            weapon_id = "4001"
+            weapon_name = "AIM_9"
+            outcome = "damage"
+            outcome_detail = "health 1.00 -> 0.40"
+            killed_id = "201"
+            killed_name = "MiG-29S"
+            closest_approach = 300.0
+            dcs_hit = False
+
+        shot = Shot()
+        out = {"decoy": {"t": 3.0, "flareId": "9001", "method": "zem"}}
+        IR._settle_decoy(shot, out, fuze=10.0)
+        self.assertEqual(shot.outcome, "miss")
+        self.assertIsNone(shot.killed_id)
+        self.assertEqual(shot.outcome_detail, "likely went for a flare (est.)")
+
+    def test_dcs_s_own_hit_report_still_wins(self):
+        from dcs_sa.analysis import ir as IR
+
+        class Shot:
+            weapon_id = "4001"
+            weapon_name = "AIM_9"
+            outcome = "damage"
+            outcome_detail = "DCS reported a hit"
+            killed_id = None
+            killed_name = None
+            closest_approach = 300.0
+            dcs_hit = True
+
+        shot = Shot()
+        IR._settle_decoy(shot, {"decoy": {"t": 3.0}}, fuze=10.0)
+        self.assertEqual(shot.outcome, "damage")
+        self.assertEqual(shot.outcome_detail, "DCS reported a hit")
+
+
 if __name__ == "__main__":
     unittest.main()
 

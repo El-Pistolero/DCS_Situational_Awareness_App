@@ -73,6 +73,11 @@ def gun_name(ammo: str) -> Optional[str]:
 #: A round whose path passes this close to the target counts as on target
 #: (roughly a fighter's half-span; DCS resolves real hits on the airframe).
 ROUND_HIT_RADIUS = 12.0
+#: A drop in the target's health only counts as this weapon's doing if the
+#: weapon actually got near it.  Without this, anything that hurt the target
+#: in the window (a wingman's missile, flak, a later gun pass) was credited to
+#: a missile that went wide - including one that had chased a flare.
+HEALTH_DAMAGE_RADIUS = 45.0
 
 
 def weapon_kind(tags) -> str:
@@ -684,6 +689,8 @@ def analyze_weapons(rec: Recording, destructions: Optional[Dict[str, Destruction
     for shot in shots:
         if shot.outcome != "miss" or not shot.target_id:
             continue
+        if shot.closest_approach is None or shot.closest_approach > HEALTH_DAMAGE_RADIUS:
+            continue    # it never got close: whatever hurt the target, it was not this
         tgt = rec.tracks.get(shot.target_id)
         if tgt is None or tgt.channel("Health") is None:
             continue

@@ -568,14 +568,28 @@ def analyze_ir_shot(rec: Recording, shot, owners: Dict[str, Dict], heat: Dict[st
             if dec and d < DECOY_ZEM and tf - t0 >= dec["t"] and f.first_seen <= t0 + dec["t"]:
                 # The flare it then flew past is the better answer to "which one".
                 dec["flareId"], dec["owner"] = f.id, owners[f.id]["owner"]
-    # A hit, or a pass inside the fuze distance, was not a decoy whatever the paths suggest.
-    fuze = sk.get("fuze") or 0.0
+    _settle_decoy(shot, out, sk.get("fuze") or 0.0)
+    return out
+
+
+def _settle_decoy(shot, out: Dict, fuze: float) -> None:
+    """Reconcile "it went for a flare" with what the shot was scored as.
+
+    A missile that followed a flare did not hit the jet, so it must not be
+    left counted as a hit: that is what puts a decoyed shot into the accuracy
+    figures.  DCS's own word still wins, and a hit (or a pass inside the fuze
+    distance) means it was never decoyed, whatever the paths suggest.
+    """
     ca = shot.closest_approach
     if out.get("decoy") and (shot.outcome == "kill" or (ca is not None and ca <= fuze + 2.0)):
         del out["decoy"]
-    if out.get("decoy") and shot.outcome == "miss" and not shot.outcome_detail:
+    if not out.get("decoy"):
+        return
+    if shot.outcome in ("damage", "active") and not getattr(shot, "dcs_hit", False):
+        shot.outcome, shot.killed_id, shot.killed_name = "miss", None, None
+        shot.outcome_detail = ""
+    if shot.outcome == "miss" and not shot.outcome_detail:
         shot.outcome_detail = "likely went for a flare (est.)"
-    return out
 
 
 def _event_seeker(shot) -> Optional[Dict]:
