@@ -29,7 +29,7 @@ function table(head, rows) {
 
 /** A right-aligned number with a proportional bar, so the big ones stand out. */
 function barCell(value, max, text) {
-  const w = max > 0 ? Math.max(2, Math.round((value / max) * 60)) : 2;
+  const w = value > 0 && max > 0 ? Math.max(2, Math.round((value / max) * 60)) : 0;
   return el("td", { class: "num" }, el("span", { class: "bar-cell" },
     el("span", {}, text ?? n0(value)), el("span", { class: "b", style: { width: `${w}px` } })));
 }
@@ -107,7 +107,7 @@ function weaponRows(byWeapon) {
       el("td", {}, name),
       el("td", { class: "num" }, el("span", { class: "bar-cell" },
         clickable(n0(w.fired), `${name}: every shot`, of(() => true)),
-        el("span", { class: "b", style: { width: `${Math.max(2, Math.round((w.fired / max) * 60))}px` } }))),
+        el("span", { class: "b", style: { width: `${w.fired > 0 ? Math.max(2, Math.round((w.fired / max) * 60)) : 0}px` } }))),
       el("td", { class: "num" }, clickable(n0(w.hits), `${name}: hits`, of((e) => e.scored === "hit"))),
       el("td", { class: "num" }, clickable(n0(w.misses), `${name}: misses`, of((e) => e.scored === "miss"))),
       el("td", { class: "num" }, clickable(n0(w.kills), `${name}: kills`, (e) => e.weapon === name && e.outcome === "kill")),
@@ -126,15 +126,19 @@ function againstRows(against, onlyAir) {
     el("td", {}, name),
     el("td", { class: "num" }, el("span", { class: "bar-cell" },
       clickable(n0(a.kills), `${name}: kills`, (e) => e.target === name && e.outcome === "kill"),
-      el("span", { class: "b", style: { width: `${Math.max(2, Math.round((a.kills / max) * 60))}px` } }))),
+      el("span", { class: "b", style: { width: `${a.kills > 0 ? Math.max(2, Math.round((a.kills / max) * 60)) : 0}px` } }))),
     el("td", { class: "num" }, clickable(n0(a.shotAt), `${name}: shots at it`,
       (e) => e.target === name && e.outcome !== "kill"))));
 }
 
 function missionRows(missions, reload) {
   return [...missions].reverse().map((m) => {
-    const when = m.startedAt ? new Date(m.startedAt).toLocaleString()
-      : m.modified ? new Date(m.modified * 1000).toLocaleString() : "—";
+    // When it was flown, not the date the mission is set in: a WWII mission
+    // says 1944, which is not what anyone wants in a career list.
+    const flown = m.flownAt ?? m.modified;
+    const when = flown ? new Date(flown * 1000).toLocaleString()
+      : m.startedAt ? new Date(m.startedAt).toLocaleString() : "—";
+    const missionClock = m.startedAt ? `Mission time: ${new Date(m.startedAt).toLocaleString()}` : "";
     const included = m.included !== false;
     // Untick a mission to leave it out of every figure above: a coop sortie,
     // a test flight, someone else's jet.
@@ -152,7 +156,7 @@ function missionRows(missions, reload) {
       el("td", {}, el("label", { class: "mi-tick", onclick: (e) => e.stopPropagation() }, tick)),
       el("td", {}, m.title || m.key),
       el("td", {}, m.aircraft || "—"),
-      el("td", {}, when),
+      el("td", { title: missionClock }, when),
       el("td", { class: "num" }, hours((m.duration || 0) / 3600)),
       el("td", { class: "num" }, n0(m.kills)),
       el("td", { class: "num" }, `${n0(m.hits)}/${n0(m.shots)}`),

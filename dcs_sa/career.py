@@ -140,7 +140,11 @@ def summarise(key: str, report: Dict[str, Any], *, path: str = "", modified: Opt
         "key": key,
         "path": path,
         "title": rec.get("title") or "",
-        "startedAt": rec.get("startTime") or rec.get("reference") or None,
+        # The mission's own clock (ACMI ReferenceTime), which for a WWII
+        # mission is 1944: it is when the *mission* is set, not when it was
+        # flown.  "flownAt" is the latter, and is what the list shows.
+        "startedAt": rec.get("referenceTime") or None,
+        "flownAt": modified,
         "duration": _num(rec.get("duration")),
         "modified": modified,
         "recordedAt": time.time(),
@@ -248,7 +252,7 @@ class CareerStore:
             rows = [dict(r, included=str(k) not in self._excluded) for k, r in self._records.items()]
         if profile and profile != "all":
             rows = [r for r in rows if r.get("profile") == profile]
-        return sorted(rows, key=lambda r: r.get("startedAt") or r.get("recordedAt") or 0)
+        return sorted(rows, key=lambda r: r.get("flownAt") or r.get("modified") or r.get("recordedAt") or 0)
 
     def profiles(self) -> List[str]:
         with self._lock:

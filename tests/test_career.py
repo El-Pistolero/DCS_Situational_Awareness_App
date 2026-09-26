@@ -46,6 +46,38 @@ class SummariseTests(unittest.TestCase):
         self.assertEqual(self.sortie["grades"], ["A"])
 
 
+class MissionDateTests(unittest.TestCase):
+    """The list has to say when you flew, not 1969."""
+
+    def test_the_mission_clock_is_a_date_not_an_offset(self):
+        row = record("sample_sortie")
+        # startTime is seconds into the mission (0.0, 4.18...).  Handing that to
+        # a date formatter produced 31/12/1969, which is what was reported.
+        self.assertIsInstance(row["startedAt"], (str, type(None)))
+        if row["startedAt"]:
+            self.assertIn("-", row["startedAt"])            # an ISO date, not a number
+            self.assertGreater(len(row["startedAt"]), 10)
+
+    def test_flown_at_is_the_file_time(self):
+        report = analyze(parse_file(str(SAMPLES / "sample_sortie.acmi")), ["Ethan"])
+        row = summarise("k", report, path="x", modified=1_700_000_000.0)
+        self.assertEqual(row["flownAt"], 1_700_000_000.0)
+
+    def test_a_mission_set_in_the_past_is_still_listed_by_when_it_was_flown(self):
+        """A WWII mission reads 1944 on its own clock; the career is not a museum."""
+        from dcs_sa.career import CareerStore
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            s = CareerStore(str(Path(d) / "c.json"))
+            s.remember({"key": "ww2", "profile": "E", "startedAt": "1944-06-06T06:30:00+00:00",
+                        "flownAt": 1_800_000_000.0})
+            s.remember({"key": "now", "profile": "E", "startedAt": "2026-01-01T00:00:00+00:00",
+                        "flownAt": 1_700_000_000.0})
+            # Ordered by when they were flown, so the WWII sortie is the newer one.
+            self.assertEqual([r["key"] for r in s.records()], ["now", "ww2"])
+
+
 class ScoringTests(unittest.TestCase):
     """A shot at a jet only counts when the jet went down."""
 
