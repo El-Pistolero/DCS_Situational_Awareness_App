@@ -43,17 +43,21 @@ IMPACT_KEEP_DISPENSED = 20.0
 AIM_SEARCH = 5000.0
 #: Target: the nearest hostile ground unit to the predicted impact, within this.
 AIM_TARGET_RADIUS = 1500.0
+#: s: a unit killed this long before a weapon's removal can still be its target.
+KILL_GRACE = 1.0
 #: Glide weapons never come down shallower than this.
 MIN_GLIDE_DEG = 3.0
 #: A dispenser that vanishes this far above the ground opened in the air.
 DISPENSE_HEIGHT = 100.0
 G = 9.80665
 _AIR = ("fixedwing", "rotorcraft", "air")
+_SURFACE = ("ground", "sea")
 _GLIDE_FAMILIES = ("jsow", "jdam")
 _POWERED_FAMILIES = ("agm", "maverick", "harm")
 #: Air-to-air missiles have no ground impact to predict; family() calls them "agm".
+#: (No \b before R/P/PL/SD: "_" counts as a word character, as in "Matra_R550".)
 _AIR_TO_AIR_RE = re.compile(
-    r"\bAIM[-_ ]?\d|\b[RP][-_ ]?(3|13|23|24|27|33|37|40|60|73|77|550)(?!\d)|\bPL[-_ ]?\d|\bSD[-_ ]?10|"
+    r"\bAIM[-_ ]?\d|(?<![A-Z0-9])([RP][-_ ]?(3|13|23|24|27|33|37|40|60|73|77|530|550)(?!\d)|PL[-_ ]?\d|SD[-_ ]?10)|"
     r"MICA|MAGIC|METEOR|PYTHON|DERBY|IRIS[-_ ]?T|SUPER[-_ ]?530|ASRAAM|SKYFLASH|"
     r"MISTRAL|STINGER|FIM[-_ ]?92|IGLA|9M39", re.I)
 #: JSOWs that open in the air (A: BLU-97, B: BLU-108); plain AGM_154 is the unitary C.
@@ -62,7 +66,7 @@ _JSOW_DISPENSER_RE = re.compile(r"AGM[-_ ]?154[AB](?![A-Z0-9])", re.I)
 
 class LiveObject:
     __slots__ = ("id", "props", "values", "tags", "category", "first_seen", "last_update",
-                 "trail", "prev", "derived", "source", "hist", "sub", "dead")
+                 "trail", "prev", "derived", "source", "hist", "sub", "dead", "died")
 
     def __init__(self, obj_id: str, t: float, source: str = "acmi") -> None:
         self.id = obj_id
@@ -80,6 +84,7 @@ class LiveObject:
         self.hist: Deque[Tuple[float, float, float, float]] = deque()
         self.sub = False  # a bomblet / submunition (by name)
         self.dead = False  # destroyed (Tacview Destroyed event or Health 0) but still in the stream
+        self.died = 0.0  # when, if dead
 
     def position(self) -> Optional[Tuple[float, float, float]]:
         v = self.values
@@ -162,11 +167,14 @@ class LiveWorld:
             self.ownship_time = 0.0
             self.scan_values: Dict[str, float] = {}
             self.world_radar: List[Tuple[str, float, float, bool]] = []
+            self.bridge_world: Optional[List[Dict[str, Any]]] = None  # last world sweep applied
             self.recently_destroyed: Deque[Dict[str, Any]] = deque(maxlen=50)
             # Weapon id -> the aircraft that released it, decided when first seen.
             self.launchers: Dict[str, Optional[str]] = {}
             # Weapon id -> (removal time, launcher id, final myWeapons entry).
             self.impacted: Dict[str, Tuple[float, str, Dict[str, Any]]] = {}
+            # Ground/sea units by position, rebuilt only after one of them changes.
+            self.unit_index: Optional[_UnitIndex] = None
 
     def set_status(self, source: str, state: str, detail: str = "") -> None:
         with self._lock:
@@ -202,6 +210,8 @@ class LiveWorld:
                     obj.sub = _is_submunition(obj)
             obj.values.update(numeric)
             obj.last_update = t
+            if obj.category in _SURFACE:
+                self.unit_index = None
             if numeric.get("Health") == 0.0:
                 self._mark_dead(obj, t)
             if "Longitude" in numeric or "Latitude" in numeric or "Altitude" in numeric:
@@ -215,7 +225,7 @@ class LiveWorld:
         """A unit destroyed while its object stays in the stream (Tacview keeps wrecks)."""
         if obj.dead:
             return
-        obj.dead = True
+        obj.dead, obj.died = True, t
         self._wreck(obj, t)
 
     def _wreck(self, obj: LiveObject, t: float) -> None:
@@ -233,6 +243,8 @@ class LiveWorld:
     def on_remove(self, t: float, obj_id: str) -> None:
         with self._lock:
             obj = self.objects.pop(obj_id, None)
+            if obj is not None and obj.category in _SURFACE:
+                self.unit_index = None
             if obj is not None and obj.category in ("fixedwing", "rotorcraft", "ground", "sea", "air"):
                 self._wreck(obj, t)
             elif obj is not None and obj.category == "weapon":
@@ -335,17 +347,23 @@ class LiveWorld:
             t = float(payload.get("t") or 0.0)
             self.time = t
             self._bridge_object("self", t, me, is_self=True)
-            for obj in payload.get("world") or []:
+            # The Export script sweeps the world once a second and re-sends that
+            # sweep in every packet: applying a repeat at a later time would make
+            # everything in it look stopped, then jump (speeds, weapon TTIs).
+            world = payload.get("world")
+            if world is None or world == self.bridge_world:
+                return
+            self.bridge_world = world
+            for obj in world:
                 oid = obj.get("id")
                 if oid is None:
                     continue
                 self._bridge_object(f"w{oid}", t, obj)
-            seen = {f"w{o.get('id')}" for o in payload.get("world") or []}
-            if payload.get("world") is not None:
-                for oid in [k for k, o in self.objects.items() if o.source == "bridge" and oid_is_world(k) and k not in seen]:
-                    gone = self.objects.pop(oid)
-                    if gone.category == "weapon":
-                        self._retire_weapon(gone, t)  # keeps its myWeapons row for IMPACT_KEEP
+            seen = {f"w{o.get('id')}" for o in world}
+            for oid in [k for k, o in self.objects.items() if o.source == "bridge" and oid_is_world(k) and k not in seen]:
+                gone = self.objects.pop(oid)
+                if gone.category == "weapon":
+                    self._retire_weapon(gone, t)  # keeps its myWeapons row for IMPACT_KEEP
 
     def _bridge_object(self, oid: str, t: float, d: Dict[str, Any], is_self: bool = False) -> None:
         obj = self.objects.get(oid)
@@ -374,6 +392,8 @@ class LiveWorld:
         if "radar" in d:
             obj.values["RadarActive"] = 1.0 if d.get("radar") else 0.0
         obj.last_update = t
+        if obj.category in _SURFACE:
+            self.unit_index = None
         self._track_motion(obj, t)
         self._note_weapon(obj, t)
         if is_self and not self.focus_locked:
@@ -673,7 +693,10 @@ class LiveWorld:
         return w.props.get("Parent") or self.launchers.get(w.id)
 
     def _surface_units(self) -> "_UnitIndex":
-        return _UnitIndex(o for o in self.objects.values() if o.category in ("ground", "sea"))
+        # Cached: a rocket salvo retires dozens of weapons in one frame.
+        if self.unit_index is None:
+            self.unit_index = _UnitIndex(o for o in self.objects.values() if o.category in _SURFACE)
+        return self.unit_index
 
     def _ground_under(self, jet: Optional[LiveObject]) -> float:
         """Ground elevation under a jet from its AGL (Tacview or the bridge), else 0."""
@@ -688,7 +711,8 @@ class LiveWorld:
                 return float(me["alt"]) - float(me["agl"])
         return 0.0
 
-    def _weapon_entry(self, w: LiveObject, owner: Optional[LiveObject], units, ground: float) -> Optional[Dict[str, Any]]:
+    def _weapon_entry(self, w: LiveObject, owner: Optional[LiveObject], units, ground: float,
+                      wrecks_since: Optional[float] = None) -> Optional[Dict[str, Any]]:
         """A myWeapons row: time to impact and impact point, extrapolated."""
         kind = weapon_kind(w.tags)
         if kind == "gun" or (kind == "missile" and _AIR_TO_AIR_RE.search(w.name)):
@@ -715,13 +739,18 @@ class LiveWorld:
             ground = near[1][2]
             tti, lon, lat = _predict_impact(fam, pos, gs, vs, track, ground)
         entry.update(tti=tti, impactLon=lon, impactLat=lat, impactAlt=ground)
-        self._set_target(entry, owner or w, units)
+        self._set_target(entry, owner or w, units, wrecks_since)
         return entry
 
     @staticmethod
-    def _set_target(entry: Dict[str, Any], ref: LiveObject, units) -> None:
-        tgt = units.nearest(entry["impactLon"], entry["impactLat"], AIM_TARGET_RADIUS,
-                            lambda o: _hostile(ref, o))
+    def _set_target(entry: Dict[str, Any], ref: LiveObject, units, wrecks_since: Optional[float] = None) -> None:
+        """Nearest hostile unit to the impact.  Wrecks do not count (Tacview keeps
+        them), except ones killed since *wrecks_since*: at impact, its own kill."""
+        def keep(o: LiveObject) -> bool:
+            if o.dead and (wrecks_since is None or o.died < wrecks_since):
+                return False
+            return _hostile(ref, o)
+        tgt = units.nearest(entry["impactLon"], entry["impactLat"], AIM_TARGET_RADIUS, keep)
         entry["targetId"], entry["targetName"] = (tgt[0].id, tgt[0].name) if tgt else (None, None)
 
     def _retire_weapon(self, w: LiveObject, t: float) -> None:
@@ -736,7 +765,9 @@ class LiveWorld:
             return
         ground = self._ground_under(owner)
         units = self._surface_units()
-        entry = self._weapon_entry(w, owner, units, ground)
+        # DCS/Tacview may report the kill a moment before the weapon's removal.
+        since = t - KILL_GRACE
+        entry = self._weapon_entry(w, owner, units, ground, since)
         if entry is None:
             return
         pos = w.position()
@@ -748,7 +779,7 @@ class LiveWorld:
                 # A dispenser opening in the air (its bomblets show the
                 # pattern), or never seen moving: where it vanished.
                 entry.update(impactLon=pos[0], impactLat=pos[1], impactAlt=aim)
-                self._set_target(entry, owner, units)
+                self._set_target(entry, owner, units, since)
             if opened:
                 entry["dispensed"] = True
         entry.update(tti=0.0, impacted=True)

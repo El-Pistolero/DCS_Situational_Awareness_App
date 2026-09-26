@@ -286,10 +286,6 @@ class DcsEventAndDestroyedTests(unittest.TestCase):
                           "coalition": "Enemies", "category": "ground"})
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class WrecksAndTypes(unittest.TestCase):
     def test_destroyed_event_makes_a_wreck_and_ends_the_threat(self):
         from dcs_sa.acmi.model import Event
@@ -325,8 +321,95 @@ class WrecksAndTypes(unittest.TestCase):
             s.w.time = JsowGlide.END + dt
             self.assertEqual(_mine(s.w, "3002") is not None, alive, dt)
 
+    def test_air_to_air_missile_names(self):
+        from dcs_sa.telemetry.live_world import _AIR_TO_AIR_RE
+        for name in ("AIM_9", "AIM-120C", "P_73", "R-27ER", "Matra_R550", "MATRA_R530", "PL-5EII", "SD-10",
+                     "Super_530D", "MICA_IR", "FIM_92"):
+            self.assertTrue(_AIR_TO_AIR_RE.search(name), name)
+        for name in ("AGM_154A", "Kh-29L", "BR_500", "RBK_500AO", "GBU_12", "CBU_97", "Mk_82", "BDU_33"):
+            self.assertFalse(_AIR_TO_AIR_RE.search(name), name)
+
+    def test_repeated_world_sweep_is_not_reapplied(self):
+        # Export.lua re-sends its once-a-second world sweep in every packet.
+        w = LiveWorld(["Ethan"])
+        me = {"lat": LAT0, "lon": LON0, "alt": 3000.0, "pilot": "Ethan", "name": "F-16C_50", "hdg": 90.0}
+        world = [{"id": 7, "name": "MiG-29S", "lat": LAT0, "lon": LON0 + 0.1, "alt": 5000.0,
+                  "coalition": "Enemies", "type": {"level1": 1, "level2": 1}}]
+        w.ingest_bridge({"t": 1.0, "self": me, "world": world})
+        self.assertEqual(w.objects["w7"].last_update, 1.0)
+        w.ingest_bridge({"t": 1.5, "self": me, "world": [dict(o) for o in world]})
+        self.assertEqual(w.objects["w7"].last_update, 1.0)
+        w.ingest_bridge({"t": 2.0, "self": me, "world": [{**world[0], "lon": LON0 + 0.101}]})
+        self.assertEqual(w.objects["w7"].last_update, 2.0)
+        w.ingest_bridge({"t": 2.5, "self": me, "world": []})
+        self.assertNotIn("w7", w.objects)
+
     def test_bridge_weapon_types(self):
         from dcs_sa.telemetry.live_world import _dcs_type_to_tags
         self.assertEqual(_dcs_type_to_tags({"level1": 4, "level2": 5}, False), "Weapon+Bomb")
         self.assertEqual(_dcs_type_to_tags({"level1": 4, "level2": 7}, False), "Weapon+Rocket")
         self.assertEqual(_dcs_type_to_tags({"level1": 4, "level2": 4}, False), "Weapon+Missile")
+
+    def test_wrecks_are_not_targets_but_a_weapons_own_kill_is(self):
+        from dcs_sa.acmi.model import Event
+        w = LiveWorld(["Ethan"])
+        w.on_frame(0.0)
+        w.on_object(0.0, "101", _pos(LON0, LAT0, 3000.0, Yaw=90.0), F16)
+        aim = geo.destination(LON0, LAT0, 90.0, 2000.0)
+        _unit(w, "650", "BTR-80", "Enemies", *geo.destination(*aim, 0.0, 20.0))  # killed earlier
+        _unit(w, "651", "Ural-375", "Enemies", *geo.destination(*aim, 180.0, 60.0))
+        w.on_event(Event(time=1.0, kind="Destroyed", object_ids=["650"]))
+        bomb = {"Type": "Weapon+Bomb", "Name": "Mk_82", "Parent": "101", "Coalition": "Allies"}
+        for i in range(6):  # straight down onto the aim point
+            t = 10.0 + i * 0.5
+            w.on_frame(t)
+            w.on_object(t, "3100", _pos(*aim, 450.0 - 50.0 * i), bomb)
+        self.assertEqual(_mine(w, "3100")["targetId"], "651")
+        # The Ural dies a moment before the bomb is removed: still its target.
+        w.on_event(Event(time=12.8, kind="Destroyed", object_ids=["651"]))
+        w.on_remove(13.0, "3100")
+        e = _mine(w, "3100")
+        self.assertTrue(e["impacted"])
+        self.assertEqual(e["targetId"], "651")
+
+
+class BridgeWeapons(unittest.TestCase):
+    def test_repeated_world_sweep_does_not_stop_a_falling_bomb(self):
+        # Export.lua sends self at 10 Hz but re-sends its 1 Hz world sweep in
+        # every packet: a repeat must not read as a weapon standing still.
+        w = LiveWorld(["Ethan"])
+        rel, h0, sweep = 2.0, 5000.0, None
+        for i in range(80):
+            t = round(i * 0.1, 1)
+            jet = geo.destination(LON0, LAT0, 90.0, 250.0 * t)
+            me = {"name": "F-16C_50", "pilot": "Ethan", "coalition": "Allies", "lat": jet[1], "lon": jet[0],
+                  "alt": h0, "hdg": 90.0, "agl": h0}
+            if i % 10 == 0:
+                sweep = []
+                if t >= rel:
+                    tau = t - rel
+                    sweep.append({"id": 5001, "name": "Mk_82", "coalition": "Allies", "type": {"level1": 4, "level2": 5},
+                                  "lat": jet[1], "lon": jet[0], "alt": h0 - 0.5 * G * tau * tau})
+            w.ingest_bridge({"t": t, "self": me, "world": sweep})
+            if t >= 4.0:
+                e = _mine(w, "w5001")
+                self.assertAlmostEqual(e["gs"], 250.0, delta=2.0, msg=t)
+                self.assertLess(e["vs"], -5.0, t)
+        # At 7.9 s the last sweep (7.0 s) holds the bomb 5 s into a vacuum fall.
+        tau = 5.0
+        remaining = (-G * tau + math.sqrt((G * tau) ** 2 + 2 * G * (h0 - 0.5 * G * tau * tau))) / G
+        self.assertAlmostEqual(e["tti"], remaining, delta=0.05 * remaining)
+
+    def test_air_to_air_missiles_are_not_my_weapons(self):
+        w = LiveWorld(["Ethan"])
+        for t in (0.0, 0.5, 1.0):
+            w.on_frame(t)
+            w.on_object(t, "101", _pos(LON0, LAT0 + t * 0.002, 7500.0, Yaw=0.0), F16)
+            for oid, name in (("5010", "R_530F_EM"), ("5011", "Matra_R550"), ("5012", "Kh-29L")):
+                w.on_object(t, oid, _pos(LON0, LAT0 + 0.002 + t * 0.004, 7400.0 - t * 100.0),
+                            {"Type": "Weapon+Missile", "Name": name, "Parent": "101", "Coalition": "Allies"})
+        self.assertEqual([e["id"] for e in w.snapshot()["myWeapons"]], ["5012"])
+
+
+if __name__ == "__main__":
+    unittest.main()
