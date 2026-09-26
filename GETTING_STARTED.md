@@ -93,6 +93,8 @@ Got an `.acmi` file from somewhere else (a squadron mate, a USB stick)? Drag it 
 
 This shows your aircraft, threats and missiles live on a second monitor while you fly, like a big moving map. It also makes your debriefs more accurate. Do this step with **DCS closed** if you can: it saves a restart.
 
+**Quickest way:** on the **Flight debrief** page, if the bridge isn't installed yet, DCS SA offers it with an **Install it** button. Click that, then restart DCS, and skip to point 4. Otherwise:
+
 1. Open the live view. If DCS SA is already open, click **Live view ↗** at the top right of its window, and a second window, **DCS SA - Live**, opens. If DCS SA isn't open, open **DCS SA Live** from the Start menu (or its desktop icon, if you ticked that box when installing).
 2. In the middle of the live view it says **Waiting for telemetry**. Click the **Connect…** button under it (or **⚙ Connect** at the top right). A box called **Live source** opens.
 3. At the bottom of that box, click **Install DCS bridge into Export.lua**. A pop-up says **Installed in:** followed by a folder like `C:\Users\<you>\Saved Games\DCS\Scripts`. Click **OK**. The box now says **bridge installed**. Click **Close**.
@@ -130,7 +132,7 @@ DCS SA checks once an hour whether a newer version has been released, and tells 
 2. Close DCS SA.
 3. Double-click the downloaded **DCS-SA-Setup** and click through the installer as before. It replaces the old version.
 
-Your recordings, settings and the DCS bridge stay. If you installed the bridge, DCS SA updates its scripts by itself the next time it starts; restart DCS afterwards if it was running.
+Your recordings, settings and the DCS bridge stay. You never have to reinstall the bridge: DCS SA brings its scripts up to date by itself each time it starts, and DCS picks them up the next time you start DCS.
 
 Don't want it looking for updates? Make a file called `dcs-sa.toml` next to the app with the line `update_check = false`.
 

@@ -701,6 +701,29 @@ async function showLibrary() {
         "Get it"),
       el("span", { class: "muted" }, " Your recordings and settings are kept.")));
   }
+  // The bridge is optional, so it is offered rather than installed silently:
+  // it writes into the user's DCS folder.  Once in, it keeps itself up to date.
+  const prof0 = S.status?.profile || {};
+  if (prof0.found && prof0.tacviewInstalled && !prof0.bridgeInstalled) {
+    const note = el("div", { class: "note-update" });
+    const install = el("button", { onclick: async () => {
+      install.disabled = true;
+      install.textContent = "Installing…";
+      try {
+        const { body } = await api("/api/install-bridge", { method: "POST" });
+        note.textContent = body.ok
+          ? `DCS bridge installed in ${body.installed.join(", ")}. Quit DCS completely and start it again to use it. It updates itself from now on.`
+          : `Could not install it: ${body.error}`;
+      } catch (err) {
+        note.textContent = `Could not install it: ${err.message}`;
+      }
+    } }, "Install it");
+    note.append("Get more out of your debriefs: the ", el("b", {}, "DCS bridge"),
+      " adds your stick and throttle inputs, RWR and exact fuel, and DCS's own hits and kills. ",
+      install,
+      el("span", { class: "muted" }, " One click, then restart DCS. It keeps itself up to date afterwards."));
+    box.append(note);
+  }
   const drop = el("div", { class: "drop" }, "Drop an .acmi file here, or ",
     el("button", { onclick: () => fileInput.click() }, "choose a file"));
   const fileInput = el("input", { type: "file", accept: ".acmi,.txt", class: "hidden" });
