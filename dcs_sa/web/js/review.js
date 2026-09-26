@@ -718,7 +718,9 @@ function renderVersion(host, up, tries = 0) {
     } else if (inst.state === "ready") {
       host.append(el("button", { onclick: async () => {
         flash("Installing — DCS SA will close and reopen");
-        await post("/api/update/install");
+        // If it cannot be applied, say so rather than closing on a silent failure.
+        const r = await post("/api/update/install").catch(() => null);
+        if (r && r.ok === false) flash(`Update failed: ${r.error || "unknown reason"}`);
       } }, "Install now"),
         el("span", { class: "muted" }, " Downloaded and checked. DCS SA closes, updates and reopens."));
     } else {

@@ -650,7 +650,7 @@ class UpdateDownloadTests(unittest.TestCase):
              mock.patch("subprocess.Popen", FakePopen):
             # A plain string stands in for a Windows path; PureWindowsPath would
             # need a Windows host to build.
-            update.launch_installer(r"C:\Users\Me\DCS-SA-Setup.exe", app_exe=r"C:\App\DCS-SA.exe")
+            update.launch_installer(r"C:\Users\Me\DCS-SA-Setup.exe", exe_path=r"C:\App\DCS-SA.exe")
         cmd = " ".join(seen["args"])
         self.assertIn("powershell", seen["args"][0])
         self.assertIn(f"Wait-Process -Id {os.getpid()}", cmd)   # let go before installing
@@ -822,3 +822,139 @@ class LiveSessionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InPlaceUpdateTests(unittest.TestCase):
+    """Applying an update by swapping the exe, the way Windows allows.
+
+    The installer route kept rolling itself back: a one-file build runs a
+    second process that holds DCS-SA.exe open, so waiting for the app's own
+    process id never meant the exe was free.  Renaming it is allowed even
+    while it runs, so the swap is done by the app itself, before it exits.
+    """
+
+    def setUp(self):
+        import tempfile
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.exe = self.dir / "DCS-SA.exe"
+        self.exe.write_bytes(b"the version that is running")
+        self.new = self.dir / "DCS-SA-App-9.9.9.exe"
+        self.new.write_bytes(b"the new version")
+
+    def test_the_new_exe_takes_the_running_one_s_place(self):
+        from dcs_sa import update
+
+        old = update.swap_in_place(self.new, self.exe)
+        self.assertEqual(self.exe.read_bytes(), b"the new version")
+        self.assertEqual(old.read_bytes(), b"the version that is running")
+        self.assertFalse(self.new.exists())          # moved, not copied
+        # Shortcuts and the uninstaller point at this path, so it must not move.
+        self.assertEqual(self.exe.name, "DCS-SA.exe")
+
+    def test_a_failed_swap_leaves_a_working_app(self):
+        from unittest import mock
+
+        from dcs_sa import update
+
+        with mock.patch("shutil.move", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                update.swap_in_place(self.new, self.exe)
+        self.assertEqual(self.exe.read_bytes(), b"the version that is running")
+        self.assertFalse(list(self.dir.glob("DCS-SA.exe.old*")))
+
+    def test_the_previous_version_is_swept_up_on_the_next_start(self):
+        from dcs_sa import update
+
+        update.swap_in_place(self.new, self.exe)
+        self.assertEqual(update.sweep_old_exe(self.exe), 1)
+        self.assertFalse(list(self.dir.glob("DCS-SA.exe.old*")))
+        self.assertEqual(update.sweep_old_exe(self.exe), 0)   # nothing to do twice
+
+    def test_a_leftover_old_exe_does_not_block_the_next_swap(self):
+        """The previous one may still be mapped, so the swap must not need it gone."""
+        from dcs_sa import update
+
+        stuck = self.dir / "DCS-SA.exe.old"
+        stuck.write_bytes(b"still mapped")
+        real_unlink = Path.unlink
+
+        def refuse(path, *a, **kw):
+            if path == stuck:
+                raise OSError("in use")
+            return real_unlink(path, *a, **kw)
+
+        from unittest import mock
+        with mock.patch.object(Path, "unlink", refuse):
+            old = update.swap_in_place(self.new, self.exe)
+        self.assertEqual(self.exe.read_bytes(), b"the new version")
+        self.assertNotEqual(old, stuck)
+        self.assertTrue(old.is_file())
+
+    def test_the_bare_exe_is_chosen_when_it_can_be_swapped_in(self):
+        from unittest import mock
+
+        from dcs_sa import update
+
+        base = ("https://github.com/El-Pistolero/DCS_Situational_Awareness_App"
+                "/releases/download/v9.9.9/")
+        release = {"tag_name": "v9.9.9", "assets": [
+            {"name": "DCS-SA-Setup.exe", "browser_download_url": base + "DCS-SA-Setup.exe",
+             "size": 20, "digest": "sha256:" + "a" * 64},
+            {"name": "DCS-SA.exe", "browser_download_url": base + "DCS-SA.exe",
+             "size": 10, "digest": "sha256:" + "b" * 64},
+        ]}
+        with mock.patch.object(update, "can_swap_in_place", return_value=True):
+            picked = update._installer(release)
+        self.assertEqual(picked["mode"], "swap")
+        self.assertEqual(picked["name"], "DCS-SA.exe")
+        self.assertEqual(picked["sha256"], "b" * 64)
+
+        with mock.patch.object(update, "can_swap_in_place", return_value=False):
+            picked = update._installer(release)
+        self.assertEqual(picked["mode"], "installer")
+        self.assertEqual(picked["name"], "DCS-SA-Setup.exe")
+
+    def test_the_helper_waits_for_the_exe_itself_not_just_the_process(self):
+        """The one-file bootloader outlives us; only the file tells the truth."""
+        from unittest import mock
+
+        from dcs_sa import update
+
+        with mock.patch.object(update, "app_exe", return_value=self.exe):
+            script = update._wait_for_exit()
+        self.assertIn("Wait-Process", script)
+        self.assertIn("[IO.File]::Open", script)     # ...then wait for the lock to go
+        self.assertIn("DCS-SA.exe", script)
+
+    def test_the_swap_helper_starts_the_new_exe_and_deletes_the_old(self):
+        from unittest import mock
+
+        from dcs_sa import update
+
+        seen = {}
+        with mock.patch.object(update, "_detached", lambda s: seen.setdefault("s", s) or True), \
+                mock.patch.object(update.os, "name", "nt"):
+            update.launch_swapped(self.exe, self.dir / "DCS-SA.exe.old")
+        self.assertIn("Start-Process", seen["s"])
+        self.assertIn("Remove-Item", seen["s"])
+        # Starting the new exe must not wait on a lock: it is a different file.
+        self.assertNotIn("[IO.File]::Open", seen["s"])
+
+    def test_a_downloaded_exe_and_a_downloaded_installer_are_told_apart(self):
+        from dcs_sa.update import Downloader
+
+        d = Downloader(self.dir)
+        (self.dir / "DCS-SA-App-9.9.9.exe").write_bytes(b"x" * 7)
+        state = d.start("9.9.9", "https://example.invalid/x", None, 7, "swap")
+        self.assertEqual(state["state"], "ready")
+        self.assertEqual(state["mode"], "swap")
+        self.assertEqual(d.ready_mode(), "swap")
+        self.assertEqual(Path(state["file"]).name, "DCS-SA-App-9.9.9.exe")
+
+    def test_a_quoted_path_cannot_break_out_of_the_helper_script(self):
+        from dcs_sa.update import _ps_quote
+
+        self.assertEqual(_ps_quote("C:\\it's here\\x.exe"), "'C:\\it''s here\\x.exe'")

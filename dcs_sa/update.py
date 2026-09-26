@@ -52,10 +52,16 @@ def is_newer(latest: str, current: str = __version__) -> bool:
     return version_tuple(latest) > version_tuple(current)
 
 
-def _installer(release: Dict[str, Any]) -> Dict[str, Any]:
-    """The installer asset: where it is, how big, and its published digest."""
+#: The two things a release offers: the full installer, and the bare exe that
+#: an already-installed copy can swap itself for.
+SETUP_ASSET = "setup.exe"
+APP_ASSET = "dcs-sa.exe"
+
+
+def _asset(release: Dict[str, Any], suffix: str) -> Dict[str, Any]:
+    """One release asset by the end of its name: where it is and its digest."""
     for asset in release.get("assets") or []:
-        if str(asset.get("name", "")).lower().endswith("setup.exe"):
+        if str(asset.get("name", "")).lower().endswith(suffix):
             digest = str(asset.get("digest") or "")
             return {
                 "download": asset.get("browser_download_url"),
@@ -64,6 +70,109 @@ def _installer(release: Dict[str, Any]) -> Dict[str, Any]:
                 "name": asset.get("name"),
             }
     return {}
+
+
+def _installer(release: Dict[str, Any]) -> Dict[str, Any]:
+    """Which asset to fetch, and how the update will be applied.
+
+    When we are the installed exe and its folder is ours to write, the update
+    is the bare exe and we swap ourselves for it - no installer, no rollback,
+    nothing to click.  Otherwise it is the installer, as before.
+    """
+    if can_swap_in_place():
+        found = _asset(release, APP_ASSET)
+        if found.get("download"):
+            return dict(found, mode="swap")
+    found = _asset(release, SETUP_ASSET)
+    return dict(found, mode="installer") if found.get("download") else {}
+
+
+def app_exe() -> Optional["Path"]:
+    """The installed DCS-SA.exe, when this is the frozen Windows app."""
+    if os.name != "nt" or not getattr(sys, "frozen", False):
+        return None
+    return Path(sys.executable)
+
+
+def _writable(folder: "Path") -> bool:
+    """Can we actually create a file here?  os.access lies about this on Windows."""
+    probe = folder / ".dcs-sa-write-probe"
+    try:
+        probe.touch()
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def can_swap_in_place() -> bool:
+    exe = app_exe()
+    return bool(exe and exe.is_file() and _writable(exe.parent))
+
+
+def sweep_old_exe(exe: Optional["Path"] = None) -> int:
+    """Delete the previous version left behind by an update.  Returns how many."""
+    exe = exe or app_exe()
+    if not exe:
+        return 0
+    gone = 0
+    for stale in exe.parent.glob(exe.name + ".old*"):
+        try:
+            stale.unlink()
+            gone += 1
+        except OSError:
+            pass    # still mapped by the process that just handed over; next start
+    if gone:
+        log.info("Cleaned up %d file(s) from the previous version", gone)
+    return gone
+
+
+def swap_in_place(new_exe: "Path", exe: Optional["Path"] = None) -> "Path":
+    """Put the downloaded exe where the running one lives; return the old file.
+
+    Windows will not let a running executable be overwritten or deleted, which
+    is what made the installer roll itself back: a one-file build keeps a
+    second process holding the exe open, so it is never free in time.  But
+    Windows *does* allow a running exe to be **renamed** - the image stays
+    mapped under the new name.  So the running exe is moved aside, the new one
+    takes its place, and the old file is deleted once this process has gone.
+
+    If anything fails the old exe is put back, so a failed update leaves a
+    working app rather than none at all.
+    """
+    import shutil
+
+    exe = exe or app_exe()
+    if not exe:
+        raise RuntimeError("not running as the installed app")
+    if not new_exe.is_file():
+        raise FileNotFoundError(str(new_exe))
+    sweep_old_exe(exe)
+    old = exe.with_name(exe.name + ".old")
+    if old.exists():        # last update's exe is still mapped: use a fresh name
+        old = exe.with_name(f"{exe.name}.old{os.getpid()}")
+    exe.rename(old)
+    try:
+        shutil.move(str(new_exe), str(exe))
+    except OSError:
+        old.rename(exe)     # nothing changed, and the app still runs
+        raise
+    log.info("Swapped in the new %s; the old one is %s", exe.name, old.name)
+    return old
+
+
+def record_installed_version(version: str) -> None:
+    """Keep Windows' own "Apps & features" entry honest about the version."""
+    if os.name != "nt":
+        return
+    try:
+        import winreg
+
+        key = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{6F2A7C1E-5B7D-4C1A-9E0B-DC5A5A0F16C0}_is1"
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key, 0, winreg.KEY_SET_VALUE) as k:
+            winreg.SetValueEx(k, "DisplayVersion", 0, winreg.REG_SZ, str(version))
+    except OSError as exc:
+        log.debug("Could not update the uninstall entry: %s", exc)
 
 
 def safe_asset_url(url: str) -> bool:
@@ -123,36 +232,91 @@ def _ps_quote(text: str) -> str:
     return "'" + str(text).replace("'", "''") + "'"
 
 
-def launch_installer(path: "Path", app_exe: Optional[str] = None) -> None:
-    """Replace this app with the downloaded version, then start it again.
-
-    Windows will not let the installer overwrite an exe that is still
-    running, and an install that trips over that rolls itself back.  Simply
-    closing the app first is a race: the process takes a moment to go.  So a
-    small helper is started that waits for *this* process to exit, runs the
-    installer, and launches the new version.
-    """
+def _detached(script: str) -> bool:
+    """Run a PowerShell snippet that outlives this process.  True if it started."""
     import subprocess
 
+    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    try:
+        subprocess.Popen(["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
+                          "-Command", script], close_fds=True, creationflags=flags)
+        return True
+    except OSError as exc:
+        log.warning("Could not start the update helper: %s", exc)
+        return False
+
+
+def _wait_for_exit() -> str:
+    """PowerShell that waits until this app is really gone.
+
+    Waiting on our own process id is not enough: a one-file build runs a second
+    process that unpacked us and holds the exe open until we are finished with
+    it.  So after the process goes, wait until the exe file itself can be
+    opened for writing - that is the moment Windows will let it be replaced.
+    """
+    exe = app_exe()
+    script = f"Wait-Process -Id {os.getpid()} -Timeout 120 -ErrorAction SilentlyContinue"
+    if exe:
+        script += (
+            f"; $f = {_ps_quote(exe)}"
+            "; for ($i = 0; $i -lt 150; $i++) {"
+            " try { $h = [IO.File]::Open($f, 'Open', 'ReadWrite', 'None'); $h.Close(); break }"
+            " catch { Start-Sleep -Milliseconds 400 } }"
+        )
+    return script
+
+
+def launch_swapped(exe: "Path", old: "Path") -> None:
+    """Start the exe we just swapped in, then delete the version it replaced.
+
+    Nothing here has to wait for a lock: the new exe is a different file at
+    the same path, so it can start the moment we are out of the way.  Deleting
+    the old one is retried because the process handing over still has it
+    mapped, and if it never succeeds the next start sweeps it up.
+    """
+    if os.name != "nt":
+        raise RuntimeError("updates are applied in place only on Windows")
+    script = (
+        f"Wait-Process -Id {os.getpid()} -Timeout 120 -ErrorAction SilentlyContinue"
+        f"; Start-Process -FilePath {_ps_quote(exe)}"
+        f"; $old = {_ps_quote(old)}"
+        "; for ($i = 0; $i -lt 60; $i++) {"
+        " try { Remove-Item -LiteralPath $old -Force -ErrorAction Stop; break }"
+        " catch { Start-Sleep -Milliseconds 500 } }"
+    )
+    if not _detached(script):
+        # Without the helper the old app is gone and nothing would bring the
+        # new one back, so start it now and leave the old file for the sweep.
+        import subprocess
+
+        subprocess.Popen([str(exe)], close_fds=True,
+                         creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+
+
+def launch_installer(path: "Path", exe_path: Optional[str] = None) -> None:
+    """Run the downloaded installer once this app is out of its way.
+
+    Used when we cannot swap the exe ourselves - a copy installed somewhere we
+    may not write, or a first install.  The helper waits for the exe to be
+    free rather than just for the process, because an installer that finds it
+    still in use rolls the whole install back.
+    """
     if os.name != "nt":
         raise RuntimeError("the installer only runs on Windows")
-    exe = app_exe or (sys.executable if getattr(sys, "frozen", False) else None)
-    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    exe = exe_path or (sys.executable if getattr(sys, "frozen", False) else None)
     script = (
-        f"Wait-Process -Id {os.getpid()} -Timeout 120 -ErrorAction SilentlyContinue; "
-        f"Start-Process -FilePath {_ps_quote(path)} "
+        f"{_wait_for_exit()}; Start-Process -FilePath {_ps_quote(path)} "
         "-ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait"
     )
     if exe:
         script += f"; Start-Process -FilePath {_ps_quote(exe)}"
-    try:
-        subprocess.Popen(["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
-                          "-Command", script], close_fds=True, creationflags=flags)
+    if _detached(script):
         return
-    except OSError as exc:      # no PowerShell: run it directly and hope the timing holds
-        log.warning("Could not schedule the install helper (%s); running the installer directly", exc)
+    import subprocess
+
+    log.warning("Running the installer directly; the timing may not hold")
     subprocess.Popen([str(path), "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
-                     close_fds=True, creationflags=flags)
+                     close_fds=True, creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
 
 
 def fetch_latest(url: str = API) -> Dict[str, Any]:
@@ -190,21 +354,28 @@ class Downloader:
         with self._lock:
             return dict(self._state)
 
-    def start(self, version: str, url: str, sha256: Optional[str], size: int = 0) -> Dict[str, Any]:
+    def start(self, version: str, url: str, sha256: Optional[str], size: int = 0,
+              mode: str = "installer") -> Dict[str, Any]:
+        """Fetch the update.  *mode* is how it will be applied: swap or installer."""
         with self._lock:
             if self._state.get("state") == "downloading":
                 return dict(self._state)
-            dest = self.folder / f"DCS-SA-Setup-{version}.exe"
+            stem = "DCS-SA-App" if mode == "swap" else "DCS-SA-Setup"
+            dest = self.folder / f"{stem}-{version}.exe"
+            ready = {"state": "ready", "version": version, "file": str(dest), "mode": mode}
             if dest.is_file() and (not size or dest.stat().st_size == size):
-                self._state = {"state": "ready", "version": version, "file": str(dest)}
+                self._state = ready
                 return dict(self._state)
-            self._state = {"state": "downloading", "version": version, "done": 0, "total": size}
-            self._thread = threading.Thread(target=self._run, args=(version, url, sha256, size, dest),
+            self._state = {"state": "downloading", "version": version, "done": 0,
+                           "total": size, "mode": mode}
+            self._thread = threading.Thread(target=self._run,
+                                            args=(version, url, sha256, size, dest, mode),
                                             name="update-download", daemon=True)
             self._thread.start()
             return dict(self._state)
 
-    def _run(self, version: str, url: str, sha256: Optional[str], size: int, dest: "Path") -> None:
+    def _run(self, version: str, url: str, sha256: Optional[str], size: int,
+             dest: "Path", mode: str = "installer") -> None:
         def progress(done: int, total: int) -> None:
             with self._lock:
                 if self._state.get("state") == "downloading":
@@ -216,18 +387,21 @@ class Downloader:
         except Exception as exc:  # noqa: BLE001 - a failed update must not take the app with it
             log.warning("Update download failed: %s", exc)
             with self._lock:
-                self._state = {"state": "failed", "version": version, "error": str(exc)}
+                self._state = {"state": "failed", "version": version,
+                               "error": str(exc), "mode": mode}
             return
         log.info("Update %s downloaded and verified", version)
         with self._lock:
-            self._state = {"state": "ready", "version": version, "file": str(dest)}
+            self._state = {"state": "ready", "version": version,
+                           "file": str(dest), "mode": mode}
 
     def _clean_old(self, keep: "Path") -> None:
-        """One installer at a time: old ones are just clutter."""
+        """One download at a time: earlier ones are just clutter."""
         try:
-            for old in self.folder.glob("DCS-SA-Setup-*.exe*"):
-                if old != keep:
-                    old.unlink(missing_ok=True)
+            for pattern in ("DCS-SA-Setup-*.exe*", "DCS-SA-App-*.exe*"):
+                for old in self.folder.glob(pattern):
+                    if old != keep:
+                        old.unlink(missing_ok=True)
         except OSError:
             pass
 
@@ -236,6 +410,11 @@ class Downloader:
             path = self._state.get("file") if self._state.get("state") == "ready" else None
         p = Path(path) if path else None
         return p if p and p.is_file() else None
+
+    def ready_mode(self) -> str:
+        """How the downloaded file should be applied: "swap" or "installer"."""
+        with self._lock:
+            return str(self._state.get("mode") or "installer")
 
 
 class UpdateChecker:

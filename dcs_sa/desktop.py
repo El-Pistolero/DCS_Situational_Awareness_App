@@ -142,7 +142,7 @@ def run(cfg: Config, live_only: bool = False) -> int:
                     pass
             # The installer is waiting on this process id before it replaces
             # the exe, so a window that will not close must not hold it open.
-            threading.Timer(8.0, lambda: os._exit(0)).start()
+            threading.Timer(4.0, lambda: os._exit(0)).start()
 
         app.quit = quit_for_update
         # Keep settings (modes, Display choices) between runs: pywebview 5 is private by default.

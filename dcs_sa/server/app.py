@@ -28,7 +28,9 @@ from ..config import Config
 from .. import usersettings
 from ..career import CareerStore, totals as career_totals
 from ..diagnostics import console, install as install_console
-from ..update import REPO as UPDATE_REPO, RELEASES_PAGE, Downloader, UpdateChecker, launch_installer
+from ..update import (REPO as UPDATE_REPO, RELEASES_PAGE, Downloader, UpdateChecker,
+                      launch_installer, launch_swapped, swap_in_place,
+                      record_installed_version, sweep_old_exe)
 from ..dcs_profile import read_profile
 from ..telemetry.dcs_bridge import DcsBridgeListener
 from ..telemetry.live_world import LiveWorld
@@ -148,6 +150,9 @@ class App:
         self.downloads = Downloader(Path(cfg.upload_dir).parent / "updates")
         self.career = CareerStore(str(Path(cfg.upload_dir).parent / "career.json"))
         self.updates.on_available = self._queue_update
+        # An update applied in place leaves the previous exe behind, because
+        # Windows still had it mapped when we handed over.  Now is the moment.
+        sweep_old_exe()
         self.store.career = self.career
         self.quit: Any = None   # set by the desktop shell, to close for an install
         self.tiles = TileCache(str(Path(cfg.upload_dir).parent / "tilecache"))
@@ -179,7 +184,8 @@ class App:
             return
         log.info("Update %s found; downloading it in the background", state.get("latest"))
         self.downloads.start(str(state.get("latest")), str(state["download"]),
-                             state.get("sha256"), int(state.get("size") or 0))
+                             state.get("sha256"), int(state.get("size") or 0),
+                             str(state.get("mode") or "installer"))
 
     def status(self) -> Dict[str, Any]:
         return {
@@ -391,21 +397,31 @@ def make_handler(app: App):
                     if os.name != "nt":
                         return self._json({"ok": False, "error": "the installer only runs on Windows"})
                     state = app.downloads.start(str(up.get("latest")), str(up["download"]),
-                                                up.get("sha256"), int(up.get("size") or 0))
+                                                up.get("sha256"), int(up.get("size") or 0),
+                                                str(up.get("mode") or "installer"))
                     return self._json({"ok": True, "install": state})
                 if path == "/api/update/install":
-                    installer = app.downloads.ready_file()
-                    if installer is None:
+                    downloaded = app.downloads.ready_file()
+                    if downloaded is None:
                         return self._json({"ok": False, "error": "nothing downloaded yet"})
+                    mode = app.downloads.ready_mode()
+                    version = str(app.downloads.status().get("version") or "")
                     try:
-                        launch_installer(installer)
+                        if mode == "swap":
+                            # Put the new exe in place while we are still running:
+                            # Windows allows renaming a running exe, and doing it
+                            # now means nothing has to race our shutdown.
+                            old = swap_in_place(downloaded)
+                            record_installed_version(version)
+                            launch_swapped(Path(sys.executable), old)
+                        else:
+                            launch_installer(downloaded)
                     except (OSError, RuntimeError) as exc:
-                        log.warning("Could not start the installer: %s", exc)
+                        log.warning("Could not apply the update: %s", exc)
                         return self._json({"ok": False, "error": str(exc)})
-                    log.info("Installing the update; DCS SA will close and reopen")
-                    # The running exe cannot be replaced, so step out of the way.
+                    log.info("Update %s applied; DCS SA will close and reopen", version)
                     threading.Timer(1.0, lambda: app.quit and app.quit()).start()
-                    return self._json({"ok": True})
+                    return self._json({"ok": True, "mode": mode})
                 if path == "/api/open-release":
                     # Opens the project's own releases page in the system browser.
                     # No URL comes from the page, so this can't be pointed elsewhere.
