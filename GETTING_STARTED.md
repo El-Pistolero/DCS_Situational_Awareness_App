@@ -129,11 +129,15 @@ DCS SA remembers this and connects again by itself the next time you open it. To
 
 ## Updating to a newer version
 
-1. Close DCS SA.
-2. Download the newest build as in Step 1. The new file may be called **DCS-SA-windows (1)**.
-3. Extract it and double-click **DCS-SA-Setup** in the new folder. Click through the installer as before. It replaces the old version.
+DCS SA checks once an hour whether a newer version has been released, and tells you on the **Flight debrief** page: *"DCS SA 0.2.0 is out (you have 0.1.0)"*, with a **Get it** button. It never downloads or installs anything by itself.
+
+1. Click **Get it**. Your browser opens the release page. Download **DCS-SA-Setup.exe** under **Assets** (no GitHub login needed for a release).
+2. Close DCS SA.
+3. Double-click the downloaded **DCS-SA-Setup** and click through the installer as before. It replaces the old version.
 
 Your recordings, settings and the DCS bridge stay. If you installed the bridge, DCS SA updates its scripts by itself the next time it starts; restart DCS afterwards if it was running.
+
+Don't want it looking for updates? Make a file called `dcs-sa.toml` next to the app with the line `update_check = false`.
 
 ## Uninstalling
 

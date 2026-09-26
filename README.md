@@ -42,6 +42,8 @@ It's a normal desktop app: install it once, then open it from the **DCS SA** ico
 
 To build the exe yourself, double-click `build_exe.bat`; the result is `dist\DCS-SA.exe`.
 
+**Updates.** The app asks GitHub once an hour whether a newer *release* exists and says so on the Flight debrief page, with a button that opens the release page. It never downloads or runs anything by itself. Turn it off with `update_check = false` in `dcs-sa.toml`. Pushing a `v*` tag builds the installer and attaches it to a release.
+
 ## Set up DCS (one time)
 
 1. **Recordings for the debrief:** install the free [Tacview](https://www.tacview.net) and run it once (that puts its recorder into DCS), then in DCS go to *Options → Special → Tacview* and enable recording. No Tacview page there? See [GETTING_STARTED.md](GETTING_STARTED.md) Step 4a. Files land in `Documents\Tacview` and the app finds them automatically. You can also drag and drop any `.acmi` onto the app.
