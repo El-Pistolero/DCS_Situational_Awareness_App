@@ -10,16 +10,16 @@ import { MODES } from "./modes.js";
  * onChange(key, value) runs after a setting was written.
  */
 export function createDisplayPanel(button, host, { sections, settings, onChange }) {
-  const pop = el("div", { class: "dispanel hidden", role: "dialog", "aria-label": "Display options" });
+  const pop = el("div", { class: "dispanel hidden", role: "dialog", "aria-label": "Display options", tabindex: "-1" });
   host.append(pop);
   const isOpen = () => !pop.classList.contains("hidden");
 
   function control(row) {
     const v = settings.get(row.key);
     if (row.type === "toggle") {
-      return el("input", { type: "checkbox", checked: !!v, onchange: (e) => { settings.set(row.key, e.target.checked); onChange?.(row.key, e.target.checked); } });
+      return el("input", { type: "checkbox", "data-key": row.key, checked: !!v, onchange: (e) => { settings.set(row.key, e.target.checked); onChange?.(row.key, e.target.checked); } });
     }
-    const sel = el("select", { onchange: (e) => {
+    const sel = el("select", { "data-key": row.key, onchange: (e) => {
       const raw = e.target.value;
       const val = typeof settings.base(row.key) === "number" ? Number(raw) : raw;
       settings.set(row.key, val);
@@ -31,6 +31,11 @@ export function createDisplayPanel(button, host, { sections, settings, onChange 
   }
 
   function render() {
+    // Rebuilding replaces the focused control: put focus back on the same row,
+    // so keyboard use (Space, arrows) keeps working and Space never reaches playback.
+    const ae = document.activeElement;
+    const hadFocus = pop.contains(ae);
+    const fk = hadFocus ? ae.dataset?.key : null;
     pop.innerHTML = "";
     const mode = MODES.find((m) => m.id === settings.mode);
     for (const sec of sections) {
@@ -51,6 +56,7 @@ export function createDisplayPanel(button, host, { sections, settings, onChange 
         settings.customised() ? el("button", { class: "ghost", onclick: () => { settings.reset(); onChange?.(null, null); render(); } }, `Reset ${mode.label}`) : "");
     }
     pop.append(foot);
+    if (hadFocus) (fk && pop.querySelector(`[data-key="${CSS.escape(fk)}"]`) || pop.querySelector("[data-key]") || pop).focus();
   }
 
   function place() {

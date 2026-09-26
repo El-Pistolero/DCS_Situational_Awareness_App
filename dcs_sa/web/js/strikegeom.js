@@ -41,6 +41,17 @@ export function missComponents(impact, target, runIn) {
   return { distance: d, range, deflection, clock, clockNorth: clockN, bearing: brg };
 }
 
+/** Ground track over the last part of a track: from the last sample >= 2 s and > 20 m back. */
+function finalTrack(pb) {
+  if (!pb || pb.t.length < 2) return null;
+  const n = pb.t.length - 1;
+  for (let i = n - 1; i >= 0; i--) {
+    if (!isNum(pb.lon[i]) || pb.t[n] - pb.t[i] < 2) continue;
+    if (distance(pb.lon[i], pb.lat[i], pb.lon[n], pb.lat[n]) > 20) return bearing(pb.lon[i], pb.lat[i], pb.lon[n], pb.lat[n]);
+  }
+  return null;
+}
+
 /** Ground track (deg) of a playback track over [t0, t1], or null. */
 function trackOver(pb, t0, t1) {
   const a = sampleTrack(pb, t0), b = sampleTrack(pb, t1);
@@ -56,13 +67,16 @@ function trackOver(pb, t0, t1) {
 export function strikeGeometry(strike, objects, { target = null } = {}) {
   if (!strike?.release || !strike.impact) return null;
   const rel = strike.release;
+  const weapon = objects?.get(strike.weaponId);
   const out = {
     release: { lon: rel.longitude, lat: rel.latitude, alt: rel.altitude, heading: rel.heading },
     impact: { lon: strike.impact.longitude, lat: strike.impact.latitude, alt: strike.impact.altitude },
-    runIn: rel.heading,
+    // The attack axis the miss is split along: the weapon's own ground track at
+    // the end (a JSOW launched off-axis turns onto its target; a bomb crabs
+    // with the wind), else the jet's heading at release.
+    runIn: finalTrack(weapon?.pb) ?? rel.heading,
     hat: isNum(rel.altitude) && isNum(strike.impact.altitude) ? rel.altitude - strike.impact.altitude : null,
   };
-  const weapon = objects?.get(strike.weaponId);
   // Target at release and at impact.
   let tgt = null;
   if (target && isNum(target.lon)) {

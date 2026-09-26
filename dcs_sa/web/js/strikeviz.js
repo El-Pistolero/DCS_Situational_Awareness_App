@@ -108,6 +108,7 @@ export function drawStrikes(ctx, map, prepared, t, opts = {}) {
   ctx.textBaseline = "middle";
   // Simple label collision: a tag is skipped when its box overlaps one already drawn.
   const boxes = [];
+  const later = [];
   const tag = (text, x, y, color, align = "left") => {
     const w = ctx.measureText(text).width;
     const x0 = align === "center" ? x - w / 2 : align === "right" ? x - w : x;
@@ -130,7 +131,8 @@ export function drawStrikes(ctx, map, prepared, t, opts = {}) {
     const tags = opts.labels === "full" || sel || mpp < 12;
     const detail = sel || mpp < (opts.labels === "full" ? 15 : 6);
     ctx.globalAlpha = alpha;
-    const geom = sel && opts.target ? strikeGeometry(s, opts.objects, { target: opts.target }) : p.geom;
+    // The user's target re-scores only the selected weapon (as the strike card does).
+    const geom = opts.target && opts.selectedId === s.weaponId ? strikeGeometry(s, opts.objects, { target: opts.target }) : p.geom;
 
     // -- launch zone (JSOW): DCS's max / min range around the target ------------
     const env = s.envelope;
@@ -160,12 +162,11 @@ export function drawStrikes(ctx, map, prepared, t, opts = {}) {
 
     // -- weapon path + time-of-fall ticks ---------------------------------------
     const path = p.path;
-    let head = null;
+    const flying = started && !ended;
+    // A dispenser's own track ends when it opens: from then on the bomblets are the story.
+    const head = flying && path.length > 1 && !(geom?.dispense && t >= geom.dispense.time) ? pathAt(path, t) : null;
     if (L.paths && path.length > 1) {
-      const flying = started && !ended;
       const reach = ended ? path.length - 1 : pathAt(path, t).i;
-      // A dispenser's own track ends when it opens: from then on the bomblets are the story.
-      if (flying && !(geom?.dispense && t >= geom.dispense.time)) head = pathAt(path, t);
       ctx.lineWidth = sel ? 2 : 1.4;
       // Flown part: solid; after impact it fades so the picture builds up.
       {
@@ -207,7 +208,9 @@ export function drawStrikes(ctx, map, prepared, t, opts = {}) {
         ctx.moveTo(x - Math.cos(ang) * 4, y - Math.sin(ang) * 4); ctx.lineTo(x + Math.cos(ang) * 4, y + Math.sin(ang) * 4);
         ctx.stroke();
         if (detail && (sel || tk.sec % 30 === 0) && (!lastLabel || Math.hypot(lastLabel[0] - x, lastLabel[1] - y) > 44)) {
-          if (tag(`+${tk.sec}s`, x + Math.cos(ang) * 7, y + Math.sin(ang) * 7, "rgba(220,225,232,0.8)")) lastLabel = [x, y];
+          // Drawn after every strike's primary tags, so tick labels never push them out.
+          later.push([`+${tk.sec}s`, x + Math.cos(ang) * 7, y + Math.sin(ang) * 7, "rgba(220,225,232,0.8)"]);
+          lastLabel = [x, y];
         }
       }
     }
@@ -221,7 +224,7 @@ export function drawStrikes(ctx, map, prepared, t, opts = {}) {
         ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(x - 6, y - 5); ctx.lineTo(x + 6, y - 5); ctx.lineTo(x, y + 5); ctx.closePath();
         ctx.fill(); ctx.stroke();
-        hits.push({ id: s.weaponId, x, y, r: 9, strike: s, kind: "release" });
+        hits.push({ id: s.weaponId, x, y, r: 9, strike: s, kind: "release", lonlat: [geom.release.lon, geom.release.lat] });
         if (tags) {
           const r = s.release;
           const bits = [`REL ${kAlt(r.altitude)}`, isNum(r.mach) ? `M${r.mach.toFixed(2)}` : "",
@@ -234,7 +237,7 @@ export function drawStrikes(ctx, map, prepared, t, opts = {}) {
 
     // -- dispense point and bomblet impacts ---------------------------------------
     const disp = geom?.dispense;
-    if (disp && t >= disp.time) {
+    if ((L.paths || L.footprints) && disp && t >= disp.time) {
       const [x, y] = P(disp.lon, disp.lat);
       ctx.strokeStyle = "#ffc478";
       ctx.lineWidth = 1.3;
@@ -309,8 +312,10 @@ export function drawStrikes(ctx, map, prepared, t, opts = {}) {
       }
       const opens = disp && t < disp.time;
       const left = (opens ? disp.time : s.impactTime) - t;
-      const txt = `${weaponLabel(s.weaponName)}${s.targetName ? ` → ${s.targetName}` : ""} · ${opens ? "opens " : ""}${fmtClock(left)}`;
-      if (on(hx, hy) && (tags || sel)) tag(txt, hx + 10, hy + 12, FLYING);
+      // Its own map label is suppressed in favour of this tag, so there is always at least a short one.
+      const txt = tags || sel ? `${weaponLabel(s.weaponName)}${s.targetName ? ` → ${s.targetName}` : ""} · ${opens ? "opens " : ""}${fmtClock(left)}`
+        : `${weaponLabel(s.weaponName)} · ${fmtClock(left)}`;
+      if (on(hx, hy)) tag(txt, hx + 10, hy + 12, FLYING);
     }
 
     // -- impact, miss and BDA --------------------------------------------------------
@@ -357,7 +362,7 @@ export function drawStrikes(ctx, map, prepared, t, opts = {}) {
         ctx.beginPath(); ctx.moveTo(tx - 5, ty); ctx.lineTo(tx + 5, ty); ctx.moveTo(tx, ty - 5); ctx.lineTo(tx, ty + 5); ctx.stroke();
       }
       circledX(ctx, ix, iy, sel ? 7 : 5.5, col);
-      hits.push({ id: s.weaponId, x: ix, y: iy, r: 9, strike: s, kind: "impact" });
+      hits.push({ id: s.weaponId, x: ix, y: iy, r: 9, strike: s, kind: "impact", lonlat: [geom.impact.lon, geom.impact.lat] });
       if (L.bda) {
         const killed = new Set((s.damage || []).filter((d) => d.time <= t).map((d) => d.id));
         const txt = killed.size ? `${killed.size} K` : s.result === "miss" && (detail || t - s.impactTime < 30) ? "MISS" : "";
@@ -375,6 +380,8 @@ export function drawStrikes(ctx, map, prepared, t, opts = {}) {
       }
     }
   }
+  ctx.globalAlpha = 1;
+  for (const [text, x, y, color] of later) tag(text, x, y, color);
   ctx.restore();
   return hits;
 }

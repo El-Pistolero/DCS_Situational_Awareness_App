@@ -30,8 +30,16 @@ export function createSettings({ prefix, base, modeDefaults }) {
     try { return JSON.parse(raw); } catch { return undefined; }
   };
   const encode = (k, v) => (typeof base[k] === "string" ? String(v) : JSON.stringify(v));
-  let overrides = {};
-  try { overrides = JSON.parse(read(`${prefix}modeprefs`) || "{}") || {}; } catch { overrides = {}; }
+  const load = () => { try { return JSON.parse(read(`${prefix}modeprefs`) || "{}") || {}; } catch { return {}; } };
+  let overrides = load();
+  // Another window of the same page (two debriefs) changed a mode's settings: pick them up.
+  try {
+    window.addEventListener("storage", (e) => {
+      if (e.key !== `${prefix}modeprefs`) return;
+      overrides = load();
+      for (const fn of listeners) fn({ type: "reset", mode: null });
+    });
+  } catch { /* no window (tests) */ }
   let mode = read(`${prefix}mode`);
   if (!MODES.some((m) => m.id === mode)) mode = "all";
 
@@ -49,6 +57,8 @@ export function createSettings({ prefix, base, modeDefaults }) {
     base: baseValue,
     set(k, v) {
       if (owned(k)) {
+        // Read-modify-write, so a second window's changes to other keys survive.
+        overrides = load();
         overrides[mode] = { ...(overrides[mode] || {}), [k]: v };
         write(`${prefix}modeprefs`, JSON.stringify(overrides));
       } else write(`${prefix}${k}`, encode(k, v));
@@ -67,6 +77,7 @@ export function createSettings({ prefix, base, modeDefaults }) {
     toggle(m) { api.setMode(mode === m ? "all" : m); },
     /** Forget the user's changes to a mode. */
     reset(m = mode) {
+      overrides = load();
       if (!overrides[m]) return;
       delete overrides[m];
       write(`${prefix}modeprefs`, JSON.stringify(overrides));

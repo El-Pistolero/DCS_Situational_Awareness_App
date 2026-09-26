@@ -6,7 +6,7 @@ import {
   sideColor, slantRange, units, distance, M_TO_FT, MPS_TO_KT, MPS_TO_FPM,
 } from "./util.js";
 import { LAYERS, TacticalMap } from "./map.js";
-import { drawEdgePointers, drawScene, radarVolume } from "./symbols.js";
+import { drawEdgePointers, drawRadar, drawScene, radarVolume } from "./symbols.js";
 import { LineChart } from "./charts.js";
 import { bar, drawADI, drawStick } from "./instruments.js";
 import { Scene3D } from "./scene3d.js";
@@ -56,9 +56,19 @@ const SET = createSettings({
     },
   },
 });
-// Z declutter: a temporary layer over whatever the mode says; Z again restores it exactly.
-const DECLUTTER = { labels: "minimal", cm: "hide", bomblets: "hide", trailSec: 30, vectors: 0, bullseye: "off", braa: false, strikeLabels: "auto" };
-const cfg = (k) => (S?.declutter && k in DECLUTTER ? DECLUTTER[k] : SET.get(k));
+// Two layers over the saved settings, neither ever written to storage:
+// TEMP holds what a replay button needs (longer trails, gun rounds on) until
+// the user picks that setting or switches mode; Z declutter can only make
+// the display sparser, and Z again restores it exactly.
+const TEMP = {};
+const DECLUTTER = {
+  labels: (v) => (v === "none" ? "none" : "minimal"), cm: () => "hide", bomblets: () => "hide",
+  trailSec: (v) => (v === 0 ? 0 : Math.min(v, 30)), vectors: () => 0, bullseye: () => "off", braa: () => false, strikeLabels: () => "auto",
+};
+const cfg = (k) => {
+  const v = k in TEMP ? TEMP[k] : SET.get(k);
+  return S?.declutter && DECLUTTER[k] ? DECLUTTER[k](v) : v;
+};
 
 const S = {
   key: null, analysis: null, playback: null, objects: new Map(), deaths: new Map(),
@@ -77,6 +87,11 @@ const S = {
 for (const k of ["labels", "trailSec", "trailColor", "radar", "bullets"]) {
   Object.defineProperty(S, k, { get: () => cfg(k), set: (v) => SET.set(k, v) });
 }
+// A setting the user picks replaces any temporary value; a mode switch drops them all.
+SET.on((ev) => {
+  if (ev.type === "set") delete TEMP[ev.key];
+  else for (const k of Object.keys(TEMP)) delete TEMP[k];
+});
 let evHideCache = { raw: null, set: new Set() };
 Object.defineProperty(S, "eventFilter", {
   get: () => {
@@ -170,6 +185,7 @@ function setupModes() {
 
 /** A manual mode switch: re-read every setting, open the mode's home tab. Time, view and selection stay. */
 function onModeChange({ from, to }) {
+  S.wtabOverride = null;
   if (from === "all") S.tabBeforeMode = S.tab;
   if (to === "a2a") S.tab = "weapons";
   else if (to === "a2g") S.tab = S.strikes.length ? "strike" : "weapons";
@@ -181,7 +197,7 @@ function cycleSetting(key, order, label) {
   const i = order.indexOf(SET.get(key));
   const v = order[(i + 1) % order.length];
   SET.set(key, v);
-  flash(`${label}: ${v}`);
+  flash(`${label}: ${v}${S.declutter && DECLUTTER[key] ? " (hidden while decluttered: Z)" : ""}`);
   onDisplayChange(key);
 }
 
@@ -281,7 +297,9 @@ const strikeOf = (id) => S.strikes.find((p) => p.s.weaponId === id)?.s || null;
 function copyDefault(tg) {
   const p = targetPos(tg);
   if (!p) return;
-  if (tg.kind === "object" && isAir(tg.o)) copyAs(tg, "braa"); else copyAs(tg, "coords");
+  const me = S.me && S.objects.get(S.me);
+  const braaOk = tg.kind === "object" && isAir(tg.o) && tg.id !== S.me && me && alive(me, S.t);
+  copyAs(tg, braaOk ? "braa" : "coords");
 }
 
 async function copyAs(tg, what) {
@@ -290,12 +308,13 @@ async function copyAs(tg, what) {
   const me = S.me && S.objects.get(S.me);
   const mp = me ? alive(me, S.t) : null;
   let txt = "";
-  if (what === "braa" && mp) txt = `BRAA ${braa(mp.lon, mp.lat, p.lon, p.lat, p.alt)}`;
+  if (what === "braa" && !mp) { flash("No position for me at this time"); return; }
+  if (what === "braa") txt = `BRAA ${braa(mp.lon, mp.lat, p.lon, p.lat, p.alt)}`;
   else if (what === "bulls" && S.analysis.bullseye) txt = `BULLSEYE ${braa(S.analysis.bullseye.longitude, S.analysis.bullseye.latitude, p.lon, p.lat, p.alt)}`;
   else {
     txt = fmtCoord(p.lon, p.lat, cfg("coords") === "dd" ? "ddm" : cfg("coords"));
     // A surface unit's altitude is its ground elevation: what a steerpoint needs.
-    if (tg.kind === "object" && !isAir(tg.o) && isNum(p.alt)) txt += ` · elev ${fmtAlt(p.alt)}`;
+    if (tg.kind === "object" && isSurface(tg.o) && isNum(p.alt)) txt += ` · elev ${fmtAlt(p.alt)}`;
   }
   if (!txt) return;
   const ok = await copyText(txt);
@@ -372,7 +391,15 @@ const ACTIONS = [
   { id: "follow", label: "Follow", key: "F", icon: "⌖", primary: true, group: "view", applies: onObj((o) => isAir(o) || isWeapon(o) || o.category === "sea"),
     active: (tg) => S.follow && S.selected === tg.id, run: (tg) => { select(tg.id); setFollow(!(S.follow && S.selected === tg.id)); } },
   { id: "padlock", label: "Padlock in 3D", key: "Shift+click", icon: "◎", group: "view", applies: onObj((o) => o.id !== (S.me || null)),
-    run: (tg) => { if (S.view !== "3d") setView("3d"); setPadlock(tg.id); } },
+    run: (tg) => {
+      // The menu selected the object on the way in: look at it from the jet that was in focus before.
+      if (S.selected === tg.id) {
+        const back = S.prevSelected && S.prevSelected !== tg.id && S.objects.has(S.prevSelected) ? S.prevSelected : S.me;
+        if (back && back !== tg.id) select(back);
+      }
+      if (S.view !== "3d") setView("3d");
+      setPadlock(tg.id);
+    } },
   { id: "wcam", label: "Weapon cam", icon: "🎥", primary: true, group: "view", applies: onObj((o) => isWeapon(o) && !o.dispenser),
     active: (tg) => S.weaponCam?.id === tg.id, run: (tg) => (S.weaponCam?.id === tg.id ? stopWeaponCam() : startWeaponCam(tg.id)) },
   { id: "me", label: "This is me", icon: "★", group: "view", applies: onObj((o) => isAir(o) && o.id !== S.me),
@@ -380,12 +407,26 @@ const ACTIONS = [
   { id: "isolate", label: "Isolate (show only what it touched)", short: "Isolate", key: "X", icon: "◐", primary: true, group: "focus", applies: onObj(() => true),
     active: (tg) => S.isolate?.id === tg.id, run: (tg) => setIsolate(S.isolate?.id === tg.id ? null : tg.id) },
   { id: "shots", label: "Its shots & strikes", short: "Its shots", icon: "➶", primary: true, group: "focus", applies: onObj((o) => shooterOf(o.id)),
-    run: (tg) => { S.shooterFilter = tg.id; S.tab = S.strikes.some((p) => p.s.launcherId === tg.id) && SET.mode === "a2g" ? "strike" : "weapons"; renderAllPanels(); } },
+    run: (tg) => {
+      S.shooterFilter = tg.id;
+      const w = S.analysis.weapons;
+      const other = w.shots.some((x) => x.launcherId === tg.id && !isAG(x)) || w.bursts.some((x) => x.launcherId === tg.id);
+      const ag = S.strikes.some((p) => p.s.launcherId === tg.id);
+      S.tab = ag && (!other || SET.mode === "a2g") ? "strike" : "weapons";
+      if (S.tab === "weapons") S.wtabOverride = "all";
+      renderAllPanels();
+    } },
   { id: "hitby", label: "What shot at / hit it", short: "Hit by", icon: "✹", primary: true, group: "focus", applies: onObj((o) => !isWeapon(o) && shotAt(o.id)),
-    run: (tg) => { S.shooterFilter = tg.id; S.tab = isSurface(tg.o) && S.strikes.length ? "strike" : "weapons"; renderAllPanels(); } },
+    run: (tg) => {
+      S.shooterFilter = tg.id;
+      const struck = S.strikes.some((p) => p.s.targetId === tg.id || (p.s.damage || []).some((d) => d.id === tg.id));
+      S.tab = struck ? "strike" : "weapons";
+      if (S.tab === "weapons") S.wtabOverride = "all";
+      renderAllPanels();
+    } },
   { id: "card", label: "Open its strike / shot card", short: "Card", icon: "▤", primary: true, group: "focus", applies: onObj((o) => isWeapon(o) && !!S.analysis.weapons.shots.find((x) => x.weaponId === o.id)),
     run: (tg) => {
-      if (strikeOf(tg.id)) { S.openStrikes.add(tg.id); S.tab = "strike"; } else { S.openShots.add(tg.id); S.tab = "weapons"; }
+      if (strikeOf(tg.id)) { S.openStrikes.add(tg.id); S.tab = "strike"; } else { S.openShots.add(tg.id); S.tab = "weapons"; S.wtabOverride = "all"; }
       renderAllPanels();
     } },
   { id: "evnext", label: "Next event of this object", key: "Shift+N", icon: "⏭", group: "time", applies: onObj(() => true), run: (tg) => { select(tg.id); stepEvent(1, { only: tg.id }); } },
@@ -424,9 +465,10 @@ const ACTIONS = [
       S.isolate = { id: tg.id, ids, group: tg.o.group };
       renderMapChips(); renderObjectList(); onTimeChange(true);
     } },
-  { id: "hide", label: "Hide it", icon: "⊘", group: "show", applies: onObj((o) => o.id !== S.me),
+  { id: "hide", label: "Hide it", icon: "⊘", group: "show", applies: onObj((o) => o.id !== S.me && !(isWeapon(o) && atMe(o, S.t))),
     run: (tg) => { S.hidden.add(tg.id); if (S.selected === tg.id) select(null); renderObjectList(); renderMapChips(); onTimeChange(true); } },
-  { id: "copybraa", label: "Copy BRAA from me", icon: "⧉", group: "copy", applies: (tg) => !!S.me && !(tg.kind === "object" && tg.id === S.me), run: (tg) => copyAs(tg, "braa") },
+  { id: "copybraa", label: "Copy BRAA from me", icon: "⧉", group: "copy",
+    applies: (tg) => !!S.me && !!S.objects.get(S.me) && !!alive(S.objects.get(S.me), S.t) && !(tg.kind === "object" && tg.id === S.me), run: (tg) => copyAs(tg, "braa") },
   { id: "copybulls", label: "Copy bullseye call", icon: "⧉", group: "copy", applies: () => !!S.analysis?.bullseye, run: (tg) => copyAs(tg, "bulls") },
   { id: "copypos", label: "Copy coordinates", key: "Ctrl+C", icon: "⧉", group: "copy", applies: () => true, hint: () => (cfg("coords") === "dd" ? "deg-min, as the DED" : ""), run: (tg) => copyAs(tg, "coords") },
 ];
@@ -517,12 +559,13 @@ async function init() {
   map.on("measurecancel", () => { S.tapeDraft = null; map.invalidate(); });
   map.on("contextmenu", (ev) => {
     ev.event.preventDefault();
-    // A tape under the cursor wins: right-click deletes it (as before).
-    const i = tapeNear(ev.px, ev.py);
-    if (i >= 0) { S.tapes.splice(i, 1); renderTapeHud(); map.invalidate(); return; }
     if (!S.analysis) return;
+    // An object under the cursor opens its menu (tape ends sit on objects);
+    // otherwise a tape under the cursor is deleted, as before.
     const hit = hitAt(ev.px, ev.py);
-    const target = hit ? objectTarget(hit.id) : { kind: "point", lon: ev.lonlat[0], lat: ev.lonlat[1] };
+    const i = hit ? -1 : tapeNear(ev.px, ev.py);
+    if (i >= 0) { S.tapes.splice(i, 1); renderTapeHud(); map.invalidate(); return; }
+    const target = hit && !hit.strike ? objectTarget(hit.id) : hit?.strike ? objectTarget(hit.id) || pointTarget(hit) : { kind: "point", lon: ev.lonlat[0], lat: ev.lonlat[1] };
     if (!target) return;
     if (target.kind === "object" && hit.id !== S.selected) select(hit.id);
     sel.openMenu(target, ev.px, ev.py);
@@ -649,6 +692,7 @@ function setupRecording(key, analysis, playback) {
   S.key = key; S.analysis = analysis; S.playback = playback;
   S.series.clear(); S.objects.clear(); S.deaths.clear();
   S.trailSeries.clear(); trailCache.clear(); trailRanges.clear(); stopsCache = null;
+  exposureCache.clear(); targetIdsCache = null; sitesCache = null;
   S.loop = { a: null, b: null, on: false }; S.padlockId = null; S.tapes = []; S.tapeDraft = null;
   S.openShots.clear(); S.openStrikes.clear();
   S.lastStop = null;
@@ -776,12 +820,18 @@ function startWeaponCam(weaponId) {
   const t0 = st ? st.s.releaseTime : shot?.launchTime;
   const t1 = st ? st.s.impactTime : shot?.endTime ?? shot?.launchTime;
   if (!isNum(t0)) return;
-  S.weaponCam = { id: weaponId, prevSel: S.selected, prevCam: S.cam, prevView: S.view, end: t1, held: false,
+  // The right-click menu and W select the weapon first: hand back to what was selected before it.
+  const prevSel = S.selected !== weaponId ? S.selected : S.selBeforeWeapon ?? S.me ?? null;
+  const wc = { id: weaponId, prevSel, prevCam: S.cam, prevView: S.view, end: t1, held: false,
     hold: st ? { lon: st.geom.impact.lon, lat: st.geom.impact.lat, alt: st.geom.impact.alt } : null };
+  S.weaponCam = null;
+  select(weaponId);
   if (S.view !== "3d") setView("3d");
   setCam("chase");
-  select(weaponId);
+  // An A-B loop elsewhere would pull playback away from the weapon: park it (L brings it back).
+  if (S.loop.on && (S.loop.a > t0 - 1 || S.loop.b < (isNum(t1) ? t1 : t0) + 3)) setLoop(S.loop.a, S.loop.b, false);
   if (S.t < t0 || S.t > t1) seek(t0 - 1);
+  S.weaponCam = wc; // armed last, so nothing during the switch sees a half-built cam
   if (!S.playing) togglePlay(true);
   renderMapChips();
 }
@@ -903,8 +953,8 @@ function gotoTab(n) {
 }
 
 function stepAircraft(dir) {
-  const ids = [...document.querySelectorAll(".objrow[data-id]")].map((r) => r.dataset.id)
-    .filter((id) => AIR.includes(S.objects.get(id)?.category));
+  // The object list's order (its filters and sorting), including groups folded away.
+  const ids = (S.listOrder || []).filter((id) => AIR.includes(S.objects.get(id)?.category));
   if (!ids.length) return;
   const i = ids.indexOf(S.selected);
   const id = ids[(i < 0 ? (dir > 0 ? 0 : ids.length - 1) : i + dir + ids.length) % ids.length];
@@ -938,12 +988,14 @@ const KEYS = [
   { keys: ["m"], group: "View", label: "Measuring tape (or Shift-drag)", run: () => setMeasure(map.tool !== "measure") },
   { keys: ["Escape"], group: "View", label: "Close a menu", hidden: true, when: () => !!(display?.isOpen() || sel?.menuOpen()),
     run: () => { display.close(); sel.closeMenu(); } },
-  { keys: ["Escape"], group: "View", label: "Clear tapes, leave the measure tool", when: () => S.tapes.length > 0 || !!S.tapeDraft || map.tool === "measure" || !!S.measureFrom,
-    run: () => { setMeasure(false); S.tapes = []; S.tapeDraft = null; S.measureFrom = null; map.cancelMeasure(); renderTapeHud(); map.invalidate(); } },
-  { keys: ["Escape"], group: "Selection", label: "Leave weapon cam / isolate, then deselect", hidden: true, when: () => !!(S.weaponCam || S.isolate || S.selected || S.selTarget),
+  { keys: ["Escape"], group: "View", label: "Cancel measure-from", hidden: true, when: () => !!S.measureFrom,
+    run: () => { S.measureFrom = null; S.tapeDraft = null; renderMapChips(); map.invalidate(); } },
+  { keys: ["Escape"], group: "View", label: "Leave the weapon cam", hidden: true, when: () => !!S.weaponCam, run: () => stopWeaponCam() },
+  { keys: ["Escape"], group: "View", label: "Clear tapes, leave the measure tool", when: () => S.tapes.length > 0 || !!S.tapeDraft || map.tool === "measure",
+    run: () => { setMeasure(false); S.tapes = []; S.tapeDraft = null; map.cancelMeasure(); renderTapeHud(); renderMapChips(); map.invalidate(); } },
+  { keys: ["Escape"], group: "Selection", label: "Leave isolate, then deselect", hidden: true, when: () => !!(S.isolate || S.selected || S.selTarget),
     run: () => {
-      if (S.weaponCam) stopWeaponCam();
-      else if (S.isolate) setIsolate(null);
+      if (S.isolate) setIsolate(null);
       else if (S.selTarget) { S.selTarget = null; sel.set(null); }
       else select(null);
     } },
@@ -1180,12 +1232,8 @@ function setMeasure(on) {
 }
 
 function snapAt(px, py) {
-  let best = null, bd = Infinity;
-  for (const h of hitboxes) {
-    const d = Math.hypot(h.x - px, h.y - py);
-    if (d < h.r && d < bd) { best = h; bd = d; }
-  }
-  return best ? { id: best.id } : null;
+  const h = hitAt(px, py);
+  return h ? snapEnd(h) : null;
 }
 
 function addTape(t) {
@@ -1456,6 +1504,8 @@ function shown(o, t) {
   if (o.id === S.selected || o.id === S.padlockId || S.pinned.has(o.id)) return true;
   if (S.tapes.some((tp) => tp.a.id === o.id || tp.b.id === o.id)) return true;
   if (S.hidden.has(o.id)) return false;
+  // No filter or mode hides a missile guided at me.
+  if (o.category === "weapon" && !o.dispenser && atMe(o, t)) return true;
   const c = (o.coalition || "").toLowerCase();
   const side = c.includes("allies") || c.includes("blue") ? "blue" : c.includes("enem") || c.includes("red") ? "red" : "neutral";
   if (!cfg(side)) return false;
@@ -1466,7 +1516,7 @@ function shown(o, t) {
     if (w === "none") return false;
     const ag = S.strikeIds.has(o.id);
     if (w === "a2a" && ag) return false;
-    if (w === "a2g" && !ag && !atMe(o, t)) return false;
+    if (w === "a2g" && !ag) return false;
     return true;
   }
   if (cat === "countermeasure") return cfg("cm") !== "hide";
@@ -1479,10 +1529,12 @@ function shown(o, t) {
   return true;
 }
 
-/** Is this weapon a missile shot at "me" (or the selected jet)? */
+/** Is this weapon a missile shot at "me" (or the selected jet)?  A hostile missile with no known target counts too. */
 function atMe(o, t) {
   const focus = S.selected || S.me;
-  return S.analysis.weapons.shots.some((sh) => sh.weaponId === o.id && sh.targetId && (sh.targetId === focus || sh.targetId === S.me) && t <= (sh.endTime ?? sh.launchTime) + 1);
+  const me = S.objects.get(S.me);
+  return S.analysis.weapons.shots.some((sh) => sh.weaponId === o.id && t <= (sh.endTime ?? sh.launchTime) + 1 &&
+    (sh.targetId ? sh.targetId === focus || sh.targetId === S.me : !S.strikeIds.has(o.id) && !!me && isHostile(me, o)));
 }
 
 /** Ids related to an object: its weapons and their targets, who shot at it, its group. */
@@ -1551,8 +1603,9 @@ function sceneObjects() {
     const death = S.deaths.get(o.id);
     const dead = isNum(death) && t >= death;
     if (dead && ["fixedwing", "rotorcraft", "air"].includes(o.category) && t > death + 2) continue;
-    if (dead && deadMode === "hide" && o.id !== S.selected) continue;
-    if (dead && deadMode === "fade" && t > death + 60 && o.id !== S.selected) continue;
+    const keep = o.id === S.selected || S.pinned.has(o.id) || S.tapes.some((tp) => tp.a.id === o.id || tp.b.id === o.id);
+    if (dead && deadMode === "hide" && !keep) continue;
+    if (dead && deadMode === "fade" && t > death + 60 && !keep) continue;
     if (!shown(o, t)) continue;
     const row = { ...o, lon: p.lon, lat: p.lat, alt: p.alt, hdg: p.hdg, pitch: p.pitch, roll: p.roll, dead, v: {} };
     if (targets && targets.has(o.id)) row.labelMe = true;
@@ -1597,7 +1650,7 @@ function sceneObjects() {
       row.trail = trail;
       if (colors) row.trailColors = colors;
     }
-    const rad = S.radar !== "none" ? radarAt(pb, i, t) : null;
+    const rad = S.radar !== "none" || S.pinned.has(o.id) ? radarAt(pb, i, t) : null;
     if (rad) Object.assign(row.v, rad);
     else if (o.id === S.selected) {
       const ser = S.series.get(o.id);
@@ -1649,10 +1702,16 @@ function drawMap(ctx, m) {
   if (S.strikes.length && S.analysis) {
     const hits = drawStrikes(ctx, m, S.strikes, S.t, {
       layers: strikeLayers(), selectedId: S.selected, objects: S.objects, target: S.target,
-      labels: cfg("strikeLabels"), alphaOf: S.isolate ? isoAlpha : null,
+      labels: cfg("strikeLabels"),
+      // Hidden weapons, coalition and weapon filters apply to their strike marks too.
+      alphaOf: (id) => { const o = S.objects.get(id); return o && !shown(o, S.t) ? 0 : isoAlpha(id); },
     });
     // Objects win over strike marks at the same spot (they come first).
     hitboxes = hitboxes.concat(hits);
+  }
+  // Pinned objects keep their radar cone whatever the radar setting says.
+  if (S.pinned.size && S.radar !== "all") {
+    for (const o of objs) if (S.pinned.has(o.id) && o.id !== S.selected) drawRadar(ctx, m, o, { assumed: true });
   }
   if (S.target) drawTargetMark(ctx, m, S.target);
   if (cfg("exposure")) drawExposure(ctx, m);
@@ -1763,20 +1822,29 @@ function drawTargetMark(ctx, m, tg) {
   ctx.restore();
 }
 
+/** Hit test: objects first, strike marks only where no object is. */
 function hitAt(px, py) {
-  let best = null, bd = Infinity;
-  for (const h of hitboxes) {
-    const d = Math.hypot(h.x - px, h.y - py);
-    if (d < h.r && d < bd) { best = h; bd = d; }
+  for (const marks of [false, true]) {
+    let best = null, bd = Infinity;
+    for (const h of hitboxes) {
+      if (!!h.strike !== marks) continue;
+      const d = Math.hypot(h.x - px, h.y - py);
+      if (d < h.r && d < bd) { best = h; bd = d; }
+    }
+    if (best) return best;
   }
-  return best;
+  return null;
 }
+
+/** A tape end for a hit: an object follows it; a strike mark stays where it was drawn. */
+const snapEnd = (h) => (h.strike ? { lonlat: h.lonlat || map.unproject(h.x, h.y) } : { id: h.id });
+const pointTarget = (h) => { const [lon, lat] = h.lonlat || map.unproject(h.x, h.y); return { kind: "point", lon, lat }; };
 
 function onMapClick({ px, py, lonlat }) {
   const best = hitAt(px, py);
   if (S.measureFrom) {
     // Second click of "Measure from here": an object or a map point.
-    addTape({ a: S.measureFrom, b: best ? { id: best.id } : { lonlat } });
+    addTape({ a: S.measureFrom, b: best ? snapEnd(best) : { lonlat } });
     S.measureFrom = null; S.tapeDraft = null;
     renderMapChips();
     return;
@@ -1797,11 +1865,16 @@ function onMapClick({ px, py, lonlat }) {
 
 /** Dispenser id of a bomblet (falling or landed) within 10 px, or null. */
 function bombletNear(px, py) {
+  const footprints = cfg("strikeFootprints");
   for (const p of S.strikes) {
-    if (!p.bomblets.length || S.t < (p.geom?.dispense?.time ?? Infinity)) continue;
+    if (!p.bomblets.length || S.t < (p.geom?.dispense?.time ?? Infinity) || isoAlpha(p.s.weaponId) < 1) continue;
     for (const id of S.analysis.weapons.submunitions?.[p.s.weaponId] || []) {
       const o = S.objects.get(id);
-      const q = o && posAt(o, S.t);
+      if (!o) continue;
+      const end = o.pb.end ?? o.pb.t[o.pb.t.length - 1];
+      // Landed bomblets are drawn only by the footprint layer; falling ones as dots or the cloud.
+      if (S.t >= end ? !footprints : !(shown(o, S.t) || (footprints && p.cloud.length))) continue;
+      const q = posAt(o, S.t);
       if (!q) continue;
       const [x, y] = map.project(q.lon, q.lat);
       if (Math.hypot(x - px, y - py) <= 10) return p.s.weaponId;
@@ -1831,6 +1904,10 @@ function onMapHover(ev) {
 // ---------------------------------------------------------------------------
 
 async function select(id) {
+  if (id !== S.selected) {
+    S.prevSelected = S.selected;
+    if (S.selected && !isWeapon(S.objects.get(S.selected))) S.selBeforeWeapon = S.selected;
+  }
   S.selected = id;
   S.selTarget = null;
   sel?.set(id ? objectTarget(id) : null);
@@ -1886,6 +1963,7 @@ function renderObjectList() {
     return weapons ? 2 : surface ? 1 : 0;
   };
   const order = [...groups.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+  S.listOrder = order.flatMap((g) => groups.get(g).map((o) => o.id));
   for (const g of order) {
     const items = groups.get(g);
     const defCollapsed = (mode === "a2a" && g.endsWith("surface")) || (mode === "a2g" && g.endsWith("air") && !items.some((o) => o.id === S.me));
@@ -2216,7 +2294,7 @@ function replayShot(shot) {
   setLoop(shot.launchTime - 5, (shot.endTime ?? shot.launchTime) + 3, true);
   const who = shot.targetId && S.objects.has(shot.targetId) ? shot.targetId : shot.launcherId;
   if (who) select(who);
-  if (S.trailSec === 0 || S.trailSec === 30) S.trailSec = 90;
+  if (SET.get("trailSec") === 0 || SET.get("trailSec") === 30) TEMP.trailSec = 90;
   seek(shot.launchTime - 5);
   togglePlay(true);
 }
@@ -2231,10 +2309,10 @@ function filterChip(label, clear) {
 function renderWeapons(panel) {
   const w = S.analysis.weapons;
   const dcs = S.analysis.dcs;
-  const tab = cfg("wtab");
+  const tab = S.wtabOverride ?? cfg("wtab");
   const agShots = w.shots.filter(isAG).length;
   const seg = el("div", { class: "seg wtab" }, ...[["all", "All", w.shots.length], ["a2a", "A-A", w.shots.length - agShots], ["a2g", "A-G", agShots]]
-    .map(([k, label, n]) => el("button", { class: tab === k ? "active" : "", onclick: () => { SET.set("wtab", k); renderAllPanels(); } }, `${label} ${n}`)));
+    .map(([k, label, n]) => el("button", { class: tab === k ? "active" : "", onclick: () => { S.wtabOverride = null; SET.set("wtab", k); renderAllPanels(); } }, `${label} ${n}`)));
   const head = el("div", { class: "tabhead" }, seg);
   const shooter = S.shooterFilter && S.objects.get(S.shooterFilter);
   if (shooter) head.append(filterChip(`Shooter or target: ${shooter.pilot || shooter.name}`, () => { S.shooterFilter = null; renderAllPanels(); }));
@@ -2313,7 +2391,7 @@ function renderWeapons(panel) {
         class: "click",
         title: [x.weaponName, isNum(x.fireRate) ? `${Math.round(x.fireRate)} rds/s recorded` : "", isNum(x.timeOfFlight) ? `mean time of flight ${x.timeOfFlight.toFixed(1)} s` : "",
           isNum(x.closestApproach) ? `closest round ${units.metric ? `${x.closestApproach.toFixed(1)} m` : `${Math.round(x.closestApproach * M_TO_FT)} ft`}` : "", dcsTargets ? `DCS hits: ${dcsTargets}` : ""].filter(Boolean).join(" · "),
-        onclick: () => { seek(x.start - 1.5); select(x.launcherId); if (S.bullets === "off") S.bullets = "paths"; },
+        onclick: () => { seek(x.start - 1.5); select(x.launcherId); if (SET.get("bullets") === "off") TEMP.bullets = "paths"; },
       },
         el("td", { class: "num" }, fmtClock(x.start - S.start)), el("td", {}, x.launcherPilot || x.launcherName),
         el("td", { class: "num" }, x.rounds || "trigger"), el("td", { class: "num" }, hits),
@@ -2361,7 +2439,7 @@ function replayStrike(x) {
   const b = Math.max(...pass.strikes.map((q) => q.impactTime)) + 5;
   setLoop(a, b, true);
   select(x.weaponId);
-  if (S.trailSec < 300) S.trailSec = 300;
+  if (SET.get("trailSec") < 300) TEMP.trailSec = 300;
   seek(a);
   togglePlay(true);
 }
