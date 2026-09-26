@@ -693,6 +693,14 @@ async function showLibrary() {
       el("button", { onclick: () => { location.href = "/guide#step-3-try-it-with-a-demo-flight-no-dcs-needed"; } }, "Guide"),
       " walks you through it step by step, from the demo flights to setting up DCS."),
   );
+  const up = S.status?.update;
+  if (up?.available) {
+    box.append(el("div", { class: "note-update" },
+      `DCS SA ${up.latest} is out (you have ${up.current}). `,
+      el("button", { onclick: async () => { try { await api("/api/open-release", { method: "POST" }); } catch { /* offline */ } } },
+        "Get it"),
+      el("span", { class: "muted" }, " Your recordings and settings are kept.")));
+  }
   const drop = el("div", { class: "drop" }, "Drop an .acmi file here, or ",
     el("button", { onclick: () => fileInput.click() }, "choose a file"));
   const fileInput = el("input", { type: "file", accept: ".acmi,.txt", class: "hidden" });

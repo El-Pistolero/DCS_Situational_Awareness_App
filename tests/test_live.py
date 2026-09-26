@@ -258,6 +258,53 @@ class RememberedSettingsTests(_TempSettings, unittest.TestCase):
             stop(app, httpd)
 
 
+class UpdateCheckTests(unittest.TestCase):
+    def test_version_compare(self):
+        from dcs_sa.update import is_newer, version_tuple
+
+        self.assertEqual(version_tuple("v1.10.2"), (1, 10, 2))
+        self.assertEqual(version_tuple("nonsense"), (0,))
+        self.assertTrue(is_newer("v0.2.0", "0.1.0"))
+        self.assertTrue(is_newer("1.10.0", "1.9.0"))       # not a string compare
+        self.assertFalse(is_newer("0.1.0", "0.1.0"))
+        self.assertFalse(is_newer("0.0.9", "0.1.0"))
+
+    def test_offline_is_quiet(self):
+        from dcs_sa.update import UpdateChecker, fetch_latest
+
+        # Unreachable host: no exception, no claim of an update.
+        self.assertEqual(fetch_latest("http://127.0.0.1:9/none"), {})
+        c = UpdateChecker(enabled=False)
+        st = c.status()
+        self.assertFalse(st["available"])
+        self.assertFalse(st["enabled"])
+        self.assertEqual(st["current"], __import__("dcs_sa").__version__)
+
+    def test_a_newer_release_is_reported(self):
+        import threading
+
+        from dcs_sa import update as up
+
+        release = {"tag_name": "v9.9.9", "html_url": "https://github.com/x/y/releases/tag/v9.9.9",
+                   "assets": [{"name": "DCS-SA.exe", "browser_download_url": "https://e/1"},
+                              {"name": "DCS-SA-Setup.exe", "browser_download_url": "https://e/2"}]}
+        c = up.UpdateChecker(enabled=True)
+        real, done = up.fetch_latest, threading.Event()
+        up.fetch_latest = lambda *a, **k: release
+        try:
+            c.status()
+            for _ in range(100):
+                st = c.status()
+                if st.get("checked"):
+                    break
+                done.wait(0.05)
+        finally:
+            up.fetch_latest = real
+        self.assertTrue(st["available"])
+        self.assertEqual(st["latest"], "9.9.9")
+        self.assertEqual(st["download"], "https://e/2")  # the installer, not the loose exe
+
+
 class LiveSessionTests(unittest.TestCase):
     def test_reset_starts_a_new_session(self):
         w = LiveWorld()

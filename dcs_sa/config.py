@@ -58,6 +58,7 @@ class Config:
     tacview_port: int = 42674
     tacview_password: str = ""
     tacview_autoconnect: bool = False
+    update_check: bool = True      # ask GitHub whether a newer release exists
     bridge_enabled: bool = True
     bridge_host: str = "127.0.0.1"
     bridge_port: int = 42680

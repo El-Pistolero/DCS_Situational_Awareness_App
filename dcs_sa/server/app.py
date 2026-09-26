@@ -25,6 +25,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from .. import __version__
 from ..config import Config
 from .. import usersettings
+from ..update import REPO as UPDATE_REPO, RELEASES_PAGE, UpdateChecker
 from ..dcs_profile import read_profile
 from ..telemetry.dcs_bridge import DcsBridgeListener
 from ..telemetry.live_world import LiveWorld
@@ -140,6 +141,7 @@ class App:
         self.open_live_window = None  # set by the desktop shell
         self.open_debrief = None      # (key) -> show that recording in the debrief window
         self.profile = read_profile()
+        self.updates = UpdateChecker(cfg.update_check)
         self.tiles = TileCache(str(Path(cfg.upload_dir).parent / "tilecache"))
         self.dcsmap = DcsMapStore(str(Path(cfg.upload_dir).parent / "tilecache" / "dcs"))
         self.store.extras = lambda: {"flightlog_dir": self.flightlog_dir, "airbases": self.dcsmap.airbases}
@@ -176,6 +178,7 @@ class App:
             "profile": self.profile,
             "dcsMap": self.dcsmap.status(),
             "desktop": self.desktop,
+            "update": self.updates.status(),
             "warnings": self.warnings,
         }
 
@@ -327,6 +330,14 @@ def make_handler(app: App):
                         app.open_debrief(key)
                         return self._json({"ok": True})
                     return self._json({"ok": False})
+                if path == "/api/open-release":
+                    # Opens the project's own releases page in the system browser.
+                    # No URL comes from the page, so this can't be pointed elsewhere.
+                    target = str(app.updates.status().get("page") or RELEASES_PAGE)
+                    if not target.startswith(f"https://github.com/{UPDATE_REPO}/"):
+                        target = RELEASES_PAGE
+                    webbrowser.open(target)
+                    return self._json({"ok": True, "url": target})
                 if path == "/api/shortcut":
                     from ..shortcut import install_shortcuts
 
