@@ -21,7 +21,7 @@ import { FAMILY_LABEL, groupPasses, posAt, strikeGeometry, weaponLabel } from ".
 import { buildStrikeCard, buildStrikeThumb } from "./strikecard.js";
 import { COORD_FORMATS, copyText, fmtCoord } from "./coords.js";
 import {
-  AMBER, HEAT_CSS, HEAT_NOTE, abAt, drawHeatLobes, drawReach, drawSeekers, flareColor, heatNow, heatText, irInFlight, prepareIR,
+  HEAT_CSS, HEAT_NOTE, abAt, aspectFactor, drawHeatLobes, drawReach, drawSeekers, flareColor, heatNow, heatText, irInFlight, prepareIR,
 } from "./irviz.js";
 
 const $ = (id) => document.getElementById(id);
@@ -50,7 +50,7 @@ const SET = createSettings({
       strikeRelease: false, strikePaths: false, strikeFuture: false, strikeImpacts: false, strikeFootprints: false,
       strikeTti: false, strikeBda: false, strikeLar: false, stalks: "off",
       charts: "Altitude,Speed,G,AOA,Energy,Turn rate", evHide: "release,impact,landing,takeoff,message,bookmark", wtab: "a2a",
-      irHeat: "all", irSeeker: "all", cm: "show",
+      irHeat: "focus", irSeeker: "sel", cm: "show",
     },
     a2g: {
       labels: "targets", trailSec: 300, trailColor: "alt", radar: "known", rings: "hostile", pointers: "always", vectors: 0,
@@ -253,7 +253,7 @@ const DISPLAY = [
     { key: "pointers", label: "Threat arrows at the edge", type: "select", options: [["follow", "While following"], ["always", "Always"], ["off", "Off"]] },
   ] },
   { title: "Heat (IR)", rows: [
-    { key: "irHeat", label: "Heat lobes", type: "select", options: [["sel", "Selected + IR targets"], ["all", "All aircraft"], ["off", "Off"]],
+    { key: "irHeat", label: "Heat lobes", type: "select", options: [["sel", "Selected + IR targets"], ["focus", "… + me"], ["all", "All aircraft"], ["off", "Off"]],
       title: HEAT_NOTE },
     { key: "irSeeker", label: "IR missile seekers", type: "select", options: [["sel", "Selected + at me"], ["all", "All IR missiles"], ["off", "Off"]],
       title: "Gimbal limit (DCS), the line to what the seeker is steering at, and the flare it likely went for (estimate)" },
@@ -346,6 +346,13 @@ function flash(msg) {
 }
 
 /** Card text for a target. */
+/** DCS's aspect factor for a jet seen from `from` (lon, lat, alt): {k, tail}. */
+function aspectFactorFrom(o, p, from) {
+  const tail = aspectDeg(p.lon, p.lat, (p.hdg + 180) % 360, from.lon, from.lat); // 180 = looking up its tailpipe
+  const off = 180 - tail;
+  return { k: aspectFactor(off), tail: off };
+}
+
 function describeTarget(tg) {
   if (!tg || !S.analysis) return null;
   const me = S.me && S.objects.get(S.me);
@@ -366,8 +373,21 @@ function describeTarget(tg) {
     const h = S.analysis.ir?.heat?.[o.id];
     const hn = heatNow(h, S.t);
     if (hn && p?.present) {
-      lines.push({ text: `heat ${heatText(hn).replace(/^IR /, "")}${hn.lit !== null && h.state === "recorded" ? ` (${h.src === "Afterburner" ? "recorded" : "engine data"})` : ""}`, title: HEAT_NOTE });
+      const src = h.src === "Afterburner" ? "recorded" : h.src === "DcsFuelFlow" ? "DCS bridge fuel flow" : "fuel flow";
+      const now = !isNum(hn.ab) ? "no afterburner" : hn.lit === null ? "now: not recorded" : `now ${hn.lit ? "AB" : "dry"} (${src})`;
+      lines.push({ text: `heat ${hn.dry} dry${isNum(hn.ab) ? ` · ${hn.ab.toFixed(1)} AB` : ""} · ${now}`, title: `DCS IR emission coefficient. ${HEAT_NOTE}` });
+      // How hot it looks from me: DCS's aspect factor for where I am off its tail.
+      const mine = o.id !== S.me && mp && isNum(p.hdg) ? aspectFactorFrom(o, p, mp) : null;
+      if (mine) lines.push({ text: `seen from me ×${mine.k.toFixed(2)} (${Math.round(mine.tail)}° off its tail)`, title: HEAT_NOTE });
     }
+  } else if (o.category === "countermeasure") {
+    const owner = o.cmOwner && S.objects.get(o.cmOwner);
+    const kind = o.cmKind === "chaff" ? "Chaff" : "Flare";
+    return {
+      title: kind, color: owner ? sideColor(owner) : "#8d9aab",
+      sub: owner ? `from ${owner.pilot || owner.name} (nearest jet at release, ${Math.round(o.cmDist)} m)` : o.cmAmbiguous ? "owner unclear (two jets close by)" : "owner unknown",
+      lines: [o.cmSalvo > 1 ? `salvo of ${o.cmSalvo}` : "", `released ${fmtClock(o.firstSeen - S.start)}`, kind === "Chaff" ? "chaff fools radars, not heat-seekers" : ""].filter(Boolean),
+    };
   } else if (isWeapon(o)) {
     const st = strikeOf(o.id);
     const shot = S.analysis.weapons.shots.find((x) => x.weaponId === o.id);
@@ -383,7 +403,7 @@ function describeTarget(tg) {
       lines.push(`${shot.launcherPilot || shot.launcherName || "?"} → ${shot.targetPilot || shot.targetName || "—"} · ${shot.outcome}`);
       const sk = shot.ir?.seeker;
       if (sk) {
-        sub = `${sk.display || shot.weaponName} · IR ${sk.allAspect ? "all-aspect" : "rear-aspect"} · ${shot.launcherPilot || shot.launcherName || ""}`;
+        sub = `${sk.short || sk.display || shot.weaponName} · IR ${sk.allAspect ? "all-aspect" : "rear-aspect"} · ${shot.launcherPilot || shot.launcherName || ""}`;
         lines.push(`flare resistance ${sk.ccm} · gimbal ${Math.round(sk.gimbal)}° (DCS)`);
         const d = shot.ir.decoy;
         if (d && S.t >= shot.launchTime + d.t) lines.push({ text: `likely went for a flare ${fmtRel(d.t)} (est.)`, cls: "bad" });
@@ -736,7 +756,7 @@ function setupRecording(key, analysis, playback) {
   S.strikes = prepareStrikes(analysis.strikes || [], S.objects, analysis.weapons.submunitions || {});
   S.strikeIds = new Set((analysis.strikes || []).map((x) => x.weaponId));
   S.ir = prepareIR(analysis, S.objects);
-  S.irNames = new Map(S.ir.shots.map((x) => [x.s.weaponId, x.sk.display || x.s.weaponName]));
+  S.irNames = new Map(S.ir.shots.map((x) => [x.s.weaponId, x.sk.short || x.sk.display || x.s.weaponName]));
   // Bomblets per dispenser: DCS's count for the load (it records one object for all of them).
   S.subCount = new Map((analysis.strikes || []).filter((x) => x.submunitions).map((x) => [x.weaponId, x.submunitions]));
   modeSw?.refresh?.();
@@ -1501,9 +1521,10 @@ function updateLegend() {
   const box = $("trailLegend");
   const def = TRAIL_MODES[S.trailColor];
   box.innerHTML = "";
-  const heatKey = S.analysis && cfg("irHeat") !== "off" && Object.keys(S.analysis.ir?.heat || {}).length;
-  if (heatKey) {
-    box.append(el("div", { title: HEAT_NOTE }, "Heat (DCS) · Su-27 dry = 1 · dotted = if in AB"),
+  S.legendHeat = !!S.lobesDrawn;
+  if (S.analysis && S.legendHeat) {
+    box.append(el("div", { title: HEAT_NOTE }, "Heat (DCS IR, Su-27 dry = 1) · tail ×1.5 · beam ×1 · nose ×0.5"),
+      el("div", { class: "faint" }, "dotted = if in afterburner (not recorded)"),
       el("div", { class: "legend-bar", style: { background: HEAT_CSS } }),
       el("div", { class: "legend-ends" }, el("span", {}, "⅛"), el("span", {}, "1"), el("span", {}, "8")));
   }
@@ -1556,7 +1577,9 @@ function shown(o, t) {
   if (S.hidden.has(o.id)) return false;
   // No filter or mode hides a missile guided at me.
   if (o.category === "weapon" && !o.dispenser && atMe(o, t)) return true;
-  const c = (o.coalition || "").toLowerCase();
+  // Flares and chaff follow the side of the jet that dropped them (unknown: neutral).
+  const owner = o.category === "countermeasure" && o.cmOwner ? S.objects.get(o.cmOwner) : null;
+  const c = ((owner || o).coalition || "").toLowerCase();
   const side = c.includes("allies") || c.includes("blue") ? "blue" : c.includes("enem") || c.includes("red") ? "red" : "neutral";
   if (!cfg(side)) return false;
   const cat = o.category;
@@ -1648,7 +1671,10 @@ function heatLobeIds(t) {
   for (const x of irInFlight(S.ir, t)) if (x.target && seekerShown(x)) out.set(x.target.id, true);
   if (mode === "all") {
     for (const o of S.objects.values()) if (AIR.includes(o.category) && !out.has(o.id)) out.set(o.id, false);
-  } else if (S.selected && AIR.includes(S.objects.get(S.selected)?.category) && !out.has(S.selected)) out.set(S.selected, false);
+    return out;
+  }
+  if (S.selected && AIR.includes(S.objects.get(S.selected)?.category) && !out.has(S.selected)) out.set(S.selected, false);
+  if (mode === "focus" && S.me && !out.has(S.me)) out.set(S.me, false);
   return out;
 }
 
@@ -1668,7 +1694,9 @@ function drawIR(ctx, m, objs, phase) {
   const byId = new Map(objs.map((o) => [o.id, o]));
   if (phase === "under") {
     const ids = heatLobeIds(S.t);
-    if (ids.size) drawHeatLobes(ctx, m, objs.filter((o) => ids.has(o.id) && (!S.isolate || S.isolate.ids.has(o.id))), S.t, S.ir.heat, { scale });
+    const small = cfg("irHeat") === "all" ? (o) => o.id !== S.selected && !ids.get(o.id) : null;
+    S.lobesDrawn = ids.size ? drawHeatLobes(ctx, m, objs.filter((o) => ids.has(o.id) && (!S.isolate || S.isolate.ids.has(o.id))), S.t, S.ir.heat, { scale, small }) : 0;
+    if (!!S.lobesDrawn !== !!S.legendHeat) updateLegend();
     return;
   }
   const list = irInFlight(S.ir, S.t).filter((x) => seekerShown(x) && byId.has(x.s.weaponId));
@@ -1700,7 +1728,7 @@ function drawIR(ctx, m, objs, phase) {
         for (const x of mine) counts.set(x.sk.key, (counts.get(x.sk.key) || 0) + 1);
         const key = [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
         const sk = mine.find((x) => x.sk.key === key).sk;
-        items.push({ target: so, sk, hn: heatNow(S.ir.heat[so.id], S.t), label: `if you fired an ${sk.display || key}` });
+        items.push({ target: so, sk, hn: heatNow(S.ir.heat[so.id], S.t), label: `if you fired an ${sk.short || sk.display || key}` });
       }
     }
     if (items.length) drawReach(ctx, m, items, { labelScale: scale });
@@ -1732,8 +1760,16 @@ function sceneObjects() {
     if (targets && targets.has(o.id)) row.labelMe = true;
     if (o.category === "countermeasure") {
       // DCS writes no owner on flares: coloured by the jet it came from (inferred), fading over its life.
-      row.cmColor = flareColor(o.owner ? S.objects.get(o.owner) : null);
+      row.cmColor = flareColor(o.cmOwner ? S.objects.get(o.cmOwner) : null);
       row.age = t - o.pb.t[0];
+      row.name = o.cmKind === "chaff" ? "chaff" : "flare"; // DCS gives them no name
+      if (o.cmKind !== "chaff") {
+        // A short smoke tail from its own recorded track.
+        const pb = o.pb, tail = [];
+        for (let k = Math.max(0, bisectRight(pb.t, t - 1.5)); k < pb.t.length && pb.t[k] <= t; k++) if (isNum(pb.lon[k])) tail.push([pb.lon[k], pb.lat[k]]);
+        tail.push([p.lon, p.lat]);
+        if (tail.length > 1) row.cmTail = tail;
+      }
     }
     if (heatIds.has(o.id) && !dead && (o.id === S.selected || heatIds.get(o.id))) {
       const txt = heatText(heatNow(S.analysis.ir?.heat?.[o.id], t));
@@ -1742,6 +1778,7 @@ function sceneObjects() {
     if (o.category === "weapon") {
       const irName = S.irNames?.get(o.id);
       row.name = irName ? `${irName} · IR` : weaponLabel(o.name);
+      if (irName) row.irSeeker = true;
       // The strike overlay tags weapons in flight ("AGM-154A → target · 0:42"): no second label.
       if (S.strikeIds.has(o.id) && cfg("strikeTti")) row.noLabel = true;
     }
@@ -2374,6 +2411,8 @@ const CHART_DEFS = {
   "Turn rate": { series: [["TurnRate", "#4ea8ff"]], f: (v) => Math.abs(v), fmt: (v) => v.toFixed(1) },
   Controls: { series: [["PitchControlInput", "#ffd166"], ["RollControlInput", "#4ea8ff"], ["YawControlInput", "#4dd8e6"], ["Elevator", "#ff9f43"], ["Rudder", "#b48cff"]], f: (v) => v, fmt: (v) => v.toFixed(2) },
   Radar: { series: [["RadarAzimuth", "#4dd8e6"], ["LockedTargetAzimuth", "#ff9f43"]], f: (v) => v, fmt: (v) => v.toFixed(0) },
+  // Counts left, read from DCS by the bridge (your own jet only).
+  Flares: { series: [["FlareCount", "#ffb347"], ["ChaffCount", "#9aa4b1"]], f: (v) => v, fmt: (v) => v.toFixed(0) },
 };
 const chartSel = () => new Set(String(cfg("charts") || "").split(",").filter(Boolean));
 
@@ -2511,7 +2550,7 @@ function renderWeapons(panel) {
       el("td", { class: "tog", title: ag ? "Strike card: release, fall, impact, BDA" : "Why did it hit / miss?", onclick: (e) => { e.stopPropagation(); toggle(); } }, open ? "▾" : "▸"),
       el("td", { class: "num" }, fmtClock(s.launchTime - S.start)),
       el("td", {}, s.launcherPilot || s.launcherName || "?"),
-      el("td", {}, weaponLabel(s.weaponName),
+      el("td", { title: s.ir ? `DCS name ${s.weaponName}` : null }, weaponLabel(s.weaponName),
         s.ir ? el("span", { class: "ir-pill", title: `Heat-seeker (DCS: IR seeker${s.ir.seeker?.allAspect ? ", all-aspect" : ", rear-aspect only"}). No RWR warning; flares can decoy it.` }, "IR") : ""),
       el("td", {}, ag ? strike?.targetName || "—" : s.targetPilot || s.targetName || "—"),
       el("td", { class: "num" }, ag ? fmtShort(strike?.missDistance) : fmtDist(g.range)),

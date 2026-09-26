@@ -13,7 +13,7 @@ import { MODES, createSettings, modeSwitch, reflectMode } from "./modes.js";
 import { createDisplayPanel } from "./layers.js";
 import { createSelectionUI } from "./selmenu.js";
 import { COORD_FORMATS, copyText, fmtCoord } from "./coords.js";
-import { AMBER, HEAT_NOTE, drawHeatLobes } from "./irviz.js";
+import { AMBER, HEAT_NOTE, drawHeatLobes, flareColor } from "./irviz.js";
 
 const $ = (id) => document.getElementById(id);
 const pref = (k, d) => { try { return localStorage.getItem(`dcs-sa.live.${k}`) ?? d; } catch { return d; } };
@@ -751,7 +751,7 @@ function pointerList(snap) {
     if (!o) continue;
     const missile = t.kind === "missile";
     const color = missile ? "#ff3b3b" : t.spike ? "#ff9f43" : "#ffd166";
-    const text = missile ? `${t.name} ${fmtDist(t.range)}${isNum(t.tti) ? ` ${Math.round(t.tti)}s` : ""}`
+    const text = missile ? `${t.ir ? `${t.seeker} IR` : wLabel(t.name)} ${fmtDist(t.range)}${isNum(t.tti) ? ` ${Math.round(t.tti)}s` : ""}`
       : t.spike ? `${t.pilot || t.name} SPIKE ${fmtDist(t.range)}`
       : `${t.name} ${t.inWez ? "WEZ" : "HOT"} ${fmtDist(t.range)}`;
     out.push({ id: t.id, lon: o.lon, lat: o.lat, color, text, range: t.range, level: missile ? 3 : t.level });
@@ -1009,6 +1009,11 @@ function sceneObjects(snap, { for3d = false } = {}) {
       delete row.v.EngagementRange; // a destroyed SAM threatens nothing
     }
     if (isBomblet(o)) { row.dispenser = "sub"; row.trail = null; }
+    if (o.category === "countermeasure") {
+      // Ringed in the colour of the jet it came from (the server's guess: nearest jet when it appeared).
+      const owner = o.cmOwner && snap.objects.find((x) => x.id === o.cmOwner);
+      row.cmColor = flareColor(owner || null);
+    }
     if (targets && isSurface(o) && !dead && me && (aimed.has(o.id) || (isHostile(me, o) && distance(me.lon, me.lat, o.lon, o.lat) <= 10 * NM))) row.labelMe = true;
     if (o.id === S.target?.id) row.labelMe = true;
     if (braaOn && isAir(o) && o.id !== me.id && !dead && isHostile(me, o)) {
@@ -1262,14 +1267,6 @@ function drawPips(ctx, m) {
 /** Heat-seekers coming at me (the server tags them from DCS's IR seeker table). */
 const irInbound = (snap) => (snap?.threats || []).filter((t) => t.kind === "missile" && t.ir);
 
-/** "0.6", "AB 3.0" or "0.6/3.0?" (afterburner not known). */
-function heatShort(h) {
-  if (!h) return null;
-  if (h.ab === true) return `AB ${h.irAB.toFixed(1)}`;
-  if (h.ab === null && isNum(h.irAB)) return `${h.ir}/${h.irAB.toFixed(1)}?`;
-  return `${h.ir}`;
-}
-
 /** My heat lobe (DCS aspect model) with a tick towards each IR missile. */
 function drawOwnHeat(ctx, m, me, snap) {
   const h = snap.heat;
@@ -1411,7 +1408,7 @@ function renderOwn(me, own) {
   // Heat: DCS's coefficient for my type, and afterburner when the data shows it.
   const irIn = irInbound(S.snap).length > 0;
   const heat = S.snap?.heat;
-  const heatCell = () => cell("HEAT", heatShort(heat) || "—", `sm ${heat?.ab === true ? (irIn ? "danger flash" : "warn") : ""}`);
+  const heatCell = () => cell("HEAT", heat.ab ? `AB ${heat.irAB.toFixed(1)}` : `DRY ${heat.ir}`, `sm ${heat.ab ? (irIn ? "danger flash" : "warn") : ""}`);
   const flrCell = () => cell("FLR", own?.cm?.flare ?? "—", isNum(own?.cm?.flare) && own.cm.flare <= 10 ? "warn" : "");
   const aoaCell = () => cell("AOA", isNum(aoa) ? aoa.toFixed(1) : "—", aoa > 20 ? "warn" : "");
   const vsCell = () => cell("V/S", fmtVs(vs).replace(" fpm", "").replace(" m/s", ""));
@@ -1452,7 +1449,8 @@ function renderOwn(me, own) {
       ...iasCell(), ...altCell(), ...cell("HDG", fmtHdg(hdg)), ...cell("MACH", fmtNum(mach, 2)),
       ...cell("BANDIT", b ? b.text : "—", `sm ${b?.cls || ""}`),
       ...aoaCell(), ...gCell(), ...vsCell(), ...cell(units.metric ? "Ps m/s" : "Ps ft/s", psTxt, psCls), ...fuelCell(),
-      ...(heat ? heatCell() : []),
+      // Only when the data says (engine data for my jet); never a guess.
+      ...(heat && heat.ab !== null && heat.ab !== undefined ? heatCell() : []),
     );
   } else {
     box.append(
@@ -1565,7 +1563,7 @@ function renderThreats(threats) {
     box.append(el("div", { class: `threat l${t.level}${t.id === pad ? " pad" : ""}${t.id === selId ? " sel" : ""}`, title: "Click to select (and padlock in 3D)", "data-id": t.id },
       el("div", { class: "clock" }, `${t.clock}`, el("small", {}, "o'clock")),
       el("div", { class: "what" }, el("b", {}, who), el("span", {}, bits.filter(Boolean).join(" · "))),
-      el("span", { class: `tag${t.ir ? " ir" : ""}`, title: t.ir ? "Heat-seeker: no RWR warning; flares can decoy it" : null }, tag)));
+      el("span", { class: `tag${t.ir ? " ir" : ""}`, title: t.ir ? "Heat-seeker (DCS data): passive, the RWR does not show it; flares can decoy it" : null }, tag)));
   }
 }
 

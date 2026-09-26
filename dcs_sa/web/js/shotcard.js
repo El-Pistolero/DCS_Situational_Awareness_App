@@ -100,7 +100,7 @@ export function buildShotCard(shot, ctx) {
     for (const o of ctx.objects.values()) {
       if (o.category !== "countermeasure" || !isNum(o.firstSeen) || o.firstSeen < t0 || o.firstSeen > t1) continue;
       if (o.cmKind) {
-        if (o.owner === T.id) (o.cmKind === "chaff" ? chaff : cms).push(o.firstSeen - t0);
+        if (o.cmOwner === T.id) (o.cmKind === "chaff" ? chaff : cms).push(o.firstSeen - t0);
         continue;
       }
       let mine = o.parent === T.id;
@@ -121,7 +121,9 @@ export function buildShotCard(shot, ctx) {
   // -- (2) fly-out charts ----------------------------------------------------------
   if (xs.length > 1) {
     const vb = [...beams.map((w) => ({ ...w, color: BEAM })), ...colds.map((w) => ({ ...w, color: COLD }))];
-    const marks = cms.map((x) => ({ x, w: 1, color: "rgba(255,159,67,0.95)" }));
+    // Flare releases amber, chaff grey, the estimated decoy moment white.
+    const marks = [...cms.map((x) => ({ x, w: 1, color: "rgba(255,159,67,0.95)" })), ...chaff.map((x) => ({ x, w: 1, color: "rgba(154,164,177,0.9)" })),
+      ...(ir?.decoy ? [{ x: ir.decoy.t, w: 1, color: "rgba(255,255,255,0.8)" }] : [])];
     const mk = (title, series, yFormat, { yMin, yMax, xMax, bands } = {}) => {
       const c = el("canvas", { class: "flyout" });
       card.append(c);
@@ -140,7 +142,7 @@ export function buildShotCard(shot, ctx) {
 
   // -- (3) verdict chips -------------------------------------------------------------
   const chips = el("div", { class: "chips verdict" });
-  const chip = (text, cls = "") => chips.append(el("span", { class: cls }, text));
+  const chip = (text, cls = "", title = null) => chips.append(el("span", { class: cls, title }, text));
   const pillCls = { kill: "kill", miss: "miss", active: "active", damage: "lock" }[shot.outcome] || "";
   chips.append(el("span", { class: `pill ${pillCls}` }, shot.outcome));
   if (shot.outcomeDetail) chip(shot.outcomeDetail);
@@ -171,7 +173,10 @@ export function buildShotCard(shot, ctx) {
     if (isNum(mach[i])) chip(`Arrived at Mach ${mach[i].toFixed(1)}`, mach[i] < 1 ? "warn" : "");
   }
   if (ir) irChips(ir, shot, chip, cms, chaff, T);
-  else if (cms.length) chip(`Chaff/flares ×${cms.length} (${cms.filter((x) => x >= xs[xs.length - 1] - 5).length} in the last 5 s)`);
+  else if (cms.length || chaff.length) {
+    chip([cms.length ? `Flares ×${cms.length} (${cms.filter((x) => x >= xs[xs.length - 1] - 5).length} in the last 5 s)` : "",
+      chaff.length ? `chaff ×${chaff.length}` : ""].filter(Boolean).join(" · "));
+  }
   if (isNum(shot.closestApproach)) {
     chip(`Closest approach ${shot.closestApproach < 1852 ? fmtShort(shot.closestApproach) : fmtDist(shot.closestApproach)}${isNum(shot.closestTime) ? ` at ${fmtRel(shot.closestTime - t0)}` : ""}`);
   }
@@ -263,71 +268,75 @@ function drawDiagram(canvas, shot, L, T) {
 
 // -- IR shots ------------------------------------------------------------------------------
 
-const RESIST = (k) => (k <= 0.25 ? "very hard" : k <= 0.5 ? "hard" : k <= 1 ? "medium" : k <= 2 ? "easy" : "very easy");
 const k2 = (v) => (v >= 10 ? v.toFixed(0) : v.toFixed(v >= 1 ? 1 : 2));
 
 /** Chips for an IR missile: DCS seeker facts, heat at launch, flares, the decoy estimate. */
 function irChips(ir, shot, chip, cms, chaff, T) {
-  const sk = ir.seeker || {}, h = ir.heat || {}, g = shot.geometry || {};
-  const name = sk.display || shot.weaponName;
-  const dcs = (text, cls = "") => chip(text, `${cls} dcs`.trim());
-  const est = (text, cls = "") => chip(`~ ${text}`, `${cls} est`.trim());
-  dcs(sk.allAspect ? `${name} · IR seeker · all-aspect` : `${name} · IR · rear-aspect only (±${Math.round(sk.aspectLimit)}° of the tail)`);
-  if (isNum(sk.ccm)) dcs(`Flare resistance ${sk.ccm} (${RESIST(sk.ccm)} to decoy)`);
-  const lim = [isNum(sk.gimbal) ? `gimbal ${Math.round(sk.gimbal)}°` : "", isNum(sk.offBoresight) ? `launch look ${Math.round(sk.offBoresight)}°` : "",
-    isNum(sk.fuze) ? `fuze ${sk.fuze} m` : ""].filter(Boolean);
+  const sk = ir.seeker || {}, h = ir.heat || {}, g = shot.geometry || {}, L = ir.launch || {};
+  const name = sk.short || sk.display || shot.weaponName;
+  const src = `DCS ${sk.dcsVersion || "2.9"} · ${sk.src || "rockets"}`;
+  const dcs = (text, cls = "") => chip(text, `${cls} dcs`.trim(), src);
+  const est = (text, cls = "", title = null) => chip(`~ ${text}`, `${cls} est`.trim(), title);
+  dcs(sk.allAspect ? `${name} · IR seeker · all-aspect` : `${name} · IR seeker · rear-aspect only (within ${Math.round(sk.aspectLimit)}° of the tail)`);
+  if (isNum(sk.ccm)) dcs(`flare resistance ${sk.ccm} (DCS ccm_k0: 0 immune · 1 medium · higher = easier to decoy)`);
+  const lim = [isNum(sk.gimbal) ? `gimbal ${Math.round(sk.gimbal)}°` : "", isNum(sk.trackRate) ? `${Math.round(sk.trackRate)}°/s` : "",
+    isNum(sk.offBoresight) ? `launch look angle ${Math.round(sk.offBoresight)}°` : "", isNum(sk.fuze) ? `fuze ${sk.fuze} m` : "",
+    isNum(sk.power) ? `seeker power ${sk.power} s` : ""].filter(Boolean);
   if (lim.length) dcs(lim.join(" · "));
-  // Heat at launch, as the missile saw it.
-  if (isNum(h.ir) && isNum(h.seen)) {
-    const off = isNum(h.tailAngle) ? `${Math.round(h.tailAngle)}° off its tail` : "";
-    if (h.ab === true) dcs(`${h.type} in afterburner at launch: heat ${k2(h.seen)} (${k2(h.irAB)} × ${h.aspectFactor} ${off})`, "warn");
-    else if (h.ab === false) dcs(`${h.type} heat at launch ${k2(h.seen)} = ${k2(h.ir)}${h.abState === "noAB" ? "" : " dry"} × ${h.aspectFactor} (${off})`);
-    else dcs(`${h.type} heat at launch ${k2(h.seen)} dry, ${k2(h.seenAB)} if in AB (not recorded) · ${off}`);
+  if (L.outsideLookAngle) dcs(`launched ${Math.round(L.offBoresight3d)}° off boresight (DCS launch look angle ${Math.round(sk.offBoresight)}°)`, "warn");
+  if (h.outsideAspect) dcs(`launched outside the rear-aspect cone (tail angle ${Math.round(h.tailAngle)}°, DCS limit ${Math.round(sk.aspectLimit)}°)`, "warn");
+  // The target's heat at launch, as the missile saw it: DCS coefficient x DCS aspect factor.
+  if (isNum(h.ir) && isNum(h.seen) && isNum(h.aspectFactor)) {
+    const where = h.tailAngle < 60 ? "tail" : h.tailAngle > 120 ? "nose" : "beam";
+    const from = h.abSrc === "Afterburner" ? "recorded" : h.abSrc === "DcsFuelFlow" ? "from DCS bridge fuel flow" : "from fuel flow";
+    if (h.ab === true) chip(`${h.type} heat ${k2(h.irAB)} (afterburner, ${from}) × ${where} ${h.aspectFactor.toFixed(2)} = ${k2(h.seen)}`, "warn", HEAT_TIP);
+    else if (h.ab === false) chip(`${h.type} heat ${k2(h.ir)}${h.abState === "noAB" ? "" : ` (dry, ${from})`} × ${where} ${h.aspectFactor.toFixed(2)} = ${k2(h.seen)}`, "", HEAT_TIP);
+    else chip(`${h.type} heat ${k2(h.ir)} dry × ${where} ${h.aspectFactor.toFixed(2)} = ${k2(h.seen)} · ${k2(h.seenAB)} if in AB (not recorded)`, "", HEAT_TIP);
   }
-  if (isNum(g.offBoresight) && isNum(sk.offBoresight) && g.offBoresight > sk.offBoresight + 2) {
-    dcs(`Off-boresight ${Math.round(g.offBoresight)}° > ${name} launch look angle ${Math.round(sk.offBoresight)}°`, "warn");
-  }
-  if (h.outsideAspect) dcs(`Launched ${Math.round(h.tailAngle)}° off the target's tail: outside the ${name}'s rear cone (±${Math.round(sk.aspectLimit)}°)`, "warn");
-  if (isNum(g.range) && isNum(sk.dMin) && g.range < sk.dMin) dcs(`Inside min range (${fmtShort(sk.dMin)})`, "warn");
-  // Flares.
+  // Flares (chaff apart: it fools radars, not heat-seekers).
   const f = ir.flares || {};
-  if (cms.length || f.beforeLaunch) {
-    const bits = [`Flares ×${cms.length} by ${T?.pilot || T?.name || "the target"}`];
-    if (cms.length) bits.push(`first ${fmtRel(Math.min(...cms))}`);
+  if (cms.length || chaff.length || f.beforeLaunch) {
+    const bits = [];
+    if (cms.length) bits.push(`Flares from target ×${cms.length} (first at ${fmtRel(Math.min(...cms))})`);
     if (f.beforeLaunch) bits.push(`${f.beforeLaunch} in the 5 s before launch`);
+    if (chaff.length) bits.push(`chaff ×${chaff.length}`);
     chip(bits.join(" · "));
   }
-  if (chaff.length) chip(`Chaff ×${chaff.length} (radar only)`);
   if (ir.decoy) {
-    est(`Likely went for a flare at ${fmtRel(ir.decoy.t)} (est.): predicted miss ${fmtShort(ir.decoy.zemFlare)} to the flare vs ${fmtShort(ir.decoy.zemTarget)} to the jet`, "bad");
-  } else if (cms.length && shot.outcome !== "active") {
-    est("Flares seen, the missile stayed on the jet (est.)");
+    const d = ir.decoy;
+    const whose = d.owner && d.owner === T?.id ? `${T.pilot || T.name}'s flare` : "a flare";
+    est(`Likely went for a flare at ${fmtRel(d.t)} (est.): predicted miss ${fmtShort(d.zemFlare)} from ${whose} vs ${fmtShort(d.zemTarget)} from the jet`, "warn",
+      "Estimate from the recorded paths: from two samples in a row, the missile's zero-effort miss against a flare from the target's side was under 60 m and under 0.3 x its miss against the jet.");
   }
-  if (isNum(ir.gimbalExceeded)) dcs(`Target beyond the seeker gimbal (${Math.round(sk.gimbal)}°) from ${fmtRel(ir.gimbalExceeded)}`, "warn");
-  if (isNum(sk.ssd) && isNum(h.seen) && isNum(g.range)) {
-    const reach = sk.ssd * Math.sqrt(h.seen);
-    est(`Seeker reach at launch ~${fmtDist(reach)}${isNum(h.seenAB) ? ` (~${fmtDist(sk.ssd * Math.sqrt(h.seenAB))} if in AB)` : ""} · launched at ${fmtDist(g.range)} (est.)`);
+  const nf = ir.nearestFlare;
+  if (nf && nf.dist < 50) chip(`Passed ${fmtShort(nf.dist)} from a flare at ${fmtRel(nf.t)}`, "", "Recorded: the closest the missile's path came to a flare from the target's side");
+  if (isNum(ir.gimbalExceeded)) dcs(`look angle beyond the DCS gimbal (+8° margin) at ${fmtRel(ir.gimbalExceeded)}`, "warn");
+  if (isNum(sk.power) && isNum(shot.timeOfFlight) && shot.timeOfFlight > sk.power) dcs("flight time longer than the seeker power time", "warn");
+  if (isNum(sk.fuze) && isNum(shot.closestApproach) && shot.outcome !== "kill" && shot.closestApproach > 2 * sk.fuze + 10) {
+    dcs(`passed outside the DCS fuze distance (${sk.fuze} m)`);
   }
 }
+
+const HEAT_TIP = "DCS IR emission coefficient (1.0 = a Su-27 without afterburner) × DCS aspect factor (tail ×1.5, beam ×1, nose ×0.5)";
 
 /** Fly-out charts for an IR missile: predicted miss and look angle, target vs the best flare. */
 function irCharts(ir, card, mk, xs) {
   const ser = ir.series;
   const x = ser.map((r) => r.t);
-  const clip = (v) => (isNum(v) ? Math.min(v, 1000) : null);
+  const lg = (v) => (isNum(v) ? Math.log10(Math.max(1, Math.min(v, 3000))) : null); // log scale 1 m - 3 km
   // Up to where the missile passed the target: the end of the flare fight.
   const xMax = Math.min(xs[xs.length - 1], x[x.length - 1] + 1);
   const bands = ir.decoy ? [{ x0: ir.decoy.t, x1: xMax, color: "rgba(255,159,67,.14)" }] : [];
   const flareSeen = ser.some((r) => isNum(r.zemFlare));
-  mk("Predicted miss (est.)", [
-    { name: "jet", color: "#ffd166", x, y: ser.map((r) => clip(r.zem)) },
-    flareSeen ? { name: "best flare", color: "#ff9f43", x, y: ser.map((r) => clip(r.zemFlare)), dash: [4, 3] } : null,
-  ].filter(Boolean), (v) => fmtShort(v), { yMin: 0, xMax, bands });
+  mk("Predicted miss (est., log scale)", [
+    { name: "jet", color: "#ffd166", x, y: ser.map((r) => lg(r.zem)) },
+    flareSeen ? { name: "best flare", color: "#ff9f43", x, y: ser.map((r) => lg(r.zemFlare)), dash: [4, 3] } : null,
+  ].filter(Boolean), (v) => fmtShort(10 ** v), { yMin: 0, yMax: Math.log10(3000), xMax, bands });
   const gim = ir.seeker?.gimbal;
   mk("Seeker look angle (°)", [
     { name: "jet", color: "#ffd166", x, y: ser.map((r) => (isNum(r.look) ? r.look : null)) },
     flareSeen ? { name: "best flare", color: "#ff9f43", x, y: ser.map((r) => (isNum(r.lookFlare) ? r.lookFlare : null)), dash: [4, 3] } : null,
-    isNum(gim) ? { name: "gimbal (DCS)", color: "rgba(255,92,92,.7)", x: [x[0], x[x.length - 1]], y: [gim, gim], dash: [2, 3] } : null,
+    isNum(gim) ? { name: `gimbal ${Math.round(gim)}° (DCS)`, color: "rgba(255,92,92,.7)", x: [x[0], x[x.length - 1]], y: [gim, gim], dash: [2, 3] } : null,
   ].filter(Boolean), (v) => `${Math.round(v)}°`, { yMin: 0, xMax, bands });
   if (ser.some((r) => isNum(r.heat))) {
     mk("Heat seen by the missile (DCS scale)", [

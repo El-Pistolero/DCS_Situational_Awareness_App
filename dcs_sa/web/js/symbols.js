@@ -79,7 +79,7 @@ function drawAircraft(ctx, x, y, ang, color, size, rotor, f16 = false) {
   ctx.restore();
 }
 
-function drawWeapon(ctx, x, y, ang, color) {
+function drawWeapon(ctx, x, y, ang, color, ir = false) {
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(ang);
@@ -89,6 +89,18 @@ function drawWeapon(ctx, x, y, ang, color) {
   ctx.beginPath();
   ctx.moveTo(-7, 0); ctx.lineTo(7, 0);
   ctx.stroke();
+  if (ir) {
+    // A heat-seeker: a hot, glowing nose.
+    const g = ctx.createRadialGradient(7, 0, 0, 7, 0, 7);
+    g.addColorStop(0, "rgba(255,210,122,0.45)");
+    g.addColorStop(1, "rgba(255,159,67,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(7, 0, 7, 0, TAU); ctx.fill();
+    ctx.fillStyle = "#ffd27a";
+    ctx.beginPath(); ctx.arc(7, 0, 2.6, 0, TAU); ctx.fill();
+    ctx.restore();
+    return;
+  }
   ctx.beginPath();
   ctx.arc(7, 0, 2.4, 0, TAU);
   ctx.fill();
@@ -431,7 +443,7 @@ export function drawScene(ctx, map, objects, opts = {}) {
         hits.push({ id: o.id, x, y, r: 14 });
         break;
       case "weapon":
-        drawWeapon(ctx, x, y, ang, color);
+        drawWeapon(ctx, x, y, ang, color, !!o.irSeeker);
         hits.push({ id: o.id, x, y, r: 9 });
         break;
       case "countermeasure":
@@ -441,7 +453,16 @@ export function drawScene(ctx, map, objects, opts = {}) {
         } else {
           // A flare: a white-hot core fading over its ~9 s life, ringed in its jet's side colour.
           const life = isNum(o.age) ? Math.max(0, 1 - o.age / 9) : 1;
-          ctx.globalAlpha = (0.35 + 0.65 * life) * fade(o);
+          const a0 = fade(o);
+          if (o.cmTail) {
+            ctx.globalAlpha = 0.35 * a0;
+            ctx.strokeStyle = "#ffb347";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            o.cmTail.forEach(([lo, la], i) => { const [px, py] = map.project(lo, la); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
+            ctx.stroke();
+          }
+          ctx.globalAlpha = (0.35 + 0.65 * life) * a0;
           ctx.fillStyle = "#fff1c9";
           ctx.beginPath(); ctx.arc(x, y, 2.2, 0, TAU); ctx.fill();
           if (o.cmColor) {
@@ -450,6 +471,7 @@ export function drawScene(ctx, map, objects, opts = {}) {
             ctx.beginPath(); ctx.arc(x, y, 3.6, 0, TAU); ctx.stroke();
           }
           ctx.globalAlpha = fade(o);
+          hits.push({ id: o.id, x, y, r: 6 });
         }
         break;
       default:

@@ -95,7 +95,7 @@ export const irInFlight = (prep, t) => (prep?.shots || []).filter((x) => x.weapo
 
 // ---------------------------------------------------------------------------
 
-function limacon(ctx, x, y, tail, rOf, n = 48) {
+function limacon(ctx, x, y, tail, rOf, n = 72) {
   ctx.beginPath();
   for (let k = 0; k <= n; k++) {
     const phi = (k / n) * TAU;
@@ -111,28 +111,35 @@ function limacon(ctx, x, y, tail, rOf, n = 48) {
  * tailpipe.  Area is proportional to heat (r ~ sqrt), so an F-16 in
  * afterburner (3.0) covers five times the area of a dry one (0.6).
  * rows: scene rows (lon, lat, hdg, dead, tas); heat: analysis.ir.heat.
+ * opts.small(o): draw this one at 70 % (the "all aircraft" setting).
+ * Returns how many lobes were drawn.
  */
-export function drawHeatLobes(ctx, map, rows, t, heat, { scale = 1 } = {}) {
-  const s = 11 * scale, cap = 60 * scale;
+export function drawHeatLobes(ctx, map, rows, t, heat, { scale = 1, small = null } = {}) {
+  let drawn = 0;
   ctx.save();
   for (const o of rows) {
     if (o.dead || !isNum(o.hdg)) continue;
-    if (isNum(o.tas) && o.tas < 30) continue; // parked
+    if (isNum(o.tas) && o.tas < 40) continue; // parked or taxiing
     const hn = heatNow(heat[o.id], t);
     if (!hn) continue;
     const [x, y] = map.project(o.lon, o.lat);
     if (x < -80 || y < -80 || x > map.w + 80 || y > map.h + 80) continue;
+    const s = 14 * scale * (small && small(o) ? 0.7 : 1);
     const tail = map.screenAngle((o.hdg + 180) % 360);
-    const rOf = (c) => (phi) => Math.min(cap, s * Math.sqrt(c * (1 + (1 - K7) * Math.cos(phi))));
+    // r(phi) = s * sqrt(C * (1 + 0.5 cos phi)), shrunk as a whole if the tail would pass 48 px.
+    const rOf = (c) => {
+      const k = Math.min(1, 48 / (s * Math.sqrt(c * (2 - K7))));
+      return (phi) => k * s * Math.sqrt(c * (1 + (1 - K7) * Math.cos(phi)));
+    };
     limacon(ctx, x, y, tail, rOf(hn.c));
-    const g = ctx.createRadialGradient(x, y, 0, x, y, Math.min(cap, s * Math.sqrt(hn.c * 1.5)));
-    g.addColorStop(0, heatColor(hn.c * 1.5, hn.lit ? 0.55 : 0.32));
-    g.addColorStop(1, heatColor(hn.c, 0.04));
+    const g = ctx.createRadialGradient(x, y, 0, x, y, rOf(hn.c)(0));
+    g.addColorStop(0, heatColor(hn.c * 1.5, 0.22));
+    g.addColorStop(1, heatColor(hn.c * 1.5, 0.04));
     ctx.fillStyle = g;
     ctx.fill();
-    ctx.lineWidth = 1.1;
+    ctx.lineWidth = 1.2;
     ctx.setLineDash([]);
-    ctx.strokeStyle = heatColor(hn.c * 1.5, 0.75);
+    ctx.strokeStyle = heatColor(hn.c * 1.5, 0.8);
     ctx.stroke();
     if (hn.cAB) {
       // Afterburner not recorded: how big it would be if lit.
@@ -142,8 +149,10 @@ export function drawHeatLobes(ctx, map, rows, t, heat, { scale = 1 } = {}) {
       ctx.stroke();
       ctx.setLineDash([]);
     }
+    drawn++;
   }
   ctx.restore();
+  return drawn;
 }
 
 // ---------------------------------------------------------------------------
@@ -202,32 +211,36 @@ export function drawSeekers(ctx, map, list, t, opts = {}) {
     const onFlare = isNum(x.decoyT) && t >= x.decoyT && x.flare;
     const tp = x.target ? sampleTrack(x.target.pb, Math.min(t, x.target.pb.end ?? t)) : null;
     const fp = onFlare ? sampleTrack(x.flare.pb, t) : null;
-    const aim = fp || tp;
     const detail = opts.detail ? opts.detail(x) : true;
-    // Gimbal wedge (DCS Fi_excort) along the missile's flight path.
+    // Gimbal limits (DCS Fi_excort) either side of the flight path: two ticks and a short arc.
     const gim = x.sk.gimbal;
     if (isNum(hdg) && isNum(gim)) {
-      const rngM = aim ? Math.min(distance(m.lon, m.lat, aim.lon, aim.lat) * 1.15, 3000) : 3000;
-      const r = Math.max(24, Math.min(rngM / mpp, 260));
-      const c = map.screenAngle(hdg), w = Math.min(gim, 89) * RAD;
-      ctx.beginPath();
-      ctx.moveTo(mx, my);
-      ctx.arc(mx, my, r, c - w, c + w);
-      ctx.closePath();
-      ctx.fillStyle = "rgba(255,179,71,0.06)";
-      ctx.fill();
-      ctx.strokeStyle = "rgba(255,179,71,0.32)";
+      const c = map.screenAngle(hdg), w = Math.min(gim, 179) * RAD, r = 32;
+      ctx.strokeStyle = "rgba(255,179,71,0.6)";
       ctx.lineWidth = 1;
-      ctx.setLineDash([3, 4]);
+      ctx.setLineDash([2, 3]);
+      ctx.beginPath();
+      for (const a of [c - w, c + w]) { ctx.moveTo(mx + Math.cos(a) * 8, my + Math.sin(a) * 8); ctx.lineTo(mx + Math.cos(a) * r, my + Math.sin(a) * r); }
       ctx.stroke();
       ctx.setLineDash([]);
+      ctx.strokeStyle = "rgba(255,179,71,0.35)";
+      ctx.beginPath(); ctx.arc(mx, my, r, c - w, c + w); ctx.stroke();
+    }
+    // Rear-aspect-only seekers (DCS Fi_rak): the cone behind the target it must be fired from.
+    if (!x.sk.allAspect && isNum(x.sk.aspectLimit) && tp && isNum(tp.hdg) && t - x.t0 <= 1.5) {
+      const [tx, ty] = map.project(tp.lon, tp.lat);
+      const c = map.screenAngle((tp.hdg + 180) % 360), w = x.sk.aspectLimit * RAD, r = Math.min(120, Math.max(40, distance(m.lon, m.lat, tp.lon, tp.lat) / mpp));
+      ctx.beginPath(); ctx.moveTo(tx, ty); ctx.arc(tx, ty, r, c - w, c + w); ctx.closePath();
+      ctx.fillStyle = "rgba(255,179,71,0.07)"; ctx.fill();
+      ctx.strokeStyle = "rgba(255,179,71,0.5)"; ctx.setLineDash([4, 3]); ctx.stroke(); ctx.setLineDash([]);
+      text(ctx, "rear-aspect cone (DCS)", tx + Math.cos(c) * r * 0.6 + 6, ty + Math.sin(c) * r * 0.6, AMBER);
     }
     // Look line to the target.
     if (tp && isNum(tp.lon)) {
       const [tx, ty] = map.project(tp.lon, tp.lat);
       ctx.lineWidth = 1.2;
       if (onFlare) { ctx.strokeStyle = "rgba(160,170,184,0.55)"; ctx.setLineDash([4, 4]); }
-      else { ctx.strokeStyle = "rgba(255,179,71,0.9)"; ctx.setLineDash([]); }
+      else { ctx.strokeStyle = heatColor(1, 0.95); ctx.lineWidth = 1.3; ctx.setLineDash([]); }
       ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(tx, ty); ctx.stroke();
       ctx.setLineDash([]);
       if (detail && !onFlare && isNum(hdg)) {
@@ -266,7 +279,7 @@ export function drawSeekers(ctx, map, list, t, opts = {}) {
       ctx.beginPath();
       ctx.moveTo(fx, fy - 6); ctx.lineTo(fx + 6, fy); ctx.lineTo(fx, fy + 6); ctx.lineTo(fx - 6, fy); ctx.closePath();
       ctx.stroke();
-      if (detail || t - x.decoyT < 3) text(ctx, `flare? +${(x.decoyT - x.t0).toFixed(1)} s (est.)`, fx + 9, fy - 9, AMBER);
+      if (detail || t - x.decoyT < 3) text(ctx, `went for a flare? +${(x.decoyT - x.t0).toFixed(1)} s (est.)`, fx + 9, fy - 9, AMBER);
     }
   }
   ctx.globalAlpha = 1;
@@ -327,7 +340,7 @@ export function drawReach(ctx, map, items, { labelScale = 1 } = {}) {
     const [tl, tla] = destination(o.lon, o.lat, (o.hdg + 180) % 360, tailR);
     const [nl, nla] = destination(o.lon, o.lat, o.hdg, noseR);
     const [tx, ty] = map.project(tl, tla), [nx, ny] = map.project(nl, nla);
-    const name = it.sk.display || it.sk.key || "IR missile";
+    const name = it.sk.short || it.sk.display || it.sk.key || "IR missile";
     text(ctx, `~${fmtDist(tailR)} tail · ${name} seeker reach (est.)`, tx + 6, ty, AMBER);
     text(ctx, `~${fmtDist(noseR)} nose`, nx + 6, ny, AMBER);
     if (it.label) text(ctx, it.label, tx + 6, ty + 13, "rgba(220,225,232,0.75)");
