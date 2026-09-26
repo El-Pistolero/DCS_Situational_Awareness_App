@@ -19,6 +19,7 @@ from .. import threatdb
 from ..acmi import types as T
 from ..acmi.model import Event
 from ..analysis import geo
+from ..analysis import ir as IR
 from ..analysis.strike import family
 from ..analysis.weapons import LAUNCHER_RADIUS, SUBMUNITION_RE, weapon_kind
 
@@ -169,6 +170,8 @@ class LiveWorld:
             self.world_radar: List[Tuple[str, float, float, bool]] = []
             self.bridge_world: Optional[List[Dict[str, Any]]] = None  # last world sweep applied
             self.recently_destroyed: Deque[Dict[str, Any]] = deque(maxlen=50)
+            # Afterburner from fuel flow, per aircraft (live: the dry plateau so far).
+            self.ff_ab: Dict[str, IR.FuelFlowAB] = {}
             # Weapon id -> the aircraft that released it, decided when first seen.
             self.launchers: Dict[str, Optional[str]] = {}
             # Weapon id -> (removal time, launcher id, final myWeapons entry).
@@ -567,12 +570,42 @@ class LiveWorld:
                 "events": [{k: v for k, v in e.items() if k != "_key"} for e in self.events if e["seq"] > since_event],
                 "eventSeq": self.event_seq,
                 "threats": self._threats(focus) if focus else [],
+                "heat": self._heat(focus, own_id) if focus and focus.category in _AIR else None,
                 "ownId": own_id,
                 "ownship": self.ownship if (time.time() - self.ownship_time) < 3.0 else None,
                 "destroyed": list(self.recently_destroyed)[-10:],
                 # A focused SAM site's missiles are not air-to-ground releases.
                 "myWeapons": self._my_weapons(focus) if focus and focus.category in _AIR else [],
             }
+
+    def _heat(self, obj: LiveObject, own_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        """The focused jet's heat (DCS coefficients) and afterburner, from recorded data only."""
+        af = IR.airframe(obj.name)
+        if af is None:
+            return None
+        out: Dict[str, Any] = {"type": af["type"], "ir": af["ir"], "irAB": af["irAB"], "ab": None, "src": None}
+        if af["irAB"] is None:
+            out.update(ab=False, src="noAB")
+            return out
+        v = obj.values
+        if _num(v.get("Afterburner")):
+            out.update(ab=v["Afterburner"] > 0.05, src="Afterburner")
+            return out
+        ff, src = v.get("FuelFlowWeight"), "fuel flow"
+        if not _num(ff) and own_id == obj.id:
+            flow = ((self.ownship or {}).get("engine") or {}).get("flow") or {}
+            parts = [x for x in (flow.get("left"), flow.get("right")) if _num(x)]
+            ff = sum(parts) if parts else None
+        airborne = (_num(v.get("AGL")) and v["AGL"] > 30) or (_num(v.get("IAS")) and v["IAS"] > 40)
+        tracker = self.ff_ab.setdefault(obj.id, IR.FuelFlowAB())
+        tracker.add(self.time, ff if _num(ff) else None, bool(airborne))
+        lit = tracker.lit(ff if _num(ff) else None)
+        # Tacview: a throttle above 1 is afterburner (never proof of dry: some jets sit at 1.0).
+        if _num(v.get("Throttle")) and v["Throttle"] > 1.005:
+            lit, src = True, "throttle"
+        if lit is not None:
+            out.update(ab=lit, src=src)
+        return out
 
     def _ownship_id(self) -> Optional[str]:
         """The object that is the DCS player's own aircraft (bridge data)."""
@@ -630,10 +663,18 @@ class LiveWorld:
                 if not pointing and (closure is None or closure <= 0):
                     continue
                 tti = rng / closure if closure and closure > 1.0 else None
-                out.append({**base, "kind": "missile", "level": 3 if pointing else 2,
-                            "tti": tti, "shooter": parent.name if parent else None,
-                            "shooterPilot": parent.props.get("Pilot") if parent else None,
-                            "text": "MISSILE"})
+                row = {**base, "kind": "missile", "level": 3 if pointing else 2,
+                       "tti": tti, "shooter": parent.name if parent else None,
+                       "shooterPilot": parent.props.get("Pilot") if parent else None,
+                       "text": "MISSILE"}
+                sk = IR.seeker(obj.name)
+                if sk is not None:
+                    # A heat-seeker: no RWR warning, flares work; which part of me it sees.
+                    row.update(ir=True, seeker=sk["display"], allAspect=sk["allAspect"], text="IR MISSILE")
+                    tail = IR.tail_angle_from(mp, my_hdg if me.heading() is not None else None, me.values.get("Pitch"), op)
+                    if tail is not None:
+                        row["sees"], row["heatFactor"] = IR.seen_from(tail), round(IR.aspect_factor(tail), 2)
+                out.append(row)
                 continue
 
             if not _hostile(me, obj) or obj.dead:
@@ -655,10 +696,13 @@ class LiveWorld:
                 out.append({**base, "kind": "aircraft", "level": level, "aspect": aspect,
                             "spike": locked_me, "text": "SPIKE" if locked_me else ("HOT" if hot else "")})
             elif locked_me or in_wez:
-                out.append({**base, "kind": "sam" if "AntiAircraft" in obj.tags else "surface",
-                            "level": 2 if locked_me else 1, "spike": locked_me,
-                            "engagementRange": eng, "inWez": in_wez,
-                            "text": "SPIKE" if locked_me else "IN WEZ"})
+                row = {**base, "kind": "sam" if "AntiAircraft" in obj.tags else "surface",
+                       "level": 2 if locked_me else 1, "spike": locked_me,
+                       "engagementRange": eng, "inWez": in_wez,
+                       "text": "SPIKE" if locked_me else "IN WEZ"}
+                if IR.is_ir_sam(obj.name):
+                    row["ir"] = True  # an IR SAM gives no RWR warning
+                out.append(row)
 
         # Anything tracking me by lock, straight from the RWR, if the bridge sent it.
         out.sort(key=lambda d: (-d["level"], d.get("tti") or 1e9, d["range"]))

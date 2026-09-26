@@ -179,6 +179,63 @@ def _tail_vector(tr: Track, t: float) -> Optional[Vec]:
     return (-v[0], -v[1], -v[2]) if v is not None else None
 
 
+def tail_angle_from(pos: Sequence[float], yaw: Optional[float], pitch: Optional[float],
+                    viewer: Sequence[float]) -> Optional[float]:
+    """Degrees off the tail of a jet at *pos* (lon, lat, alt) heading *yaw*, seen from *viewer*."""
+    if yaw is None or yaw != yaw:
+        return None
+    p = 0.0 if pitch is None or pitch != pitch else math.radians(pitch)
+    y = math.radians(yaw)
+    tail = (-math.sin(y) * math.cos(p), -math.cos(y) * math.cos(p), -math.sin(p))
+    return _angle(tail, _enu(viewer, pos))
+
+
+def seen_from(tail_deg: float) -> str:
+    """Which part of the jet a viewer sees: "tail", "beam" or "nose"."""
+    return "tail" if tail_deg < 60.0 else "nose" if tail_deg > 120.0 else "beam"
+
+
+#: DCS ground units that fire IR missiles (SA-9, SA-13, MANPADS, Chaparral, Avenger).
+IR_SAM_RE = re.compile(r"Strela|Igla|Stinger|Avenger|Chaparral|9P31|9A35|\bSA-(9|13|18)\b|Mistral", re.I)
+
+
+def is_ir_sam(name: Optional[str]) -> bool:
+    return bool(name) and bool(IR_SAM_RE.search(name))
+
+
+class FuelFlowAB:
+    """Afterburner from fuel flow as it streams in (live view).
+
+    Lit when the flow is far above the dry plateau seen while flying (DCS
+    jets burn five to eight times more in afterburner).  Until both modes have
+    been seen the answer is None: a jet that has only ever been in afterburner
+    and one that never lit it look the same.  Units do not matter (ratio).
+    """
+
+    def __init__(self, keep: int = 1800) -> None:
+        from collections import deque
+        self.samples = deque(maxlen=keep)
+        self.last_t: Optional[float] = None
+
+    def add(self, t: float, ff: Optional[float], airborne: bool) -> None:
+        if ff is None or ff != ff or ff <= 0 or not airborne:
+            return
+        if self.last_t is not None and 0.0 <= t - self.last_t < 1.0:
+            return
+        self.last_t = t
+        self.samples.append(ff)
+
+    def lit(self, ff: Optional[float]) -> Optional[bool]:
+        if ff is None or ff != ff or len(self.samples) < 20:
+            return None
+        s = sorted(self.samples)
+        thr = s[len(s) // 10] * 4.0
+        hi = [v for v in s if v > thr]
+        if not hi or hi[len(hi) // 2] < thr * 1.8:
+            return None
+        return ff > thr
+
+
 def tail_angle(target: Track, t: float, viewer: Sequence[float]) -> Optional[float]:
     """Degrees between the target's tail and the line from it to *viewer* (lon, lat, alt)."""
     tp = target.position_interp(t)

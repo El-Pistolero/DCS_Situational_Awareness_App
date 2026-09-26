@@ -53,6 +53,8 @@ body.live { overflow: hidden; }
 .threat.l3 .tag { background: #ff3b3b; color: #fff; }
 .threat.l2 .tag { background: var(--orange); color: #111; }
 .threat.l1 .tag { background: var(--accent); color: #111; }
+/* Heat-seekers: amber, whatever the level (no RWR warning for these). */
+.threat .tag.ir, .threat.l3 .tag.ir, .threat.l2 .tag.ir, .threat.l1 .tag.ir { background: #ffb347; color: #1b1206; }
 
 canvas.rwr { width: 100%; aspect-ratio: 1; max-width: 260px; display: block; margin: 0 auto; }
 .stores { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 4px; font-size: 12px; }

@@ -131,3 +131,49 @@ class Tables(unittest.TestCase):
         zem, tgo = IR._zem((0.0, 1000.0, 0.0), (100.0, -500.0, 0.0))
         self.assertAlmostEqual(tgo, 1000 * 500 / (100 ** 2 + 500 ** 2), places=6)
         self.assertAlmostEqual(zem, 1000 * 100 / math.hypot(100, 500), places=6)
+
+
+class LiveHeat(unittest.TestCase):
+    """The dogfight streamed into the live view, as the Tacview real-time feed would."""
+
+    @classmethod
+    def setUpClass(cls):
+        from dcs_sa.acmi.parser import AcmiParser
+        from dcs_sa.acmi.reader import iter_lines
+        from dcs_sa.telemetry.live_world import LiveWorld
+        load()
+        cls.snaps = {}
+        w = LiveWorld(["Ethan"])
+        p = AcmiParser(w)
+        want = [100.0, 110.2, 141.0]
+        for line in iter_lines(SAMPLE):
+            if line.startswith("#") and want and float(line[1:]) >= want[0]:
+                cls.snaps[want.pop(0)] = w.snapshot()
+            if line.startswith("#"):
+                w.snapshot()  # the heat tracker samples on snapshots, as the server's clients do
+            p.feed(line)
+
+    def test_r73_is_an_ir_threat(self):
+        [m] = [t for t in self.snaps[110.2]["threats"] if t["kind"] == "missile"]
+        self.assertTrue(m["ir"])
+        self.assertEqual((m["seeker"], m["text"]), ("R-73", "IR MISSILE"))
+        self.assertIn(m["sees"], ("tail", "beam", "nose"))
+        self.assertAlmostEqual(m["heatFactor"], IR.aspect_factor({"tail": 0, "beam": 90, "nose": 180}[m["sees"]]), delta=0.5)
+
+    def test_own_heat(self):
+        before, during = self.snaps[100.0]["heat"], self.snaps[110.2]["heat"]
+        self.assertEqual((before["type"], before["ir"], before["irAB"]), ("F-16C_50", 0.6, 3))
+        self.assertIsNone(before["ab"])  # dry so far, but never seen lit: not yet known
+        self.assertIs(during["ab"], True)
+
+    def test_fuel_flow_tracker(self):
+        tr = IR.FuelFlowAB()
+        for i in range(30):
+            tr.add(float(i), 3000.0, True)
+        self.assertIsNone(tr.lit(3000.0))  # only one mode seen
+        tr.add(31.0, 25000.0, True)
+        self.assertIs(tr.lit(25000.0), True)
+        self.assertIs(tr.lit(3100.0), False)
+        tr.add(31.5, 1.0, True)  # within a second: ignored
+        tr.add(40.0, 1e6, False)  # on the ground: ignored
+        self.assertEqual(len(tr.samples), 31)

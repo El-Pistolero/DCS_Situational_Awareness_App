@@ -13,6 +13,7 @@ import { MODES, createSettings, modeSwitch, reflectMode } from "./modes.js";
 import { createDisplayPanel } from "./layers.js";
 import { createSelectionUI } from "./selmenu.js";
 import { COORD_FORMATS, copyText, fmtCoord } from "./coords.js";
+import { AMBER, HEAT_NOTE, drawHeatLobes } from "./irviz.js";
 
 const $ = (id) => document.getElementById(id);
 const pref = (k, d) => { try { return localStorage.getItem(`dcs-sa.live.${k}`) ?? d; } catch { return d; } };
@@ -32,7 +33,7 @@ const SET = createSettings({
   prefix: "dcs-sa.live.",
   base: {
     range: 40, radar: "all", bullets: "paths", rings: "all", ground: "show", labels: "aircraft", vectors: 0, braa: false,
-    myWeapons: true, lar: true, wrecks: true, northArrow: true, coords: "ddm",
+    myWeapons: true, lar: true, wrecks: true, northArrow: true, coords: "ddm", irHeat: true,
   },
   modeDefaults: {
     a2a: { range: 20, radar: "all", rings: "near", ground: "threats", labels: "aircraft", vectors: 10, braa: true, myWeapons: false, lar: false, wrecks: false },
@@ -289,6 +290,7 @@ const DISPLAY = [
     { key: "rings", label: "SAM / AAA rings", type: "select", options: [["all", "All"], ["hostile", "Hostile to me"], ["near", "Hostile, when near"], ["off", "Off"]] },
     { key: "radar", label: "Radar cones", type: "select", options: [["all", "All (incl. assumed)"], ["known", "Known only"], ["focus", "My jet"], ["none", "Off"]] },
     { key: "braa", label: "BRAA from me on bandits", type: "toggle" },
+    { key: "irHeat", label: "My heat when an IR missile is inbound", type: "toggle", title: HEAT_NOTE },
   ] },
   { title: "Objects", rows: [
     { key: "ground", label: "Ground & ships", type: "select", options: [["show", "Show"], ["threats", "Only SAM / AAA / armed ships"], ["hide", "Hide"]] },
@@ -1061,6 +1063,7 @@ map.scene = (ctx, m) => {
     labels: S.glance ? "minimal" : cfg("labels"), showRadar: S.glance ? "focus" : cfg("radar"), rounds: liveRounds(snap),
     ringFilter, vectors: cfg("vectors"), byId });
   if (cfg("myWeapons")) drawMyWeapons(ctx, m, snap, byId);
+  if (me && cfg("irHeat") && snap.heat && irInbound(snap).length) drawOwnHeat(ctx, m, me, snap);
   if (cfg("wrecks")) drawPips(ctx, m);
   if (S.target) drawTargetMark(ctx, m, S.target);
   if (S.sel?.kind === "point") drawPointMark(ctx, m, S.sel);
@@ -1256,6 +1259,33 @@ function drawPips(ctx, m) {
 }
 
 /** My weapons in flight: a dashed line to the predicted impact, the impact circle, target and TTI. */
+/** Heat-seekers coming at me (the server tags them from DCS's IR seeker table). */
+const irInbound = (snap) => (snap?.threats || []).filter((t) => t.kind === "missile" && t.ir);
+
+/** "0.6", "AB 3.0" or "0.6/3.0?" (afterburner not known). */
+function heatShort(h) {
+  if (!h) return null;
+  if (h.ab === true) return `AB ${h.irAB.toFixed(1)}`;
+  if (h.ab === null && isNum(h.irAB)) return `${h.ir}/${h.irAB.toFixed(1)}?`;
+  return `${h.ir}`;
+}
+
+/** My heat lobe (DCS aspect model) with a tick towards each IR missile. */
+function drawOwnHeat(ctx, m, me, snap) {
+  const h = snap.heat;
+  const state = h.ab === null ? "unknown" : "recorded";
+  drawHeatLobes(ctx, m, [me], 0, { [me.id]: { ir: h.ir, irAB: h.irAB, state, spans: h.ab ? [[-Infinity, Infinity]] : [] } }, { scale: 1.6 });
+  const [x, y] = m.project(me.lon, me.lat);
+  ctx.save();
+  ctx.strokeStyle = AMBER;
+  ctx.lineWidth = 2;
+  for (const t of irInbound(snap)) {
+    const a = m.screenAngle(t.bearing);
+    ctx.beginPath(); ctx.moveTo(x + Math.cos(a) * 20, y + Math.sin(a) * 20); ctx.lineTo(x + Math.cos(a) * 34, y + Math.sin(a) * 34); ctx.stroke();
+  }
+  ctx.restore();
+}
+
 function drawMyWeapons(ctx, m, snap, byId) {
   const list = myWeapons(snap);
   if (!list.length) return;
@@ -1378,6 +1408,11 @@ function renderOwn(me, own) {
   const altCell = () => cell(altKey, fmtAlt(alt, { suffix: false }), "", altTrend);
   const gCell = () => cell("G", fmtNum(g, 1), g > 7.5 ? "danger" : g > 6 ? "warn" : "");
   const fuelCell = () => cell(fuelKey, fuelTxt, fuelCls);
+  // Heat: DCS's coefficient for my type, and afterburner when the data shows it.
+  const irIn = irInbound(S.snap).length > 0;
+  const heat = S.snap?.heat;
+  const heatCell = () => cell("HEAT", heatShort(heat) || "—", `sm ${heat?.ab === true ? (irIn ? "danger flash" : "warn") : ""}`);
+  const flrCell = () => cell("FLR", own?.cm?.flare ?? "—", isNum(own?.cm?.flare) && own.cm.flare <= 10 ? "warn" : "");
   const aoaCell = () => cell("AOA", isNum(aoa) ? aoa.toFixed(1) : "—", aoa > 20 ? "warn" : "");
   const vsCell = () => cell("V/S", fmtVs(vs).replace(" fpm", "").replace(" m/s", ""));
   const ag = mode !== "a2a" ? agInfo(S.snap, me, own) : null;
@@ -1400,7 +1435,8 @@ function renderOwn(me, own) {
       );
       return;
     }
-    box.append(...iasCell(), ...altCell(), ...gCell(), ...fuelCell());
+    // An IR missile inbound: flares matter more than fuel.
+    box.append(...iasCell(), ...altCell(), ...gCell(), ...(irIn ? flrCell() : fuelCell()));
     return;
   }
   if (mode === "a2g") {
@@ -1416,6 +1452,7 @@ function renderOwn(me, own) {
       ...iasCell(), ...altCell(), ...cell("HDG", fmtHdg(hdg)), ...cell("MACH", fmtNum(mach, 2)),
       ...cell("BANDIT", b ? b.text : "—", `sm ${b?.cls || ""}`),
       ...aoaCell(), ...gCell(), ...vsCell(), ...cell(units.metric ? "Ps m/s" : "Ps ft/s", psTxt, psCls), ...fuelCell(),
+      ...(heat ? heatCell() : []),
     );
   } else {
     box.append(
@@ -1491,13 +1528,19 @@ function renderThreats(threats) {
   const fresh = [...ids].some((id) => !S.lastMissiles.has(id));
   S.lastMissiles = ids;
   if (missiles.length) S.lastMissileAt = Date.now();
-  if (fresh && S.sound) { beep(1200, 0.15); setTimeout(() => beep(1200, 0.15), 220); }
+  if (fresh && S.sound) {
+    // A heat-seeker gives no RWR warning: its own sound, three lower beeps.
+    if (missiles.some((m) => m.ir && !S.lastIr?.has(m.id))) [0, 180, 360].forEach((d) => setTimeout(() => beep(900, 0.1), d));
+    else { beep(1200, 0.15); setTimeout(() => beep(1200, 0.15), 220); }
+  }
+  S.lastIr = new Set(missiles.filter((m) => m.ir).map((m) => m.id));
   // Deferred: setGlance re-renders this list.
   if (fresh && !S.glance && pref("autoGlance", "0") === "1") queueMicrotask(() => setGlance(true, { auto: true }));
   const warn = $("warn");
   if (missiles.length) {
     const m = missiles[0];
-    warn.textContent = `MISSILE ${m.clock} O'CLOCK${isNum(m.tti) ? ` · ${Math.round(m.tti)}s` : ""}`;
+    const hot = m.ir && S.snap?.heat?.ab === true ? " · AB!" : "";
+    warn.textContent = `${m.ir ? "IR MISSILE" : "MISSILE"} ${m.clock} O'CLOCK${isNum(m.tti) ? ` · ${Math.round(m.tti)}s` : ""}${m.ir ? ` · NO RWR${hot}` : ""}`;
     warn.classList.remove("hidden");
   } else warn.classList.add("hidden");
 
@@ -1506,9 +1549,10 @@ function renderThreats(threats) {
   const pad = S.cam === "padlock" && S.snap ? padlockTarget(S.snap) : S.padlockId;
   const selId = S.sel?.kind === "object" ? S.sel.id : null;
   for (const t of rows.slice(0, S.glance ? 3 : 12)) {
-    const tag = t.kind === "missile" ? (isNum(t.tti) ? `${Math.round(t.tti)}s` : "MSL") : t.text || (t.kind === "aircraft" ? "A/C" : t.kind.toUpperCase());
+    const tag = t.kind === "missile" ? `${t.ir ? "IR " : ""}${isNum(t.tti) ? `${Math.round(t.tti)}s` : t.ir ? "" : "MSL"}`.trim()
+      : t.ir && t.kind === "sam" ? `IR ${t.text || "SAM"}` : t.text || (t.kind === "aircraft" ? "A/C" : t.kind.toUpperCase());
     const alt = isNum(t.altDelta) ? (units.metric ? `${t.altDelta >= 0 ? "+" : ""}${Math.round(t.altDelta)}m` : `${t.altDelta >= 0 ? "+" : ""}${Math.round((t.altDelta * M_TO_FT) / 1000)}k`) : "";
-    const who = t.kind === "missile" ? `${t.name}${t.shooterPilot || t.shooter ? ` ← ${t.shooterPilot || t.shooter}` : ""}` : `${t.pilot || t.name}${t.pilot ? ` · ${t.name}` : ""}`;
+    const who = t.kind === "missile" ? `${t.ir ? `${t.seeker || wLabel(t.name)} · IR` : wLabel(t.name)}${t.shooterPilot || t.shooter ? ` ← ${t.shooterPilot || t.shooter}` : ""}` : `${t.pilot || t.name}${t.pilot ? ` · ${t.name}` : ""}`;
     let bits;
     if (isNum(t.edge)) bits = [fmtHdg(t.bearing), t.edge <= 0 ? "IN WEZ" : `WEZ in ${fmtDist(t.edge)}`, fmtDist(t.range)];
     else {
@@ -1516,10 +1560,12 @@ function renderThreats(threats) {
       if (isNum(t.aspect)) bits.push(`asp ${Math.round(t.aspect)}°`);
       if (isNum(t.closure)) bits.push(`${t.closure >= 0 ? "+" : ""}${fmtSpeed(t.closure, { suffix: false })}`);
     }
+    // Heat-seekers: no RWR, and which part of me it sees (DCS: tail x1.5, beam x1, nose x0.5).
+    if (t.ir) bits.push(t.sees ? `sees your ${t.sees.toUpperCase()} ×${t.heatFactor}` : "no RWR");
     box.append(el("div", { class: `threat l${t.level}${t.id === pad ? " pad" : ""}${t.id === selId ? " sel" : ""}`, title: "Click to select (and padlock in 3D)", "data-id": t.id },
       el("div", { class: "clock" }, `${t.clock}`, el("small", {}, "o'clock")),
       el("div", { class: "what" }, el("b", {}, who), el("span", {}, bits.filter(Boolean).join(" · "))),
-      el("span", { class: "tag" }, tag)));
+      el("span", { class: `tag${t.ir ? " ir" : ""}`, title: t.ir ? "Heat-seeker: no RWR warning; flares can decoy it" : null }, tag)));
   }
 }
 
