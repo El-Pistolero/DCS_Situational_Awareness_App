@@ -46,6 +46,55 @@ class SummariseTests(unittest.TestCase):
         self.assertEqual(self.sortie["grades"], ["A"])
 
 
+class ScoringTests(unittest.TestCase):
+    """A shot at a jet only counts when the jet went down."""
+
+    def setUp(self):
+        from dcs_sa.career import _scored
+
+        self.scored = _scored
+
+    def test_a_jet_that_flew_home_is_a_miss(self):
+        self.assertEqual(self.scored("damage", "fixedwing"), "miss")
+        self.assertEqual(self.scored("damage", "rotorcraft"), "miss")
+        self.assertEqual(self.scored("kill", "fixedwing"), "hit")
+        self.assertEqual(self.scored("miss", "fixedwing"), "miss")
+
+    def test_damage_still_counts_on_the_ground(self):
+        # A truck that survives a near miss was still hit by something real.
+        self.assertEqual(self.scored("damage", "ground"), "hit")
+        self.assertEqual(self.scored("damage", "sea"), "hit")
+        self.assertEqual(self.scored("kill", "ground"), "hit")
+
+    def test_an_undecided_shot_counts_neither_way(self):
+        self.assertIsNone(self.scored("active", "fixedwing"))
+        self.assertIsNone(self.scored("unknown", "ground"))
+        self.assertIsNone(self.scored("", ""))
+
+    def test_an_intercepted_shot_is_a_miss(self):
+        self.assertEqual(self.scored("intercepted", "ground"), "miss")
+
+    def test_a_damaged_but_living_jet_does_not_inflate_accuracy(self):
+        from dcs_sa.career import summarise, totals
+
+        report = {
+            "recording": {"title": "t", "duration": 100.0},
+            "player": "101",
+            "aircraft": [{"id": "101", "pilot": "Ethan", "name": "F-16C_50"}],
+            "objects": [{"id": "201", "category": "fixedwing"}, {"id": "301", "category": "ground"}],
+            "weapons": {"shots": [
+                {"launcherId": "101", "weaponName": "AIM_9", "targetId": "201", "outcome": "damage"},
+                {"launcherId": "101", "weaponName": "AIM_9", "targetId": "201", "outcome": "kill"},
+                {"launcherId": "101", "weaponName": "Mk_82", "targetId": "301", "outcome": "damage"},
+            ], "kills": [], "bursts": []},
+        }
+        row = summarise("k", report)
+        self.assertEqual(row["byWeapon"]["AIM_9"], {"fired": 2, "hits": 1, "misses": 1, "kills": 1, "dcsHits": 0})
+        self.assertEqual(row["byWeapon"]["Mk_82"]["hits"], 1)
+        t = totals([row])
+        self.assertAlmostEqual(t["accuracy"], 2 / 3)
+
+
 class TotalsTests(unittest.TestCase):
     def test_records_add_up(self):
         rows = [record(n) for n in ("sample_sortie", "sample_strike", "sample_dogfight")]

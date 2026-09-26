@@ -98,7 +98,9 @@ function render(data) {
     tile("Guns", n0(t.guns.rounds), `${n0(t.guns.bursts)} bursts · ${n0(t.guns.kills)} kills`),
     tile("Lost", n0(t.losses), t.losses ? "times shot down" : "never shot down")));
   box.append(el("p", { class: "cr-note" },
-    "Accuracy counts only shots that were decided: a missile still in flight when the recording ended is left out rather than counted as a miss."));
+    "Against aircraft only a kill counts as a hit: a jet that flew home is not one you shot down. "
+    + "Against ground and ships, damage counts. Shots still in flight when the recording ended are left out "
+    + "rather than counted as misses."));
 
   const air = againstRows(t.against, true);
   if (air.length) {

@@ -27,9 +27,26 @@ from typing import Any, Dict, Iterable, List, Optional
 log = logging.getLogger(__name__)
 
 VERSION = 1
-#: Outcomes that count as the weapon having done its job.
-HIT_OUTCOMES = ("kill", "damage")
-MISS_OUTCOMES = ("miss", "intercepted")
+#: Categories where "damage" is a real result: a truck that survives a near
+#: miss was still hit.  Against an aircraft the bar is a kill (see `_scored`).
+SURFACE = ("ground", "sea", "building", "structure")
+MISS_OUTCOMES = ("miss", "intercepted", "damage")
+
+
+def _scored(outcome: str, category: str) -> Optional[str]:
+    """"hit", "miss", or None for a shot that was never decided.
+
+    Against an aircraft only a kill counts.  A jet that flies home is not a
+    jet you shot down, and "damage" there is inferred from its health rather
+    than reported, so it is the least trustworthy number we have.
+    """
+    if outcome == "kill":
+        return "hit"
+    if category in SURFACE and outcome == "damage":
+        return "hit"
+    if outcome in MISS_OUTCOMES:
+        return "miss"
+    return None     # still in flight when the recording ended, or unknown
 
 
 def _num(x: Any) -> Optional[float]:
@@ -53,17 +70,19 @@ def summarise(key: str, report: Dict[str, Any], *, path: str = "", modified: Opt
     my_jet = next((a for a in report.get("aircraft") or [] if a.get("id") == me), {})
     pilot = my_jet.get("pilot") or None
 
+    category = {str(o.get("id")): str(o.get("category") or "") for o in report.get("objects") or []}
     by_weapon: Dict[str, Dict[str, int]] = {}
     for s in shots:
         name = str(s.get("weaponName") or "?")
         row = by_weapon.setdefault(name, {"fired": 0, "hits": 0, "misses": 0, "kills": 0, "dcsHits": 0})
         row["fired"] += 1
-        outcome = s.get("outcome")
+        outcome = str(s.get("outcome") or "")
         if outcome == "kill":
             row["kills"] += 1
-        if outcome in HIT_OUTCOMES:
+        scored = _scored(outcome, category.get(str(s.get("targetId")), ""))
+        if scored == "hit":
             row["hits"] += 1
-        elif outcome in MISS_OUTCOMES:
+        elif scored == "miss":
             row["misses"] += 1
         if s.get("dcsHit"):
             row["dcsHits"] += 1
