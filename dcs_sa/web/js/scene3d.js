@@ -8,6 +8,7 @@ import { bisectRight, fmtDist, fmtShort, isHostile, isNum, sideColor, slantRange
 import { buildF16, isF16 } from "./f16.js";
 import { radarVolume } from "./symbols.js";
 import { tofTicks, weaponPath } from "./strikegeom.js";
+import { RESULT_COLOR, kAlt } from "./strikeviz.js";
 
 const R_LAT = 111320;
 const D2R = Math.PI / 180;
@@ -189,7 +190,6 @@ function radarGeometry(azDeg, elLoDeg, elHiDeg) {
 
 const AIR_CATS = ["fixedwing", "rotorcraft", "air"];
 const STALK_CATS = new Set([...AIR_CATS, "weapon"]);
-const RESULT_COLOR = { destroyed: "#ff5c5c", damaged: "#ff9f43", miss: "#9aa4b1", unknown: "#c8cdd6" };
 const REL_COLOR = "#ffd166";
 const RING_SEGS = 48;
 const FOOT_SEGS = 48, FOOT_RINGS = 3; // concentric rings so the fill follows the terrain
@@ -230,10 +230,10 @@ function dynamicGeometry(colors) {
   return g;
 }
 
-/** "REL 25.0k · M0.79": release altitude in thousands of ft (or m). */
+/** "REL 25.0k · M0.79": release altitude in thousands of ft ("7.6 km" in metric, as on the map). */
 function releaseText(s) {
   const r = s.release;
-  const alt = isNum(r.altitude) ? ` ${((units.metric ? r.altitude : r.altitude * M_TO_FT) / 1000).toFixed(1)}k` : "";
+  const alt = isNum(r.altitude) ? ` ${kAlt(r.altitude)}` : "";
   return `REL${alt}${isNum(r.mach) ? ` · M${r.mach.toFixed(2)}` : ""}`;
 }
 
@@ -242,8 +242,13 @@ function impactText(s) {
   const d = s.missDistance, res = s.result || "unknown";
   if (res === "miss") return isNum(d) ? `miss ${fmtShort(d)}` : "miss";
   if (res === "unknown") return isNum(d) ? fmtShort(d) : "impact";
+  // Shot down in the air: no impact, so no distance from the target either.
+  if (res === "intercepted") return "INTERCEPTED";
   return isNum(d) ? `${fmtShort(d)} · ${res.toUpperCase()}` : res.toUpperCase();
 }
+
+/** Strikes whose weapon never reached the ground in the recording get no impact mark. */
+const landed = (s) => s.result !== "in flight";
 
 export class Scene3D {
   constructor(container) {
@@ -699,8 +704,13 @@ export class Scene3D {
     const e = this.objects.get(id);
     if (!e) return;
     this.scene.remove(e.group, e.trail);
-    if (e.dome) this.scene.remove(e.dome);
+    if (e.dome) {
+      // Scrubbing across a SAM's death (dead units hidden) adds and removes it again and again.
+      this.scene.remove(e.dome);
+      e.dome.traverse((m) => { m.geometry?.dispose(); m.material?.dispose(); });
+    }
     e.trail.geometry.dispose();
+    e.trail.material.dispose();
     e.model.traverse((m) => {
       if (!m.isMesh) return;
       if (m.geometry && !Object.values(GEOM).includes(m.geometry)) m.geometry.dispose();
@@ -744,7 +754,10 @@ export class Scene3D {
     }
     this._ensureOrigin(focus.lon, focus.lat);
     this._updateTerrain(hold ? hold.lon : focus.lon, hold ? hold.lat : focus.lat);
-    this.focusId = focus.id;
+    // While holding, the stand-in focus (the first jet in the list) is not
+    // followed: nothing is styled or judged hostile as if it were.
+    this.focusId = hold ? focusId : focus.id;
+    const side = hold && cw?.id === focusId ? cw : focus;
     this.selectedId = selectedId;
     const ringMode = rings || "all";
     const boost = this._emissiveBoost;
@@ -781,8 +794,9 @@ export class Scene3D {
       e.pos = p;
       e.obj = o;
       if (e.dome) {
-        const show = !!pinned?.has(o.id) ||
-          (!dimmed && (ringMode === "all" || (ringMode === "hostile" && isHostile(o, focus))));
+        // A destroyed SAM threatens nobody (the map drops its ring too), pinned or not.
+        const show = !o.dead && (!!pinned?.has(o.id) ||
+          (!dimmed && (ringMode === "all" || (ringMode === "hostile" && isHostile(o, side)))));
         e.dome.visible = show;
         if (show) {
           const r = o.v.EngagementRange;
@@ -822,9 +836,9 @@ export class Scene3D {
     for (const id of [...this.objects.keys()]) if (!seen.has(id)) this._remove(id);
     cloud.setDrawRange(0, nb);
     if (nb) cloud.attributes.position.needsUpdate = true;
-    this._updateRadars(objects, radar, focus.id, selectedId);
+    this._updateRadars(objects, radar, this.focusId, selectedId);
     this._updateRounds(rounds);
-    this._updateStalks(stalks, focus.id, selectedId);
+    this._updateStalks(stalks, this.focusId, selectedId);
     this._strikeT = isNum(t) ? t : Infinity;
     this._strikeLayers = strikeLayers;
     this._syncStrikes();
@@ -861,7 +875,9 @@ export class Scene3D {
     if (hold) {
       this._updatePadLine(null);
       this._padTarget = null;
-      const target = hold === cw ? cw.look : this.toLocal(hold.lon, hold.lat, isNum(hold.alt) ? hold.alt : 0, this._want);
+      // Implied hold on a strike weapon (a JSOW that has opened): look where its load comes down.
+      const sk = hold === cw ? this._strikes.find((st) => st.s.weaponId === cw.id && landed(st.s)) : null;
+      const target = hold !== cw ? this.toLocal(hold.lon, hold.lat, isNum(hold.alt) ? hold.alt : 0, this._want) : sk ? sk.impPos : cw.look;
       // Ease the view from where the weapon cam was looking onto the hold point.
       const now = performance.now();
       const dt = this._lastChase ? Math.min(1, (now - this._lastChase) / 1000) : 1;
@@ -908,10 +924,10 @@ export class Scene3D {
         const dir = this._tmpV.set(Math.sin(hdg) * Math.cos(pit), Math.sin(pit) * this.exaggeration, -Math.cos(hdg) * Math.cos(pit)).normalize();
         this._want.copy(fp).addScaledVector(dir, -14).y += 4;
         smooth(this._want);
-        const c = this._camWeapon ||= { id: null, t: null, lon: 0, lat: 0, alt: 0, look: new THREE.Vector3() };
+        const c = this._camWeapon ||= { id: null, t: null, lon: 0, lat: 0, alt: 0, coalition: null, look: new THREE.Vector3() };
         c.look.copy(fp).addScaledVector(dir, 30);
         this.camera.lookAt(c.look);
-        c.id = focus.id; c.t = isNum(t) ? t : null; c.lon = focus.lon; c.lat = focus.lat; c.alt = focus.alt;
+        c.id = focus.id; c.t = isNum(t) ? t : null; c.lon = focus.lon; c.lat = focus.lat; c.alt = focus.alt; c.coalition = focus.coalition;
       } else if (this.mode === "chase" || (this.mode === "padlock" && !this._padTarget)) {
         const hdg = (focus.hdg || 0) * D2R;
         const back = 42, up = 11; // close enough to see the jet's shape
@@ -1116,6 +1132,9 @@ export class Scene3D {
     res.disp = mk(new THREE.MeshBasicMaterial({ color: 0xffb347 }));
     res.footLine = mk(new THREE.LineBasicMaterial({ color: 0xf2c94c, transparent: true, opacity: 0.9 }));
     res.footFill = mk(new THREE.MeshBasicMaterial({ color: 0xf2c94c, transparent: true, opacity: 0.14, depthWrite: false, side: THREE.DoubleSide }));
+    // A typical (estimated) pattern, not a measured one: dashed and fainter, as on the map.
+    res.footLineEst = mk(new THREE.LineDashedMaterial({ color: 0xf2c94c, transparent: true, opacity: 0.7, dashSize: 12, gapSize: 8 }));
+    res.footFillEst = mk(new THREE.MeshBasicMaterial({ color: 0xf2c94c, transparent: true, opacity: 0.07, depthWrite: false, side: THREE.DoubleSide }));
     res.bomb = mk(new THREE.PointsMaterial({ color: 0xffe2b0, size: 3.5, sizeAttenuation: false }));
     for (const [k, c] of Object.entries(RESULT_COLOR)) {
       res.ring[k] = mk(new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide }));
@@ -1192,7 +1211,7 @@ export class Scene3D {
 
     // Cluster footprint: the 2-sigma ellipse and the recorded bomblet impacts.
     const fpr = s.footprint;
-    if (fpr && isNum(fpr.major) && isNum(fpr.minor) && fpr.major > 0 && isNum(fpr.lon)) {
+    if (fpr && isNum(fpr.major) && isNum(fpr.minor) && fpr.major > 0 && isNum(fpr.lon) && isNum(fpr.lat)) {
       const c = this.toLocal(fpr.lon, fpr.lat, 0, this._tmpV);
       const b = (isNum(fpr.bearing) ? fpr.bearing : 0) * D2R;
       // Major axis along the bearing (x east, z south), minor across it.
@@ -1216,13 +1235,16 @@ export class Scene3D {
       for (let r = 1; r < FOOT_RINGS; r++) {
         for (let i = 0; i < FOOT_SEGS; i++) idx.push(at(r, i), at(r + 1, i), at(r, i + 1), at(r, i + 1), at(r + 1, i), at(r + 1, i + 1));
       }
-      const fill = add(THREE.Mesh, new Float32Array(nv * 3), res.footFill);
+      const est = !!fpr.estimated;
+      const fill = add(THREE.Mesh, new Float32Array(nv * 3), est ? res.footFillEst : res.footFill);
       fill.geometry.setIndex(idx);
       fill.renderOrder = 2;
-      const outline = add(THREE.LineLoop, new Float32Array(FOOT_SEGS * 3), res.footLine);
-      st.foot = { xz, fill, outline };
+      const outline = add(THREE.LineLoop, new Float32Array(FOOT_SEGS * 3), est ? res.footLineEst : res.footLine);
+      st.foot = { xz, fill, outline, est };
     }
-    const bp = (fpr?.points || []).filter((q) => isNum(q?.[0]) && isNum(q?.[1]));
+    // An estimated pattern's points are where DCS's single object for the whole
+    // load came down, not bomblet impacts: the map leaves them out too.
+    const bp = fpr?.estimated ? [] : (fpr?.points || []).filter((q) => isNum(q?.[0]) && isNum(q?.[1]));
     if (bp.length) {
       st.bombXZ = new Float32Array(bp.length * 2);
       bp.forEach((q, i) => {
@@ -1279,6 +1301,7 @@ export class Scene3D {
         const o0 = (1 + (FOOT_RINGS - 1) * FOOT_SEGS) * 3;
         for (let i = 0; i < FOOT_SEGS * 3; i++) oa.array[i] = fa.array[o0 + i] + (i % 3 === 1 ? 1 : 0);
         fa.needsUpdate = oa.needsUpdate = true;
+        if (st.foot.est) outline.computeLineDistances();
       }
       if (st.bombs) {
         const ba = st.bombs.geometry.attributes.position;
@@ -1313,21 +1336,24 @@ export class Scene3D {
     for (const st of this._strikes) {
       const s = st.s;
       // `!(T < x)` is true when x is missing too: no time, nothing to hide.
-      st.relShow = rel && !(T < s.releaseTime);
+      const released = !(T < s.releaseTime);
+      st.relShow = rel && released;
       st.post.visible = st.top.visible = st.relShow;
       if (st.path) {
-        const n = L.future === true ? st.pathT.length : Math.min(st.pathT.length, bisectRight(st.pathT, T) + 1);
+        // "future" adds the rest of the path of a weapon already in flight (as on the map), never one not yet released.
+        const future = L.future === true && released;
+        const n = future ? st.pathT.length : Math.min(st.pathT.length, bisectRight(st.pathT, T) + 1);
         st.path.geometry.setDrawRange(0, n);
         st.path.visible = paths && n >= 2;
         if (st.ticks) {
-          const m = L.future === true ? st.tickT.length : bisectRight(st.tickT, T) + 1;
+          const m = future ? st.tickT.length : bisectRight(st.tickT, T) + 1;
           st.ticks.geometry.setDrawRange(0, m);
           st.ticks.visible = st.path.visible && m > 0;
         }
       }
-      if (st.disp) st.disp.visible = paths && !(T < st.dispT);
+      if (st.disp) st.disp.visible = paths && !(T < (isNum(st.dispT) ? st.dispT : s.impactTime));
       const hit = !(T < s.impactTime);
-      st.impShow = st.ring.visible = imps && hit;
+      st.impShow = st.ring.visible = imps && hit && landed(s);
       if (st.foot) st.foot.fill.visible = st.foot.outline.visible = foot && hit;
       if (st.bombs) st.bombs.visible = foot && !(T < st.bombT);
     }
@@ -1354,14 +1380,13 @@ export class Scene3D {
     const boxes = this._lblBoxes ||= []; // x, y, width of the labels placed this frame
     boxes.length = 0;
     // Only near the camera (a strike package would bury the view in text) and on screen.
-    const place = (el, show, pos, dx, dy, s, rel) => {
+    const place = (el, show, pos, dx, dy, txt) => {
       if (show) {
         v.copy(pos).project(this.camera);
         show = v.z < 1 && Math.abs(v.x) < 1.05 && Math.abs(v.y) < 1.05 && cam.distanceTo(pos) < LABEL_RANGE;
       }
       el.style.display = show ? "block" : "none";
       if (!show) return;
-      const txt = rel ? releaseText(s) : impactText(s);
       if (el.textContent !== txt) el.textContent = txt;
       const x = ((v.x + 1) / 2) * w + dx, bw = txt.length * 6.7;
       let y = ((1 - v.y) / 2) * h + dy;
@@ -1373,10 +1398,12 @@ export class Scene3D {
       el.style.transform = `translate(${x}px, ${y}px)`;
     };
     for (const st of this._strikes) {
-      place(st.relLabel, st.relShow, st.relPos, 10, -16, st.s, true);
+      // The texts only change with the unit system: no new strings every frame.
+      if (st.units !== units.system) { st.units = units.system; st.relTxt = releaseText(st.s); st.impTxt = impactText(st.s); }
+      place(st.relLabel, st.relShow, st.relPos, 10, -16, st.relTxt);
       // Impact label just clear of the ring.
       const ringPx = st.ringR ? (st.ringR / Math.max(1, cam.distanceTo(st.impPos))) * pxPerRad : 0;
-      place(st.impLabel, st.impShow, st.impPos, 6 + Math.min(ringPx, 60), 2, st.s, false);
+      place(st.impLabel, st.impShow, st.impPos, 6 + Math.min(ringPx, 60), 2, st.impTxt);
     }
   }
 
@@ -1630,8 +1657,11 @@ export class Scene3D {
     let down = null;
     el.addEventListener("pointerdown", (e) => { down = [e.clientX, e.clientY]; });
     el.addEventListener("pointerup", (e) => {
-      // A click, not a drag (OrbitControls rotates / pans on drags).
-      if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 4) return;
+      // A click, not a drag (OrbitControls rotates / pans on drags).  One press, one
+      // click: a release after a press elsewhere (a menu item over the canvas) is not one.
+      const from = down;
+      down = null;
+      if (!from || Math.hypot(e.clientX - from[0], e.clientY - from[1]) > 4) return;
       const r = el.getBoundingClientRect();
       const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
       const ray = new THREE.Raycaster();
