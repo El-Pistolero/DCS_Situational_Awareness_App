@@ -36,6 +36,9 @@ HIST_SECONDS = 20.0
 HIST_STEP = 0.2
 #: A released weapon stays in myWeapons this long after it disappears.
 IMPACT_KEEP = 5.0
+#: A JSOW-A / CBU that opened in the air: its bomblets land ~10-15 s later,
+#: so keep the row long enough for DCS's hit/kill reports to arrive.
+IMPACT_KEEP_DISPENSED = 20.0
 #: Aim altitude: the nearest ground unit to the first-guess impact, within this.
 AIM_SEARCH = 5000.0
 #: Target: the nearest hostile ground unit to the predicted impact, within this.
@@ -59,7 +62,7 @@ _JSOW_DISPENSER_RE = re.compile(r"AGM[-_ ]?154[AB](?![A-Z0-9])", re.I)
 
 class LiveObject:
     __slots__ = ("id", "props", "values", "tags", "category", "first_seen", "last_update",
-                 "trail", "prev", "derived", "source", "hist", "sub")
+                 "trail", "prev", "derived", "source", "hist", "sub", "dead")
 
     def __init__(self, obj_id: str, t: float, source: str = "acmi") -> None:
         self.id = obj_id
@@ -76,6 +79,7 @@ class LiveObject:
         # Aircraft only: positions over the last HIST_SECONDS, every HIST_STEP.
         self.hist: Deque[Tuple[float, float, float, float]] = deque()
         self.sub = False  # a bomblet / submunition (by name)
+        self.dead = False  # destroyed (Tacview Destroyed event or Health 0) but still in the stream
 
     def position(self) -> Optional[Tuple[float, float, float]]:
         v = self.values
@@ -198,6 +202,8 @@ class LiveWorld:
                     obj.sub = _is_submunition(obj)
             obj.values.update(numeric)
             obj.last_update = t
+            if numeric.get("Health") == 0.0:
+                self._mark_dead(obj, t)
             if "Longitude" in numeric or "Latitude" in numeric or "Altitude" in numeric:
                 self._track_motion(obj, t)
             self._note_weapon(obj, t)
@@ -205,16 +211,30 @@ class LiveWorld:
                 if T.is_aircraft(obj.tags):
                     self.focus_id = obj.id
 
+    def _mark_dead(self, obj: LiveObject, t: float) -> None:
+        """A unit destroyed while its object stays in the stream (Tacview keeps wrecks)."""
+        if obj.dead:
+            return
+        obj.dead = True
+        self._wreck(obj, t)
+
+    def _wreck(self, obj: LiveObject, t: float) -> None:
+        if obj.category not in ("fixedwing", "rotorcraft", "ground", "sea", "air"):
+            return
+        if any(r["id"] == obj.id for r in self.recently_destroyed):
+            return
+        pos = obj.position()
+        self.recently_destroyed.append({
+            "id": obj.id, "name": obj.name, "pilot": obj.props.get("Pilot"),
+            "time": t, "lon": pos[0] if pos else None, "lat": pos[1] if pos else None,
+            "coalition": obj.coalition, "category": obj.category,
+        })
+
     def on_remove(self, t: float, obj_id: str) -> None:
         with self._lock:
             obj = self.objects.pop(obj_id, None)
             if obj is not None and obj.category in ("fixedwing", "rotorcraft", "ground", "sea", "air"):
-                pos = obj.position()
-                self.recently_destroyed.append({
-                    "id": obj_id, "name": obj.name, "pilot": obj.props.get("Pilot"),
-                    "time": t, "lon": pos[0] if pos else None, "lat": pos[1] if pos else None,
-                    "coalition": obj.coalition, "category": obj.category,
-                })
+                self._wreck(obj, t)
             elif obj is not None and obj.category == "weapon":
                 self._retire_weapon(obj, t)
             if obj_id == self.focus_id and not self.focus_locked:
@@ -222,6 +242,11 @@ class LiveWorld:
 
     def on_event(self, event: Event) -> None:
         with self._lock:
+            if event.kind == "Destroyed":
+                for oid in event.object_ids:
+                    obj = self.objects.get(oid)
+                    if obj is not None:
+                        self._mark_dead(obj, event.time)
             self.event_seq += 1
             names = [self._label(i) for i in event.object_ids]
             self.events.append({
@@ -482,6 +507,8 @@ class LiveWorld:
                         row["engSrc"] = db["source"]
                 if obj.sub:
                     row["sub"] = True
+                if obj.dead:
+                    row["dead"] = True
                 lock = obj.props.get("LockedTarget")
                 if lock and v.get("LockedTargetMode", 1.0) > 0:
                     row["lock"] = lock
@@ -587,8 +614,8 @@ class LiveWorld:
                             "text": "MISSILE"})
                 continue
 
-            if not _hostile(me, obj):
-                continue
+            if not _hostile(me, obj) or obj.dead:
+                continue  # a destroyed SAM no longer threatens anyone
             locked_me = obj.props.get("LockedTarget") == me.id and obj.values.get("LockedTargetMode", 1.0) > 0
             db = _engagement_db(obj) or {}
             eng = obj.values.get("EngagementRange") or db.get("range")
@@ -728,8 +755,9 @@ class LiveWorld:
         self.impacted[w.id] = (t, launcher, entry)
 
     def _prune_impacted(self, now: float) -> None:
-        for wid, (t_gone, _, _) in list(self.impacted.items()):
-            if not (-1.0 <= now - t_gone <= IMPACT_KEEP):  # also a replay jumping back
+        for wid, (t_gone, _, entry) in list(self.impacted.items()):
+            keep = IMPACT_KEEP_DISPENSED if entry.get("dispensed") else IMPACT_KEEP
+            if not (-1.0 <= now - t_gone <= keep):  # also a replay jumping back
                 del self.impacted[wid]
 
     def _my_weapons(self, me: LiveObject) -> List[Dict[str, Any]]:
@@ -922,6 +950,6 @@ def _dcs_type_to_tags(t: Any, is_self: bool) -> str:
             return "Ground+Vehicle"
         if l1 == 3:  # wsType_Navy
             return "Sea+Watercraft"
-        if l1 == 4:  # wsType_Weapon
-            return "Weapon+Missile"
+        if l1 == 4:  # wsType_Weapon: level2 4 missile, 5 bomb, 6 shell, 7 rocket (NURS)
+            return {5: "Weapon+Bomb", 6: "Projectile+Shell", 7: "Weapon+Rocket"}.get(l2, "Weapon+Missile")
     return "Misc"

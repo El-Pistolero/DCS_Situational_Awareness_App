@@ -379,6 +379,7 @@ async function copyAs(tg, what) {
     // A surface unit's altitude is its ground elevation: what a steerpoint needs.
     if (isSurface(p) && isNum(p.alt)) txt += ` · elev ${fmtAlt(p.alt)}`;
   }
+  if (!txt) return; // e.g. MGRS does not exist beyond 84° N / 80° S
   const ok = await copyText(txt);
   flash(ok ? `Copied: ${txt}` : `Copy failed: ${txt}`);
 }
@@ -412,7 +413,7 @@ function describe(tg) {
     lines.push([fmtSpeed(v.TAS ?? d.gs), fmtAlt(o.alt)].join(" · "));
     const w = myWeapons(snap).find((x) => x.id === o.id);
     if (w) {
-      const res = w.impacted ? weaponResult(w) || "impact" : `TTI ${isNum(w.tti) ? `~${mmss(w.tti)}` : "—"}`;
+      const res = w.impacted ? weaponResult(w) || (w.dispensed ? "opened" : "impact") : `TTI ${isNum(w.tti) ? `~${mmss(w.tti)}` : "—"}`;
       lines.push(`${res}${w.targetName ? ` → ${w.targetName}` : ""}${w.estimated ? " (estimate)" : ""}`);
     }
   } else {
@@ -1284,7 +1285,9 @@ function drawMyWeapons(ctx, m, snap, byId) {
       ctx.strokeStyle = col;
       ctx.lineWidth = 1.6;
       ctx.beginPath(); ctx.arc(ix, iy, 6, 0, Math.PI * 2); ctx.stroke();
-      tag(`${label} · ${res || "IMPACT"}${w.targetName ? ` ${w.targetName}` : ""}`, ix, iy, col);
+      // A JSOW-A / CBU that opened: the point is where it opened, not where anything hit.
+      const over = w.dispensed && !res ? " over" : "";
+      tag(`${label} · ${res || (w.dispensed ? "OPENED" : "IMPACT")}${w.targetName ? `${over} ${w.targetName}` : ""}`, ix, iy, col);
       continue;
     }
     const o = byId.get(w.id) || snap.objects.find((x) => x.id === w.id);
@@ -1533,7 +1536,7 @@ function renderWeapons(snap) {
   const order = [...list].sort((a, b) => (!!a.impacted - !!b.impacted) || ((a.tti ?? 1e9) - (b.tti ?? 1e9)));
   const selId = S.sel?.kind === "object" ? S.sel.id : null;
   for (const w of order) {
-    const res = w.impacted ? weaponResult(w) || "IMPACT" : null;
+    const res = w.impacted ? weaponResult(w) || (w.dispensed ? "OPENED" : "IMPACT") : null;
     const elapsed = isNum(snap.time) && isNum(w.releasedAt) ? snap.time - w.releasedAt : null;
     const frac = w.impacted ? 1 : isNum(elapsed) && isNum(w.tti) && elapsed + w.tti > 0 ? elapsed / (elapsed + w.tti) : null;
     box.append(el("div", { class: `wif-row${w.impacted ? " done" : ""}${w.id === selId ? " sel" : ""}`, "data-id": w.id, title: w.estimated ? "Impact point and time are estimates" : "" },

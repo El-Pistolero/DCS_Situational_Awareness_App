@@ -288,3 +288,45 @@ class DcsEventAndDestroyedTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WrecksAndTypes(unittest.TestCase):
+    def test_destroyed_event_makes_a_wreck_and_ends_the_threat(self):
+        from dcs_sa.acmi.model import Event
+        w = LiveWorld(["Ethan"])
+        w.on_frame(0.0)
+        w.on_object(0.0, "101", _pos(LON0, LAT0, 3000.0, Yaw=90.0), F16)
+        w.on_object(0.0, "611", _pos(LON0 + 0.05, LAT0, 150.0, EngagementRange=30000.0),
+                    {"Type": "Ground+AntiAircraft", "Name": "SA-11 Buk LN 9A310M1", "Coalition": "Enemies"})
+        self.assertTrue(any(t["id"] == "611" for t in w.snapshot()["threats"]))
+        w.on_event(Event(time=5.0, kind="Destroyed", object_ids=["611"]))
+        snap = w.snapshot()
+        self.assertFalse(any(t["id"] == "611" for t in snap["threats"]))
+        [row] = [r for r in snap["destroyed"] if r["id"] == "611"]
+        self.assertEqual((row["category"], row["coalition"]), ("ground", "Enemies"))
+        self.assertTrue(next(o for o in snap["objects"] if o["id"] == "611")["dead"])
+        # Its later removal does not add a second wreck row.
+        w.on_remove(9.0, "611")
+        self.assertEqual(sum(r["id"] == "611" for r in w.snapshot()["destroyed"]), 1)
+
+    def test_health_zero_counts_as_destroyed(self):
+        w = LiveWorld(["Ethan"])
+        w.on_object(0.0, "602", _pos(LON0, LAT0, 150.0), {"Type": "Ground+Vehicle", "Name": "BTR-80", "Coalition": "Enemies"})
+        w.on_object(3.0, "602", {"Health": 0.0}, {})
+        self.assertEqual([r["id"] for r in w.snapshot()["destroyed"]], ["602"])
+
+    def test_opened_dispenser_row_outlives_a_plain_impact(self):
+        from dcs_sa.telemetry import live_world as LW
+        s = JsowGlide()
+        s.w.on_remove(JsowGlide.END + 0.1, "3002")
+        s.w.impacted["3002"][2]["dispensed"] = True
+        for dt, alive in ((LW.IMPACT_KEEP + 3.0, True), (LW.IMPACT_KEEP_DISPENSED + 1.0, False)):
+            s.w.on_frame(JsowGlide.END + dt)
+            s.w.time = JsowGlide.END + dt
+            self.assertEqual(_mine(s.w, "3002") is not None, alive, dt)
+
+    def test_bridge_weapon_types(self):
+        from dcs_sa.telemetry.live_world import _dcs_type_to_tags
+        self.assertEqual(_dcs_type_to_tags({"level1": 4, "level2": 5}, False), "Weapon+Bomb")
+        self.assertEqual(_dcs_type_to_tags({"level1": 4, "level2": 7}, False), "Weapon+Rocket")
+        self.assertEqual(_dcs_type_to_tags({"level1": 4, "level2": 4}, False), "Weapon+Missile")
