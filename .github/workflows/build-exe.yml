@@ -32,6 +32,15 @@ jobs:
         with:
           python-version: "3.11"
       - run: python -m pip install -r requirements-desktop.txt
+      # Every push to the default branch becomes a release, so each build needs
+      # its own version (see packaging/build_version.py).
+      - name: Work out this build's version
+        id: ver
+        shell: bash
+        run: |
+          v=$(python packaging/build_version.py "${{ github.run_number }}" "${{ github.ref_type == 'tag' && github.ref_name || '' }}")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "building $v"
       - run: python -m PyInstaller --noconfirm --clean dcs-sa.spec
       - name: Smoke test the exe's bundled code
         shell: pwsh
@@ -48,8 +57,7 @@ jobs:
             choco install innosetup -y --no-progress
             $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           } else { $iscc = $iscc.Source }
-          $version = (python -c "import dcs_sa; print(dcs_sa.__version__)")
-          & $iscc "/DAppVersion=$version" packaging\installer.iss
+          & $iscc "/DAppVersion=${{ steps.ver.outputs.version }}" packaging\installer.iss
           if (-not (Test-Path dist\DCS-SA-Setup.exe)) { throw "installer was not built" }
       - uses: actions/upload-artifact@v4
         with:
@@ -57,10 +65,21 @@ jobs:
           path: |
             dist/DCS-SA-Setup.exe
             dist/DCS-SA.exe
-      - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/v')
+      # A release per successful build of the default branch: it is the download
+      # link that needs no GitHub login, and what the app's update check reads.
+      - name: Publish the release
+        if: github.ref_type == 'tag' || github.ref_name == github.event.repository.default_branch
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: DCS SA ${{ steps.ver.outputs.version }}
+          body: |
+            ${{ github.event.head_commit.message }}
+
+            ---
+            Download **DCS-SA-Setup.exe** below and run it. It replaces any older
+            version and keeps your recordings, settings and the DCS bridge.
+            First time here? Start with [GETTING_STARTED.md](https://github.com/${{ github.repository }}/blob/HEAD/GETTING_STARTED.md).
           files: |
             dist/DCS-SA-Setup.exe
             dist/DCS-SA.exe

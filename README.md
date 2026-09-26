@@ -30,11 +30,11 @@ It reads **Tacview** data. Tacview is the program; **ACMI** (`.acmi`) is its fil
 It's a normal desktop app: install it once, then open it from the **DCS SA** icon on your desktop.
 
 **Option A: the installer (recommended)**
-1. On GitHub open **Actions → Build Windows exe** (you must be signed in), click the newest run with a green tick, and under **Artifacts** download **DCS-SA-windows** (a zip with `DCS-SA-Setup.exe` and `DCS-SA.exe`). If there is a Release, `DCS-SA-Setup.exe` is attached there too.
+1. Download `DCS-SA-Setup.exe` from the [latest release](https://github.com/El-Pistolero/DCS_Situational_Awareness_App/releases/latest) (under **Assets**; no GitHub account needed). Every push to the default branch publishes one automatically.
 2. Unzip it and run `DCS-SA-Setup.exe` (on "Windows protected your PC", click **More info → Run anyway**: the exe isn't code-signed). It installs for your Windows user only (no admin rights needed) and adds **DCS SA** (the debrief) and **DCS SA Live** (straight into the second-screen view) to the Start menu, plus a **DCS SA** desktop icon; tick the box for a **DCS SA Live** desktop icon too.
 3. Double-click **DCS SA**. It opens in its own window; close the window to quit.
 
-**Option B: the single exe.** The same download has `DCS-SA.exe`. Put it where you want to keep it, then double-click it. The first time it runs, it adds the **DCS SA** icons to your desktop and Start menu (pointing at where it is then, so don't move it afterwards). Use either the installer or the single exe, not both; if the installer has been used, the single exe leaves the icons alone.
+**Option B: the single exe.** The same release has `DCS-SA.exe`. Put it where you want to keep it, then double-click it. The first time it runs, it adds the **DCS SA** icons to your desktop and Start menu (pointing at where it is then, so don't move it afterwards). Use either the installer or the single exe, not both; if the installer has been used, the single exe leaves the icons alone.
 
 **Option C: run from source**
 1. Install [Python 3.10+](https://www.python.org/downloads/) (tick *Add to PATH*).
@@ -42,7 +42,7 @@ It's a normal desktop app: install it once, then open it from the **DCS SA** ico
 
 To build the exe yourself, double-click `build_exe.bat`; the result is `dist\DCS-SA.exe`.
 
-**Updates.** The app asks GitHub once an hour whether a newer *release* exists and says so on the Flight debrief page, with a button that opens the release page. It never downloads or runs anything by itself. Turn it off with `update_check = false` in `dcs-sa.toml`. Pushing a `v*` tag builds the installer and attaches it to a release.
+**Updates.** The app asks GitHub once an hour whether a newer *release* exists and says so on the Flight debrief page, with a button that opens the release page. It never downloads or runs anything by itself. Turn it off with `update_check = false` in `dcs-sa.toml`. Every successful build of the default branch publishes a release, versioned `<major>.<minor>.<CI run number>` (see `packaging/build_version.py`); pushing a `v*` tag releases that exact version instead.
 
 ## Set up DCS (one time)
 

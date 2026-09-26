@@ -305,6 +305,80 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(st["download"], "https://e/2")  # the installer, not the loose exe
 
 
+class BuildVersionTests(unittest.TestCase):
+    """packaging/build_version.py: what CI stamps into each build."""
+
+    def setUp(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "build_version", Path(__file__).resolve().parent.parent / "packaging" / "build_version.py")
+        self.bv = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.bv)
+
+    def test_run_number_becomes_the_patch(self):
+        src = '__version__ = "0.1.0"\n'
+        self.assertEqual(self.bv.build_version(src, "47"), "0.1.47")
+        self.assertEqual(self.bv.build_version('__version__ = "2.10.3"\n', "5"), "2.10.5")
+
+    def test_a_tag_wins_over_the_run_number(self):
+        self.assertEqual(self.bv.build_version('__version__ = "0.1.0"\n', "47", "v1.2.3"), "1.2.3")
+
+    def test_versions_only_ever_go_up(self):
+        from dcs_sa.update import is_newer
+
+        src = '__version__ = "0.1.0"\n'
+        seq = [self.bv.build_version(src, str(n)) for n in (46, 47, 48)]
+        self.assertTrue(all(is_newer(b, a) for a, b in zip(seq, seq[1:])), seq)
+        # A later minor keeps rising even though the run number carries on.
+        self.assertTrue(is_newer(self.bv.build_version('__version__ = "0.2.0"\n', "49"), seq[-1]))
+
+    def test_a_build_does_not_think_itself_out_of_date(self):
+        from dcs_sa.update import is_newer
+
+        # What CI publishes as the tag is what the build reports as its version.
+        released = self.bv.build_version('__version__ = "0.1.0"\n', "47")
+        self.assertFalse(is_newer(released, released))
+
+    def test_the_stamp_is_written_back(self):
+        import shutil
+        import subprocess
+        import sys
+        import tempfile
+
+        root = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory() as d:
+            copy = Path(d) / "repo"
+            (copy / "packaging").mkdir(parents=True)
+            (copy / "dcs_sa").mkdir()
+            shutil.copy(root / "packaging" / "build_version.py", copy / "packaging")
+            (copy / "dcs_sa" / "__init__.py").write_text('"""doc."""\n\n__version__ = "0.1.0"\n')
+            out = subprocess.run([sys.executable, "packaging/build_version.py", "47"],
+                                 cwd=copy, capture_output=True, text=True, check=True)
+            self.assertEqual(out.stdout.strip(), "0.1.47")
+            text = (copy / "dcs_sa" / "__init__.py").read_text()
+            self.assertIn('__version__ = "0.1.47"', text)
+            self.assertIn('"""doc."""', text)   # nothing else touched
+
+    def test_a_tag_build_leaves_the_source_alone(self):
+        import shutil
+        import subprocess
+        import sys
+        import tempfile
+
+        root = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory() as d:
+            copy = Path(d) / "repo"
+            (copy / "packaging").mkdir(parents=True)
+            (copy / "dcs_sa").mkdir()
+            shutil.copy(root / "packaging" / "build_version.py", copy / "packaging")
+            (copy / "dcs_sa" / "__init__.py").write_text('__version__ = "0.1.0"\n')
+            out = subprocess.run([sys.executable, "packaging/build_version.py", "47", "v9.9.9"],
+                                 cwd=copy, capture_output=True, text=True, check=True)
+            self.assertEqual(out.stdout.strip(), "9.9.9")
+            self.assertIn('__version__ = "0.1.0"', (copy / "dcs_sa" / "__init__.py").read_text())
+
+
 class LiveSessionTests(unittest.TestCase):
     def test_reset_starts_a_new_session(self):
         w = LiveWorld()

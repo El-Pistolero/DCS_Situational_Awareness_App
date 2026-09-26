@@ -8,7 +8,6 @@ This guide assumes you have never used GitHub or installed an app from it. Follo
 - A Windows 10 or Windows 11 PC (the one you play DCS on).
 - DCS World.
 - **Tacview** (the free version), which puts the flight recorder into DCS. Step 4 shows how. You never have to open the Tacview program itself, and you don't need its paid editions.
-- A free GitHub account, only to download the app (Step 1 shows how to make one).
 - An internet connection for the map pictures. Without one the app still works, but the map is dark with only grid lines.
 
 You do **not** need to install Python, a web browser, or any paid Tacview edition.
@@ -17,29 +16,25 @@ You do **not** need to install Python, a web browser, or any paid Tacview editio
 
 ## Step 1: Download the app
 
-The app is built automatically every time the project changes. You download the newest build from the project's GitHub page.
+Every time the app changes, a new version is published automatically. You just take the newest one. No GitHub account needed.
 
-1. Go to **https://github.com** and click **Sign in** at the top right. No account yet? Click **Sign up** there, make a free one, then sign in. GitHub only lets signed-in people download builds.
-2. Open this page: **[DCS SA builds that worked](https://github.com/El-Pistolero/DCS_Situational_Awareness_App/actions/workflows/build-exe.yml?query=is%3Asuccess)**. It is titled **Build Windows exe** and lists the builds, newest at the top.
-3. Each row has a bold title that describes a change to the app (for example *"Refuse requests from other websites…"*). The words don't matter. Click the bold title of the **top row**. It has a green circle with a white tick on its left.
-   - A yellow dot means that build is still being made. It takes a few minutes. Use the next row down with a green tick, or wait and refresh the page (press **F5**).
-4. On the page that opens, scroll down to the section called **Artifacts**. It has one row, **DCS-SA-windows**.
-5. Click **DCS-SA-windows**. Your browser downloads **DCS-SA-windows.zip** (about 30 MB). It appears in the browser's download list (top right in Edge and Chrome). Wait until it has finished.
+1. Open this page: **[DCS SA — latest version](https://github.com/El-Pistolero/DCS_Situational_Awareness_App/releases/latest)**
+2. Scroll down to **Assets** and click **DCS-SA-Setup.exe**. Your browser downloads it (about 30 MB). It appears in the browser's download list (top right in Edge and Chrome). Wait until it has finished.
    - If the browser says the file *isn't commonly downloaded* or *could be dangerous*, see [If something doesn't work](#if-something-doesnt-work) at the end.
-   - Builds are kept for 90 days. If the Artifacts section says the build has *expired*, ask the project owner for a new one (the owner clicks **Run workflow** on the Build Windows exe page).
+   - `DCS-SA.exe` is next to it in the list. Ignore that one; it's the app without an installer.
+
+That's the whole download. There is nothing to unzip.
+
+> **Page not found, or no Assets?** A version is probably still being built, which takes a few minutes. Wait and refresh (**F5**).
 
 ## Step 2: Install it
 
-1. Open **File Explorer** (the yellow folder icon on the taskbar, or hold the **Windows key** and press **E**) and click **Downloads** on the left. Find **DCS-SA-windows**, which has a zipper on its icon. Windows usually hides the `.zip` at the end of the name. If you downloaded it before, the newest one is called **DCS-SA-windows (1)** or similar.
-2. Right-click it and choose **Extract All…**, then click **Extract**. A new window opens with two files. Windows usually hides the `.exe` ending, so they may just be called:
-   - **DCS-SA-Setup**: the installer. Use this one.
-   - **DCS-SA**: ignore this one.
-
-   If only one file is there, your antivirus removed the other: see [If something doesn't work](#if-something-doesnt-work).
-3. Double-click **DCS-SA-Setup**.
-4. Windows will probably show a blue box: **Windows protected your PC**. This is normal for small free apps that aren't code-signed (signing costs money every year). Click the small **More info** link. It shows *Publisher: Unknown publisher*, which is expected. Then click **Run anyway**.
+1. Open your **Downloads** folder: in File Explorer (the yellow folder icon on the taskbar, or hold the **Windows key** and press **E**), click **Downloads** on the left. You can also click **Show in folder** next to the file in your browser's download list.
+2. Find **DCS-SA-Setup** and double-click it. Windows usually hides the `.exe` at the end of the name. If you have downloaded it before, the newest one is called **DCS-SA-Setup (1)** or similar.
+   - Not there at all? Your antivirus may have removed it: see [If something doesn't work](#if-something-doesnt-work).
+3. Windows will probably show a blue box: **Windows protected your PC**. This is normal for small free apps that aren't code-signed (signing costs money every year). Click the small **More info** link. It shows *Publisher: Unknown publisher*, which is expected. Then click **Run anyway**.
    - If a different box says **Smart App Control blocked an app**, there is no Run anyway button: see [If something doesn't work](#if-something-doesnt-work).
-5. The installer starts. It installs for your Windows user only, so it never asks for an administrator password. Click through it like this:
+4. The installer starts. It installs for your Windows user only, so it never asks for an administrator password. Click through it like this:
    - **Select Destination Location**: leave it as it is and click **Next**.
    - **Select Additional Tasks**: **Put a DCS SA icon on the desktop** is already ticked. If you have a second monitor for flying, also tick **Also a "DCS SA Live" icon for the second screen**. Click **Next**.
    - **Ready to Install**: click **Install**. It takes a few seconds.
@@ -131,7 +126,7 @@ DCS SA remembers this and connects again by itself the next time you open it. To
 
 DCS SA checks once an hour whether a newer version has been released, and tells you on the **Flight debrief** page: *"DCS SA 0.2.0 is out (you have 0.1.0)"*, with a **Get it** button. It never downloads or installs anything by itself.
 
-1. Click **Get it**. Your browser opens the release page. Download **DCS-SA-Setup.exe** under **Assets** (no GitHub login needed for a release).
+1. Click **Get it**. Your browser opens the download page. Click **DCS-SA-Setup.exe** under **Assets**.
 2. Close DCS SA.
 3. Double-click the downloaded **DCS-SA-Setup** and click through the installer as before. It replaces the old version.
 
@@ -154,7 +149,7 @@ Don't want it looking for updates? Make a file called `dcs-sa.toml` next to the 
 | What you see | What to do |
 |---|---|
 | Your browser blocks the download | **Edge:** point at the download, click **⋯** → **Keep** → **Show more** → **Keep anyway**. **Chrome:** open the download list and choose **Keep** (or **Download suspicious file**). |
-| Windows Security says it found a threat in DCS-SA, or a file vanished from the folder | Some antivirus tools wrongly flag small unsigned apps. Only if you got it from this project's page: open **Windows Security → Virus & threat protection → Protection history**, click the DCS-SA entry, then **Actions → Allow on device** (or **Restore**). Then extract the zip again. |
+| Windows Security says it found a threat in DCS-SA, or a file vanished from the folder | Some antivirus tools wrongly flag small unsigned apps. Only if you got it from this project's page: open **Windows Security → Virus & threat protection → Protection history**, click the DCS-SA entry, then **Actions → Allow on device** (or **Restore**). Then download it again. |
 | **Windows protected your PC** when starting the installer | Click **More info**, then **Run anyway** (Step 2). |
 | **Smart App Control blocked an app** (Windows 11) | Smart App Control only lets code-signed apps run and DCS SA isn't signed, so there is no Run anyway. The only way round it is to turn it off in **Windows Security → App & browser control → Smart App Control settings**. Windows may not let you turn it back on without resetting the PC, so decide for yourself. |
 | Double-clicking the icon does nothing | Wait 10 seconds: every start takes a few seconds. Still nothing? Check **Windows Security → Protection history** in case the antivirus removed DCS SA (see above), then restart the PC and try again. |
