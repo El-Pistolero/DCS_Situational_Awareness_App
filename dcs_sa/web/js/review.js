@@ -2293,7 +2293,9 @@ function renderObjectList() {
     if (chip === "weapons" && o.category !== "weapon") continue;
     if (chip === "hostile" && !(me && isHostile(me, o))) continue;
     if (chip === "alive" && S.deaths.has(o.id) && S.t >= S.deaths.get(o.id)) continue;
-    const g = o.category === "weapon" ? "Weapons" : `${o.coalition || "Unknown"} · ${surface ? "surface" : "air"}`;
+    const g = o.category === "weapon" ? "Weapons"
+      : o.category === "person" ? "Ejected pilots"
+      : `${o.coalition || "Unknown"} · ${surface ? "surface" : "air"}`;
     if (!groups.has(g)) groups.set(g, []);
     groups.get(g).push(o);
   }

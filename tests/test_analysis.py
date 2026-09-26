@@ -82,5 +82,52 @@ class SampleSortieAnalysis(unittest.TestCase):
         self.assertAlmostEqual(times[0], 580.0, delta=1.0)
 
 
+
+class EjectedPilotTests(unittest.TestCase):
+    """An ejected pilot is a person falling, not an air contact or a target."""
+
+    def _rec(self, lines):
+        import tempfile
+
+        from dcs_sa.acmi import parse_file
+
+        with tempfile.NamedTemporaryFile("w", suffix=".acmi", delete=False, encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+            path = fh.name
+        self.addCleanup(lambda: os.unlink(path))
+        return parse_file(path)
+
+    def test_a_parachutist_is_not_an_aircraft(self):
+        from dcs_sa.acmi import types as T
+
+        chute = T.parse_tags("Ground+Light+Human+Air+Parachutist")
+        self.assertEqual(T.category(chute), "person")
+        # Infantry is still a target worth strafing.
+        self.assertEqual(T.category(T.parse_tags("Ground+Light+Human+Infantry")), "ground")
+        self.assertEqual(T.category(T.parse_tags("Air+FixedWing")), "fixedwing")
+
+    def test_a_missile_is_not_credited_with_shooting_at_a_pilot(self):
+        """The pilot appears where the jet died, right by the missile's last point."""
+        from dcs_sa.analysis.report import analyze
+
+        lines = ["FileType=text/acmi/tacview", "FileVersion=2.2",
+                 "0,ReferenceLongitude=41,ReferenceLatitude=41,ReferenceTime=2026-01-01T00:00:00Z", "#0",
+                 "101,T=0.00|0.00|6000,Name=F-16C_50,Pilot=Me,Coalition=Allies,Type=Air+FixedWing",
+                 "201,T=0.30|0.00|6000,Name=MiG-29S,Pilot=Red,Coalition=Enemies,Type=Air+FixedWing"]
+        for i, t in enumerate((1.0, 2.0, 3.0)):
+            lon = 0.1 * (i + 1)
+            lines += [f"#{t}", f"4001,T={lon:.4f}|0.00|6000,Name=AIM_120C,Coalition=Allies,Type=Weapon+Missile"]
+        # The jet dies and a pilot appears at the same spot.
+        lines += ["#4", "-201", "-4001",
+                  "901,T=0.30|0.00|5900,Name=PILOT_F16,Coalition=Enemies,Type=Ground+Light+Human+Air+Parachutist"]
+        lines += ["#8", "901,T=0.30|0.00|5000"]
+        rep = analyze(self._rec(lines))
+        cats = {o["id"]: o["category"] for o in rep["objects"]}
+        self.assertEqual(cats.get("901"), "person")
+        for shot in rep["weapons"]["shots"]:
+            self.assertNotEqual(shot.get("targetName"), "PILOT_F16", shot)
+        # And it is not counted among the aircraft.
+        self.assertNotIn("901", {a["id"] for a in rep["aircraft"]})
+
 if __name__ == "__main__":
     unittest.main()

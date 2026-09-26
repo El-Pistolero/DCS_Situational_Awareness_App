@@ -47,6 +47,18 @@ def is_air(tags: FrozenSet[str]) -> bool:
     return "Air" in tags
 
 
+def is_person(tags: FrozenSet[str]) -> bool:
+    """An ejected pilot under a parachute.
+
+    DCS tags them "Ground+Light+Human+Air+Parachutist", and that "Air" made
+    them aircraft: they showed up in the aircraft list, and a missile whose
+    target had to be guessed could be credited with shooting at one.  They
+    are people falling out of the sky, not contacts.  Infantry is left alone:
+    that is a target you can legitimately attack.
+    """
+    return "Parachutist" in tags
+
+
 def is_aircraft(tags: FrozenSet[str]) -> bool:
     """An air vehicle with a crew - excludes missiles that are also tagged Air."""
     return "Air" in tags and _has_any(tags, ("FixedWing", "Rotorcraft"))
@@ -111,6 +123,8 @@ def category(tags: FrozenSet[str]) -> str:
         return "clutter"
     if is_weapon(tags):
         return "weapon"
+    if is_person(tags):
+        return "person"
     if is_aircraft(tags):
         return "rotorcraft" if "Rotorcraft" in tags else "fixedwing"
     if is_air(tags):
