@@ -106,7 +106,8 @@ This shows your aircraft, threats and missiles live on a second monitor while yo
    - If the pop-up says **No DCS Saved Games folder found**, start DCS once, quit it, and try again.
 4. Start DCS. If it was already running, quit it completely, back to the Windows desktop, then start it again: DCS only reads the new scripts when it starts, so restarting just the mission isn't enough.
 5. Start a mission and get into the cockpit. Within a few seconds the live view shows your jet, and the text at the top says **DCS bridge: receiving**.
-6. To put it on your second monitor, drag the window there by its title bar, then double-click the title bar to make it fill the screen. Click **Glance** at the top (or press **G**) for a big-text layout you can read at a glance during a fight.
+6. On the right, under the threat list, a **Radar** page shows what your radar would be painting: azimuth across, range up the side, altitude in thousands of feet beside each contact, and the target DCS reports as locked filled in and named. It is worked out from the scan volume DCS reports, not read from your radar, so treat it as "what the radar should be seeing".
+7. To put it on your second monitor, drag the window there by its title bar, then double-click the title bar to make it fill the screen. Click **Glance** at the top (or press **G**) for a big-text layout you can read at a glance during a fight.
 
 Flying in VR? The live view is a window on your monitor, so you won't see it in the headset. The bridge still makes your debriefs more accurate.
 

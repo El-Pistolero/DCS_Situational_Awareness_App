@@ -5,6 +5,7 @@ import {
   sideColor, units, wrap180, M_TO_FT,
 } from "./util.js";
 import { LAYERS, TacticalMap } from "./map.js";
+import { drawBScope, readout as scopeReadout, scopeCaption } from "./bscope.js";
 import { drawEdgePointers, drawScene } from "./symbols.js";
 import { Scene3D } from "./scene3d.js";
 import { bindShortcuts } from "./keys.js";
@@ -528,6 +529,7 @@ async function openSetup() {
 }
 import("./settings.js").then((m) => m.wireSettingsButton("btnSettings"));
 import("./console.js").then((m) => m.reportPageErrors());
+S.debug = new URLSearchParams(location.search).has("debug");
 $("btnSetup").onclick = openSetup;
 $("btnSetup2").onclick = openSetup;
 const post = (body) => api("/api/live/source", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -740,6 +742,9 @@ function onSnapshot(snap, { redraw = false } = {}) {
   renderEvents();
   renderStores(snap.ownship);
   renderRWR(snap.ownship, me);
+  renderScope(snap, me);
+  // Test hook (?debug): the snapshot the panels were drawn from.
+  if (S.debug) window.__liveSnap = snap;
   renderMapChips();
   sel.refresh();
   if (S.glanceAuto && Date.now() - S.lastMissileAt > 15000) setGlance(false);
@@ -1687,6 +1692,26 @@ function renderStores(own) {
   }
   if (isNum(p.gun)) box.append(el("div", { class: "st" }, "Gun ", el("b", {}, p.gun)));
   for (const [name, a] of agg) box.append(el("div", { class: `st${a.sel ? " sel" : ""}`, title: name }, name.slice(0, 14), " ", el("b", {}, a.count)));
+}
+
+/**
+ * The radar page: what the radar would be painting, drawn from the scan
+ * volume DCS gives us.  Not DCS's own contact list - it does not export one.
+ */
+function renderScope(snap, me) {
+  const sec = $("scopeSec");
+  const data = me ? scopeReadout(me, snap.objects || []) : null;
+  if (!data) { sec.classList.add("hidden"); return; }
+  sec.classList.remove("hidden");
+  $("scopeSrc").textContent = scopeCaption(data);
+  const c = $("scope");
+  const r = c.getBoundingClientRect();
+  if (!r.width) return;
+  const dpr = window.devicePixelRatio || 1;
+  c.width = r.width * dpr; c.height = r.height * dpr;
+  const ctx = c.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  drawBScope(ctx, r.width, r.height, data, { metric: units.metric });
 }
 
 function renderRWR(own, me) {

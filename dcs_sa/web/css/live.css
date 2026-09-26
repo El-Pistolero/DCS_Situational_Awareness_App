@@ -46,6 +46,9 @@ body.live { overflow: hidden; }
 .lv-checks li.ok::before { content: "✓ "; }
 .lv-checks li.bad { color: var(--orange); }
 .lv-checks li.bad::before { content: "✗ "; }
+.scope { width: 100%; height: 150px; display: block; background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 6px; }
+#scopeSec h3 small { font-weight: normal; font-size: 10px; margin-left: 6px; }
 .lv-empty a, .lv-guide { color: var(--blue); }
 .lv-dialog .warn { margin-top: 6px; color: var(--orange); }
 .lv-guide { font-size: 13px; font-weight: normal; margin-left: 10px; }
