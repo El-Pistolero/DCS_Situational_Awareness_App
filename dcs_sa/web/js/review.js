@@ -837,7 +837,7 @@ function onTimeChange(force = false) {
       padlockId: S.cam === "padlock" ? padlockTarget() : null,
       t: S.t, strikeLayers: strikeLayers(), stalks: cfg("stalks"), rings: ringMode3d(), pinned: S.pinned,
       lockLines: cfg("lockLines"), dim: S.isolate ? S.isolate.ids : null,
-      weaponCamHoldAt: wc && wc.held ? wc.hold : null });
+      weaponCamHoldAt: wc && wc.held ? wc.hold : null, heat: heat3d() });
     scene3d.setPointers(cfg("pointers") === "off" ? [] : threatsAt(S.t, focus));
   }
   updateScrubber();
@@ -1687,6 +1687,16 @@ function seekerShown(x) {
   return [sh.weaponId, sh.launcherId, sh.targetId].includes(S.selected) || (!!S.me && sh.targetId === S.me);
 }
 
+/** Engine heat for the 3D plumes: the jets that have a heat lobe on the map. */
+function heat3d() {
+  if (!S.ir) return null;
+  const ids = heatLobeIds(S.t);
+  return (id) => (ids.has(id) ? heatNow(S.ir.heat[id], S.t) : null);
+}
+
+/** The reach estimate's fallback seeker (DCS AIM_9: SeekerSensivityDistance 20 km). */
+const REF_SEEKER = { key: "AIM_9", short: "AIM-9M", ssd: 20000 };
+
 /** Heat lobes, IR seekers and the seeker-reach estimate (the IR overlay). */
 function drawIR(ctx, m, objs, phase) {
   if (!S.ir) return;
@@ -1718,18 +1728,18 @@ function drawIR(ctx, m, objs, phase) {
       done.add(o.id);
       items.push({ target: o, sk: x.sk, hn: heatNow(S.ir.heat[o.id], S.t) });
     }
-    // The selected bandit, against the IR missile I fired most in this recording.
+    // The selected jet, against the IR missile its enemies fired most in this recording (else an AIM-9M).
     const so = byId.get(S.selected);
-    const me = S.objects.get(S.me);
-    if (so && AIR.includes(so.category) && !done.has(so.id) && me && isHostile(me, so)) {
-      const mine = S.ir.shots.filter((x) => x.s.launcherId === S.me);
-      if (mine.length) {
-        const counts = new Map();
-        for (const x of mine) counts.set(x.sk.key, (counts.get(x.sk.key) || 0) + 1);
-        const key = [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
-        const sk = mine.find((x) => x.sk.key === key).sk;
-        items.push({ target: so, sk, hn: heatNow(S.ir.heat[so.id], S.t), label: `if you fired an ${sk.short || sk.display || key}` });
+    if (so && AIR.includes(so.category) && !done.has(so.id)) {
+      const counts = new Map();
+      for (const x of S.ir.shots) {
+        const l = x.s.launcherId && S.objects.get(x.s.launcherId);
+        if (l && isHostile(l, so)) counts.set(x.sk.key, (counts.get(x.sk.key) || 0) + 1);
       }
+      const best = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+      const sk = best ? S.ir.shots.find((x) => x.sk.key === best[0]).sk : REF_SEEKER;
+      items.push({ target: so, sk, hn: heatNow(S.ir.heat[so.id], S.t),
+        label: best ? `against the ${sk.short || sk.key} its enemies fired` : "no IR shots at it here: AIM-9M as reference" });
     }
     if (items.length) drawReach(ctx, m, items, { labelScale: scale });
   }

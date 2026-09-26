@@ -696,6 +696,9 @@ function onSnapshot(snap, { redraw = false } = {}) {
       focusId: snap.focus, selectedId: S.sel?.kind === "object" ? S.sel.id : null, radar: S.glance ? "focus" : cfg("radar"),
       rounds: liveRounds(snap), padlockId: S.cam === "padlock" ? padlockTarget(snap) : null,
       rings: ringMode3d(), pinned: new Set([...S.pinned, ...spiking]),
+      // My engine heat while a heat-seeker is inbound (a flame only when afterburner is known).
+      heat: cfg("irHeat") && snap.heat && irInbound(snap).length
+        ? (id) => (id === snap.focus ? { c: snap.heat.ab && snap.heat.irAB ? snap.heat.irAB : snap.heat.ir, lit: snap.heat.ab } : null) : null,
     });
     scene3d.setPointers(pointerList(snap).map((p) => ({ id: p.id, color: p.color, text: p.text })));
   }

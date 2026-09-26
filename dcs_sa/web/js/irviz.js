@@ -312,9 +312,17 @@ export function drawReach(ctx, map, items, { labelScale = 1 } = {}) {
   ctx.save();
   ctx.font = `${Math.round(11 * labelScale)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
   ctx.textBaseline = "middle";
+  const mpp = map.metersPerPixel();
   for (const it of items) {
     const o = it.target, ssd = it.sk?.ssd;
     if (!o || !isNum(ssd) || !isNum(o.hdg) || !it.hn) continue;
+    const tailR0 = ssd * Math.sqrt(it.hn.c * aspectFactor(0));
+    if (tailR0 / mpp > 3 * Math.max(map.w, map.h)) {
+      // Far bigger than the screen: say so instead of drawing lines off it.
+      const [x, y] = map.project(o.lon, o.lat);
+      text(ctx, `IR reach off-screen (~${fmtDist(tailR0)} tail, est.)`, x + 14, y + 30, AMBER);
+      continue;
+    }
     const draw = (c, dash, alpha) => {
       ctx.beginPath();
       for (let k = 0; k <= 72; k++) {
@@ -341,8 +349,8 @@ export function drawReach(ctx, map, items, { labelScale = 1 } = {}) {
     const [nl, nla] = destination(o.lon, o.lat, o.hdg, noseR);
     const [tx, ty] = map.project(tl, tla), [nx, ny] = map.project(nl, nla);
     const name = it.sk.short || it.sk.display || it.sk.key || "IR missile";
-    text(ctx, `~${fmtDist(tailR)} tail · ${name} seeker reach (est.)`, tx + 6, ty, AMBER);
-    text(ctx, `~${fmtDist(noseR)} nose`, nx + 6, ny, AMBER);
+    text(ctx, `~${fmtDist(tailR)} tail · ~${fmtDist(noseR)} nose (est.) · ${name} seeker reach, not launch range`, tx + 6, ty, AMBER);
+    text(ctx, "nose", nx + 6, ny, AMBER);
     if (it.label) text(ctx, it.label, tx + 6, ty + 13, "rgba(220,225,232,0.75)");
   }
   ctx.restore();

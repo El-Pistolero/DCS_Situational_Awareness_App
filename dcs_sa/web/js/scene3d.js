@@ -9,6 +9,7 @@ import { buildF16, isF16 } from "./f16.js";
 import { radarVolume } from "./symbols.js";
 import { tofTicks, weaponPath } from "./strikegeom.js";
 import { RESULT_COLOR, kAlt } from "./strikeviz.js";
+import { disposeIR, fillCountermeasures, makeCountermeasureClouds, markHeatSeeker, updatePlume } from "./ir3d.js";
 
 const R_LAT = 111320;
 const D2R = Math.PI / 180;
@@ -711,6 +712,7 @@ export class Scene3D {
     }
     e.trail.geometry.dispose();
     e.trail.material.dispose();
+    disposeIR(e);
     e.model.traverse((m) => {
       if (!m.isMesh) return;
       if (m.geometry && !Object.values(GEOM).includes(m.geometry)) m.geometry.dispose();
@@ -736,7 +738,7 @@ export class Scene3D {
   update(objects, {
     focusId = null, selectedId = null, radar = "all", rounds = [], padlockId = null,
     t = null, strikeLayers = null, stalks = "off", rings = "all", pinned = null, lockLines: showLocks = true,
-    dim = null, weaponCamHoldAt = null,
+    dim = null, weaponCamHoldAt = null, heat = null,
   } = {}) {
     const wanted = focusId != null ? objects.find((o) => o.id === focusId) : null;
     const focus = wanted || objects.find((o) => o.id === selectedId) ||
@@ -765,8 +767,10 @@ export class Scene3D {
     const seen = new Set();
     const cloud = this.bombletCloud.geometry;
     let nb = 0;
+    const cms = [];
     for (const o of objects) {
-      if (!isNum(o.lon) || !isNum(o.lat) || o.category === "bullseye" || o.category === "countermeasure") continue;
+      if (!isNum(o.lon) || !isNum(o.lat) || o.category === "bullseye") continue;
+      if (o.category === "countermeasure") { cms.push(o); continue; } // flares and chaff: point clouds
       if (typeof o.dispenser === "string") {
         // Bomblets (hundreds at once): one point cloud, no meshes, trails, labels or picking.
         const arr = growAttr(cloud, "position", nb + 1).array;
@@ -793,6 +797,9 @@ export class Scene3D {
       e.mat.emissiveIntensity = e.emiss + boost;
       e.pos = p;
       e.obj = o;
+      // Heat: a glowing nose on heat-seekers; engine heat behind jets (a flame only when AB is known).
+      if (o.irSeeker) markHeatSeeker(e);
+      if (o.category === "fixedwing" || o.category === "air") updatePlume(e, heat && !o.dead ? heat(o.id) : null);
       if (e.dome) {
         // A destroyed SAM threatens nobody (the map drops its ring too), pinned or not.
         const show = !o.dead && (!!pinned?.has(o.id) ||
@@ -836,6 +843,7 @@ export class Scene3D {
     for (const id of [...this.objects.keys()]) if (!seen.has(id)) this._remove(id);
     cloud.setDrawRange(0, nb);
     if (nb) cloud.attributes.position.needsUpdate = true;
+    fillCountermeasures(this.cmClouds, cms, (lon, lat, alt, out) => this.toLocal(lon, lat, alt, out));
     this._updateRadars(objects, radar, this.focusId, selectedId);
     this._updateRounds(rounds);
     this._updateStalks(stalks, this.focusId, selectedId);
@@ -1020,7 +1028,8 @@ export class Scene3D {
       new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.55, depthWrite: false }));
     this.stalkDots = new THREE.Points(dynamicGeometry(true),
       new THREE.PointsMaterial({ vertexColors: true, size: 4, sizeAttenuation: false }));
-    for (const o of [this.bombletCloud, this.stalks, this.stalkDots]) {
+    this.cmClouds = makeCountermeasureClouds();
+    for (const o of [this.bombletCloud, this.stalks, this.stalkDots, this.cmClouds.flares, this.cmClouds.chaff]) {
       o.frustumCulled = false;
       this.scene.add(o);
     }
