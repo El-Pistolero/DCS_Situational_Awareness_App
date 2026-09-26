@@ -663,6 +663,50 @@ function ingest(snap) {
   S.firstSnap = false;
 }
 
+/**
+ * The "Waiting for telemetry" screen, saying what DCS SA can actually see.
+ * "Nothing yet" is useless; "DCS is running, the bridge is feeding me, the
+ * mission has not started" tells you what to do next.
+ */
+function renderWaiting(snap) {
+  const b = snap.bridge || {};
+  const st = snap.status || {};
+  const prof = S.status?.profile || {};
+  const dcsRunning = (b.packets || 0) > 0;      // only DCS sends on this port
+  const tacview = st.source === "tacview" ? st.state : null;
+  const checks = [];
+  const add = (state, text) => checks.push({ state, text });
+
+  add(prof.found ? "ok" : "", prof.found ? `DCS folder found${prof.player ? ` · pilot "${prof.player}"` : ""}`
+    : "No DCS folder found on this PC");
+  if (prof.found) add(prof.bridgeInstalled ? "ok" : "bad",
+    prof.bridgeInstalled ? "DCS bridge installed in Export.lua" : "DCS bridge NOT installed — use Connect…");
+  add(b.listening ? "ok" : "bad", b.listening ? `Listening for the bridge on UDP ${b.port}` : "Not listening for the bridge");
+  if (dcsRunning) add("ok", `DCS is sending (${b.packets} packets)`);
+  else if (prof.bridgeInstalled) add("", "Nothing from DCS yet on the bridge");
+  if (tacview) add(tacview === "connected" ? "ok" : tacview === "connecting" ? "" : "bad", `Tacview telemetry: ${tacview}`);
+  else add("", "Tacview telemetry: not connected");
+
+  let title = "Waiting for telemetry";
+  let why = "Start DCS with the <b>DCS-SA bridge</b> installed, or connect to <b>Tacview real-time telemetry</b>.";
+  if (dcsRunning || tacview === "connected") {
+    // Something is talking to us, so this is a wait, not a setup problem.
+    title = "Waiting to connect";
+    why = dcsRunning
+      ? "DCS is running and talking to DCS SA. Start or resume a mission and get into the cockpit — your jet appears within a few seconds."
+      : "Connected to Tacview telemetry. Waiting for a mission with aircraft in it.";
+  } else if (prof.bridgeInstalled) {
+    why = "The bridge is installed but DCS has not sent anything. Is DCS running? It must be fully restarted once after installing the bridge.";
+  } else if (prof.found) {
+    why = "Install the DCS bridge below to see your own jet, or connect to Tacview real-time telemetry to see everyone.";
+  }
+  $("emptyTitle").textContent = title;
+  $("emptyWhy").innerHTML = why;
+  const list = $("emptyChecks");
+  list.innerHTML = "";
+  for (const c of checks) list.append(el("li", { class: c.state }, c.text));
+}
+
 function onSnapshot(snap, { redraw = false } = {}) {
   if (!redraw) ingest(snap);
 
@@ -678,6 +722,7 @@ function onSnapshot(snap, { redraw = false } = {}) {
   $("status").textContent = parts.join(" · ") || "Not connected";
   $("status").title = $("status").textContent; // the header may leave it only a few pixels
   $("empty").classList.toggle("hidden", snap.objects.length > 0);
+  if (snap.objects.length === 0) renderWaiting(snap);
 
   const me = snap.objects.find((o) => o.id === snap.focus);
   if (me) {

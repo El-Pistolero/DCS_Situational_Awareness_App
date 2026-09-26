@@ -39,6 +39,13 @@ body.live { overflow: hidden; }
 .lv-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; background: rgba(11,15,20,0.8); padding: 20px; }
 .lv-empty h2 { margin: 0 0 6px; }
 .lv-empty p { color: var(--muted); max-width: 440px; }
+.lv-checks { list-style: none; margin: 4px 0 12px; padding: 0; font: 12px var(--mono); text-align: left; }
+.lv-checks li { padding: 2px 0; color: var(--muted); }
+.lv-checks li::before { content: "· "; }
+.lv-checks li.ok { color: var(--green); }
+.lv-checks li.ok::before { content: "✓ "; }
+.lv-checks li.bad { color: var(--orange); }
+.lv-checks li.bad::before { content: "✗ "; }
 .lv-empty a, .lv-guide { color: var(--blue); }
 .lv-dialog .warn { margin-top: 6px; color: var(--orange); }
 .lv-guide { font-size: 13px; font-weight: normal; margin-left: 10px; }

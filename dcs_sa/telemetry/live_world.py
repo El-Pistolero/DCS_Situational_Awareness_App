@@ -39,6 +39,10 @@ MAX_LIVE_BOMBLETS = 150
 HIST_SECONDS = 20.0
 HIST_STEP = 0.2
 #: A released weapon stays in myWeapons this long after it disappears.
+#: The ACMI stream counts as quiet after this long with no update.  DCS's
+#: Tacview exporter stops sending while the game is paused, and a paused
+#: mission must not leave the map following a frozen position.
+ACMI_QUIET = 3.0
 IMPACT_KEEP = 5.0
 #: A JSOW-A / CBU that opened in the air: its bomblets land ~10-15 s later,
 #: so keep the row long enough for DCS's hit/kill reports to arrive.
@@ -387,7 +391,21 @@ class LiveWorld:
                 self._feed_ab(own, self.time, sum(parts))
             # With no Tacview stream, synthesise objects so the map still works.
             acmi_live = self.status.get("state") == "connected" or self.status.get("source") == "replay"
-            if acmi_live or "lat" not in me:
+            if "lat" not in me:
+                return
+            if acmi_live:
+                # The stream says it is connected, but DCS stops exporting while
+                # the game is paused.  Rather than follow a frozen position, keep
+                # my own jet moving from the bridge until the stream speaks again.
+                # Only my jet: the rest of the picture stays where Tacview left it.
+                if self.wall_updated and time.time() - self.wall_updated <= ACMI_QUIET:
+                    self._acmi_quiet = False
+                    return
+                if own is not None:
+                    if not getattr(self, "_acmi_quiet", False):
+                        self._acmi_quiet = True
+                        log.info("Tacview stream quiet (paused?) - following your jet from the DCS bridge")
+                    self._bridge_position(own, me)
                 return
             t = float(payload.get("t") or 0.0)
             self.time = t
@@ -411,6 +429,14 @@ class LiveWorld:
                     self.unit_index = None
                 if gone.category == "weapon":
                     self._retire_weapon(gone, t)  # keeps its myWeapons row for IMPACT_KEEP
+
+    @staticmethod
+    def _bridge_position(obj: "LiveObject", me: Dict[str, Any]) -> None:
+        """Move an object to where the bridge says my aircraft is."""
+        vals = {"Longitude": me.get("lon"), "Latitude": me.get("lat"), "Altitude": me.get("alt"),
+                "Yaw": me.get("hdg"), "Pitch": me.get("pitch"), "Roll": me.get("bank"),
+                "IAS": me.get("ias"), "TAS": me.get("tas"), "AGL": me.get("agl")}
+        obj.values.update({k: float(v) for k, v in vals.items() if isinstance(v, (int, float))})
 
     def _bridge_object(self, oid: str, t: float, d: Dict[str, Any], is_self: bool = False) -> None:
         obj = self.objects.get(oid)

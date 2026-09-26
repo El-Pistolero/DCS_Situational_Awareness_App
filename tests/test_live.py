@@ -469,6 +469,68 @@ class ConsoleTests(unittest.TestCase):
             console.clear()
 
 
+class PausedMissionTests(unittest.TestCase):
+    """DCS stops exporting while paused; the map must not follow a frozen jet."""
+
+    def _world(self):
+        w = LiveWorld(["Ethan"])
+        w.set_status("tacview", "connected")
+        w.on_frame(0.0)     # a frame is what marks the stream as alive
+        w.on_object(0.0, "101", {"Longitude": 41.0, "Latitude": 41.0, "Altitude": 3000, "Yaw": 90},
+                    {"Type": "Air+FixedWing", "Coalition": "Allies", "Pilot": "Ethan", "Name": "F-16C_50"})
+        return w
+
+    def _bridge(self, lon, lat, ias=300.0):
+        return {"t": 10.0, "self": {"lon": lon, "lat": lat, "alt": 3000.0, "hdg": 90.0,
+                                    "ias": ias, "pilot": "Ethan", "name": "F-16C_50"}}
+
+    def test_a_live_stream_still_wins(self):
+        w = self._world()
+        w.ingest_bridge(self._bridge(41.5, 41.5))
+        pos = w.objects["101"].position()
+        self.assertAlmostEqual(pos[0], 41.0, places=3)   # Tacview is fresh, so it decides
+
+    def test_a_quiet_stream_hands_over_to_the_bridge(self):
+        w = self._world()
+        w.wall_updated = time.time() - 30.0     # DCS paused: nothing on the stream for a while
+        w.ingest_bridge(self._bridge(41.5, 41.5))
+        pos = w.objects["101"].position()
+        self.assertAlmostEqual(pos[0], 41.5, places=3)
+        self.assertAlmostEqual(pos[1], 41.5, places=3)
+        self.assertAlmostEqual(w.objects["101"].values["IAS"], 300.0)
+
+    def test_a_stream_that_has_said_nothing_yet_does_not_hold_the_map_hostage(self):
+        w = LiveWorld(["Ethan"])
+        w.set_status("tacview", "connected")   # connected, but no frame has arrived
+        w.on_object(0.0, "101", {"Longitude": 41.0, "Latitude": 41.0, "Altitude": 3000, "Yaw": 90},
+                    {"Type": "Air+FixedWing", "Coalition": "Allies", "Pilot": "Ethan", "Name": "F-16C_50"})
+        w.ingest_bridge(self._bridge(41.5, 41.5))
+        self.assertAlmostEqual(w.objects["101"].position()[0], 41.5, places=3)
+
+    def test_the_rest_of_the_picture_is_left_alone(self):
+        w = self._world()
+        w.on_object(0.0, "201", {"Longitude": 42.0, "Latitude": 42.0, "Altitude": 6000},
+                    {"Type": "Air+FixedWing", "Coalition": "Enemies"})
+        w.wall_updated = time.time() - 30.0
+        w.ingest_bridge(self._bridge(41.5, 41.5))
+        # Only my jet moves; a frozen bandit is better than an invented one.
+        self.assertAlmostEqual(w.objects["201"].position()[0], 42.0, places=3)
+
+    def test_the_stream_takes_over_again_when_it_resumes(self):
+        w = self._world()
+        w.wall_updated = time.time() - 30.0
+        w.ingest_bridge(self._bridge(41.5, 41.5))
+        w.on_frame(20.0)    # the mission is running again
+        w.on_object(20.0, "101", {"Longitude": 41.9, "Latitude": 41.9, "Altitude": 3000, "Yaw": 90}, {})
+        w.ingest_bridge(self._bridge(41.6, 41.6))
+        self.assertAlmostEqual(w.objects["101"].position()[0], 41.9, places=3)
+
+    def test_with_no_stream_at_all_the_bridge_still_builds_the_picture(self):
+        w = LiveWorld(["Ethan"])
+        w.ingest_bridge(self._bridge(41.2, 41.2))
+        self.assertIn("self", w.objects)
+
+
 class LiveSessionTests(unittest.TestCase):
     def test_reset_starts_a_new_session(self):
         w = LiveWorld()
