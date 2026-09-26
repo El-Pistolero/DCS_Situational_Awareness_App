@@ -348,6 +348,10 @@ table.grid tr.current td { background: #1f2c1f; }
   z-index: 50;
   max-width: 90vw;
 }
+.version-line { margin: 10px 0; font-size: 12px; }
+.version-line.note-update { font-size: 13px; }
+button.linklike { background: none; border: 0; padding: 0 0 0 8px; color: var(--blue); cursor: pointer; font-size: inherit; }
+button.linklike:hover { text-decoration: underline; }
 .note-update { margin: 10px 0; padding: 8px 12px; border: 1px solid var(--blue); border-radius: 6px; background: var(--panel-2); }
 .note-update button { margin: 0 6px; }
 .toast.info { background: var(--panel-2); border-color: var(--blue); color: var(--text); }

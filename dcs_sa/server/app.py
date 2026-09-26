@@ -252,6 +252,8 @@ def make_handler(app: App):
                     return self._tile(path.split("/")[2:])
                 if path == "/api/status":
                     return self._json(app.status())
+                if path == "/api/update":
+                    return self._json(app.updates.status(force=q.get("force") == "1"))
                 if path == "/api/recordings":
                     return self._json({"recordings": app.store.scan(), "dirs": app.store.dirs})
                 if path.startswith("/api/recording/"):

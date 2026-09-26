@@ -85,16 +85,21 @@ class UpdateChecker:
         self._checked_at = 0.0
         self._busy = False
 
-    def status(self) -> Dict[str, Any]:
-        """What the UI shows.  Kicks off a refresh when the answer is stale."""
-        if self.enabled:
-            self._maybe_refresh()
-        with self._lock:
-            return dict(self._state, enabled=self.enabled)
+    def status(self, force: bool = False) -> Dict[str, Any]:
+        """What the UI shows.  Kicks off a refresh when the answer is stale.
 
-    def _maybe_refresh(self) -> None:
+        *force* is the user pressing "Check again": it ignores the interval,
+        so a failed check can be retried at once.
+        """
+        if self.enabled:
+            self._maybe_refresh(force)
         with self._lock:
-            if self._busy or (self._checked_at and time.monotonic() - self._checked_at < self.interval):
+            return dict(self._state, enabled=self.enabled, checking=self._busy)
+
+    def _maybe_refresh(self, force: bool = False) -> None:
+        with self._lock:
+            if self._busy or (not force and self._checked_at
+                              and time.monotonic() - self._checked_at < self.interval):
                 return
             self._busy = True
         threading.Thread(target=self._refresh, name="update-check", daemon=True).start()

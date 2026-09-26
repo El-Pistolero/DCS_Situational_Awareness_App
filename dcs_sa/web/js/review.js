@@ -678,6 +678,35 @@ function setMe(target) {
 // Library
 // ---------------------------------------------------------------------------
 
+/** The version line: up to date, an update to get, or a failed check to retry. */
+function renderVersion(host, up) {
+  host.innerHTML = "";
+  host.classList.toggle("note-update", !!up?.available);
+  const check = async (force) => {
+    try {
+      const { body } = await api(`/api/update${force ? "?force=1" : ""}`);
+      if (S.status) S.status.update = body;
+      renderVersion(host, body);
+      if (body.checking) setTimeout(() => check(false), 1200);   // still asking GitHub
+    } catch { /* app not reachable */ }
+  };
+  const version = up?.current || S.status?.version || "";
+  if (up?.available) {
+    host.append(`DCS SA ${up.latest} is out (you have ${version}). `,
+      el("button", { onclick: async () => { try { await api("/api/open-release", { method: "POST" }); } catch { /* offline */ } } }, "Get it"),
+      el("span", { class: "muted" }, " Your recordings and settings are kept."));
+    return;
+  }
+  const status = up?.enabled === false ? "update checks are off"
+    : up?.checking || !up?.checked ? "checking for updates…"
+    : up?.latest ? "up to date"
+    : "couldn't check for updates";
+  host.append(el("span", { class: "muted" }, `DCS SA ${version} · ${status}`));
+  if (up?.enabled !== false && !up?.checking && up?.checked) {
+    host.append(el("button", { class: "linklike", onclick: () => check(true) }, "Check again"));
+  }
+}
+
 async function showLibrary() {
   const w = $("welcome");
   w.classList.remove("hidden");
@@ -693,14 +722,11 @@ async function showLibrary() {
       el("button", { onclick: () => { location.href = "/guide#step-3-try-it-with-a-demo-flight-no-dcs-needed"; } }, "Guide"),
       " walks you through it step by step, from the demo flights to setting up DCS."),
   );
-  const up = S.status?.update;
-  if (up?.available) {
-    box.append(el("div", { class: "note-update" },
-      `DCS SA ${up.latest} is out (you have ${up.current}). `,
-      el("button", { onclick: async () => { try { await api("/api/open-release", { method: "POST" }); } catch { /* offline */ } } },
-        "Get it"),
-      el("span", { class: "muted" }, " Your recordings and settings are kept.")));
-  }
+  // Always says which version this is, so "am I up to date?" has an answer
+  // even when there is nothing to install.
+  const verLine = el("div", { class: "version-line" });
+  box.append(verLine);
+  renderVersion(verLine, S.status?.update);
   // The bridge is optional, so it is offered rather than installed silently:
   // it writes into the user's DCS folder.  Once in, it keeps itself up to date.
   const prof0 = S.status?.profile || {};

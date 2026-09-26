@@ -126,7 +126,7 @@ DCS SA remembers this and connects again by itself the next time you open it. To
 
 ## Updating to a newer version
 
-DCS SA checks once an hour whether a newer version has been released, and tells you on the **Flight debrief** page: *"DCS SA 0.2.0 is out (you have 0.1.0)"*, with a **Get it** button. It never downloads or installs anything by itself.
+The **Flight debrief** page always shows which version you have, just under the Guide line: *"DCS SA 0.1.51 · up to date"*, with a **Check again** link. When a newer one exists it says so instead — *"DCS SA 0.1.52 is out (you have 0.1.51)"* — with a **Get it** button. DCS SA checks about once an hour, and never downloads or installs anything by itself.
 
 1. Click **Get it**. Your browser opens the download page. Click **DCS-SA-Setup.exe** under **Assets**.
 2. Close DCS SA.
