@@ -435,8 +435,22 @@ export function drawScene(ctx, map, objects, opts = {}) {
         hits.push({ id: o.id, x, y, r: 9 });
         break;
       case "countermeasure":
-        ctx.fillStyle = "rgba(255,210,120,0.8)";
-        ctx.beginPath(); ctx.arc(x, y, 1.6, 0, TAU); ctx.fill();
+        if (o.cmKind === "chaff") {
+          ctx.fillStyle = "rgba(200,205,214,0.6)";
+          ctx.fillRect(x - 0.8, y - 0.8, 1.6, 1.6);
+        } else {
+          // A flare: a white-hot core fading over its ~9 s life, ringed in its jet's side colour.
+          const life = isNum(o.age) ? Math.max(0, 1 - o.age / 9) : 1;
+          ctx.globalAlpha = (0.35 + 0.65 * life) * fade(o);
+          ctx.fillStyle = "#fff1c9";
+          ctx.beginPath(); ctx.arc(x, y, 2.2, 0, TAU); ctx.fill();
+          if (o.cmColor) {
+            ctx.strokeStyle = withAlpha(o.cmColor, 0.9);
+            ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.arc(x, y, 3.6, 0, TAU); ctx.stroke();
+          }
+          ctx.globalAlpha = fade(o);
+        }
         break;
       default:
         drawGround(ctx, x, y, color, o);
@@ -462,7 +476,7 @@ export function drawScene(ctx, map, objects, opts = {}) {
       if (o.dispenser || alphaOf(o) < 0.5) continue; // no labels on dimmed objects
       const air = ["fixedwing", "rotorcraft", "air"].includes(o.category);
       const show = !o.noLabel && (air || (labels === "all" && o.category !== "countermeasure") || (labels === "targets" && o.labelMe) ||
-        o.id === opts.selectedId || (o.category === "weapon" && labels !== "minimal") || !!o.tag);
+        o.id === opts.selectedId || (o.category === "weapon" && labels !== "minimal") || !!o.tag || !!o.tag2);
       if (!show) continue;
       const [x, y] = map.project(o.lon, o.lat);
       if (x < -50 || y < -50 || x > map.w + 50 || y > map.h + 50) continue;
@@ -478,6 +492,7 @@ export function drawScene(ctx, map, objects, opts = {}) {
         lines.push(o.name);
       }
       if (o.tag) lines.push(o.tag);
+      if (o.tag2) lines.push(o.tag2);
       const color = o.category === "weapon" ? "#e8ecf2" : sideColor(o);
       const lx = x + 14, ly = y - 8;
       for (let i = 0; i < lines.length; i++) {

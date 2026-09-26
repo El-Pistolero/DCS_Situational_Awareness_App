@@ -16,7 +16,7 @@ SEVERITY = {
     "kill": "high", "destroyed": "high", "shot": "medium", "hit": "high",
     "spiked": "medium", "lock": "low", "landing": "medium", "takeoff": "medium",
     "gun": "medium", "bookmark": "low", "message": "low", "radar": "low",
-    "release": "medium", "impact": "medium",
+    "release": "medium", "impact": "medium", "decoy": "medium", "flares": "low",
 }
 
 
@@ -30,7 +30,7 @@ def _nm(m: Optional[float]) -> str:
     return f"{m * geo.NM_PER_M:.1f} nm" if m is not None else "? nm"
 
 
-def build_timeline(rec: Recording, weapons, landings: Dict, radar: Dict, strikes=None) -> List[Dict]:
+def build_timeline(rec: Recording, weapons, landings: Dict, radar: Dict, strikes=None, ir=None) -> List[Dict]:
     items: List[Dict] = []
     strike_ids = {st.weapon_id for st in strikes or []}
     name = lambda oid: (rec.tracks[oid].display_name if oid in rec.tracks else oid)  # noqa: E731
@@ -52,6 +52,14 @@ def build_timeline(rec: Recording, weapons, landings: Dict, radar: Dict, strikes
         items.append(_item(s.launch_time, "shot", f"{who} fired {s.weapon_name}{tgt}{rng}",
                            [i for i in (s.launcher_id, s.target_id, s.weapon_id) if i],
                            outcome=s.outcome))
+        decoy = (s.ir or {}).get("decoy")
+        if decoy:
+            by = decoy.get("owner")
+            by = f" from {name(by)}" if by else ""
+            items.append(_item(s.launch_time + decoy["t"], "decoy",
+                               f"{s.weapon_name} from {who} likely went for a flare{by} (est.)",
+                               [i for i in (s.weapon_id, decoy.get("flareId"), s.target_id) if i],
+                               estimated=True))
         if s.outcome in ("miss", "damage"):
             items.append(_item(s.end_time, "shot", f"{s.weapon_name} from {who}: {s.outcome}"
                                + (f" ({s.outcome_detail})" if s.outcome_detail else ""),
@@ -112,6 +120,13 @@ def build_timeline(rec: Recording, weapons, landings: Dict, radar: Dict, strikes
                            [ep.owner_id, ep.target_id]))
         if ep.target_id in rec.tracks and rec.tracks[ep.target_id].category in ("fixedwing", "rotorcraft"):
             items.append(_item(ep.start, "spiked", f"{tgt} spiked by {who}", [ep.target_id, ep.owner_id]))
+
+    for owner, rows in ((ir or {}).get("salvos") or {}).items():
+        for sv in rows:
+            if sv["kind"] != "flare":
+                continue
+            what = f"flares x{sv['n']}" if sv["n"] > 1 else "a flare"
+            items.append(_item(sv["t0"], "flares", f"{name(owner)} dropped {what}", [owner]))
 
     items.sort(key=lambda d: (d["time"], d["kind"]))
     return items

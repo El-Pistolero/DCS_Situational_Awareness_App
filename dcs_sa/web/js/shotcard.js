@@ -2,6 +2,7 @@
 // plain-language verdict ("why did it miss?").
 
 import { LineChart } from "./charts.js";
+import { K7, heatColor } from "./irviz.js";
 import {
   el, fmtAlt, fmtDeg, fmtDist, fmtRel, fmtShort, isNum, sampleTrack, sideColor, speedOfSound, units, wrap180,
   M_TO_FT, M_TO_NM,
@@ -91,11 +92,17 @@ export function buildShotCard(shot, ctx) {
   const beams = windows(xs, aspect, (a) => a >= 70 && a <= 110);
   const colds = windows(xs, aspect, (a) => a > 120);
 
-  // Countermeasures from the target during the flight.
-  const cms = [];
+  // Countermeasures from the target during the flight.  The analysis names
+  // each flare's owner (DCS writes none); without it, anything within 150 m.
+  const ir = shot.ir || null;
+  const cms = [], chaff = [];
   if (T) {
     for (const o of ctx.objects.values()) {
       if (o.category !== "countermeasure" || !isNum(o.firstSeen) || o.firstSeen < t0 || o.firstSeen > t1) continue;
+      if (o.cmKind) {
+        if (o.owner === T.id) (o.cmKind === "chaff" ? chaff : cms).push(o.firstSeen - t0);
+        continue;
+      }
       let mine = o.parent === T.id;
       if (!mine) {
         const cp = sampleTrack(o.pb, o.firstSeen), tp = sampleTrack(T.pb, o.firstSeen);
@@ -115,16 +122,18 @@ export function buildShotCard(shot, ctx) {
   if (xs.length > 1) {
     const vb = [...beams.map((w) => ({ ...w, color: BEAM })), ...colds.map((w) => ({ ...w, color: COLD }))];
     const marks = cms.map((x) => ({ x, w: 1, color: "rgba(255,159,67,0.95)" }));
-    const mk = (title, series, yFormat) => {
+    const mk = (title, series, yFormat, { yMin, yMax, xMax, bands } = {}) => {
       const c = el("canvas", { class: "flyout" });
       card.append(c);
       const ch = new LineChart(c, { title, yFormat, xFormat: (x) => fmtRel(x), onSeek: (x) => ctx.seek(t0 + x) });
-      ch.setData(series, { xMin: 0, xMax: xs[xs.length - 1] });
-      ch.setVBands(vb);
-      ch.setMarks(marks);
+      const x1 = xMax ?? xs[xs.length - 1];
+      ch.setData(series, { xMin: 0, xMax: x1, yMin, yMax });
+      ch.setVBands(bands ?? vb);
+      ch.setMarks(marks.filter((m) => m.x <= x1));
       ch._markerFn = (t) => (t >= t0 && t <= t1 ? t - t0 : null);
       ctx.charts.push(ch);
     };
+    if (ir?.series?.length) irCharts(ir, card, mk, xs);
     if (T) mk("Range to target", [{ name: units.metric ? "km" : "nm", color: "#ffd166", x: xs, y: range.map((r) => (isNum(r) ? (units.metric ? r / 1000 : r * M_TO_NM) : null)) }], (v) => v.toFixed(1));
     mk("Missile Mach", [{ name: "Mach", color: "#b48cff", x: xs, y: mach }], (v) => v.toFixed(1));
   }
@@ -161,11 +170,18 @@ export function buildShotCard(shot, ctx) {
     while (i > 0 && !isNum(mach[i])) i--; // last recorded speed before the closest point
     if (isNum(mach[i])) chip(`Arrived at Mach ${mach[i].toFixed(1)}`, mach[i] < 1 ? "warn" : "");
   }
-  if (cms.length) chip(`Chaff/flares ×${cms.length} (${cms.filter((x) => x >= xs[xs.length - 1] - 5).length} in the last 5 s)`);
+  if (ir) irChips(ir, shot, chip, cms, chaff, T);
+  else if (cms.length) chip(`Chaff/flares ×${cms.length} (${cms.filter((x) => x >= xs[xs.length - 1] - 5).length} in the last 5 s)`);
   if (isNum(shot.closestApproach)) {
     chip(`Closest approach ${shot.closestApproach < 1852 ? fmtShort(shot.closestApproach) : fmtDist(shot.closestApproach)}${isNum(shot.closestTime) ? ` at ${fmtRel(shot.closestTime - t0)}` : ""}`);
   }
   card.append(chips);
+
+  if (ir) {
+    card.append(el("div", { class: "irnote" },
+      "IR: seeker limits and heat values are DCS data (DCS 2.9 Lua; heat 1.0 = a Su-27 without afterburner, ×1.5 from the tail, ×0.5 nose-on). ",
+      "Flare owners, the decoy call and seeker reach are estimates from the recorded paths. DCS records no lock or tone."));
+  }
 
   // -- (4) replay ------------------------------------------------------------------------
   card.append(el("button", { onclick: () => ctx.onReplay(shot) }, "Replay shot"));
@@ -204,6 +220,28 @@ function drawDiagram(canvas, shot, L, T) {
     ctx.fillStyle = "rgba(225,230,238,0.9)";
     ctx.fillText(label, x + 10, y + (y > h / 2 ? 10 : -10));
   };
+  const heat = shot.ir?.heat;
+  if (shot.targetId && heat && isNum(heat.ir)) {
+    // The target's heat as DCS models it, out of its tailpipe (same scale as the map lobes).
+    const c = heat.ab && isNum(heat.irAB) ? heat.irAB : heat.ir;
+    const tail = ((th + 180 - 90) * Math.PI) / 180;
+    const lobe = (k) => {
+      ctx.beginPath();
+      for (let i = 0; i <= 48; i++) {
+        const phi = (i / 48) * Math.PI * 2, rr = Math.min(46, 14 * Math.sqrt(k * (1 + (1 - K7) * Math.cos(phi))));
+        const px = tx + rr * Math.cos(tail + phi), py = ty + rr * Math.sin(tail + phi);
+        i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+      }
+      ctx.closePath();
+    };
+    lobe(c);
+    ctx.fillStyle = heatColor(c * 1.5, 0.28); ctx.fill();
+    ctx.strokeStyle = heatColor(c * 1.5, 0.8); ctx.lineWidth = 1; ctx.stroke();
+    if (heat.ab === null && isNum(heat.irAB)) {
+      lobe(heat.irAB);
+      ctx.setLineDash([2, 3]); ctx.strokeStyle = heatColor(heat.irAB * 1.5, 0.6); ctx.stroke(); ctx.setLineDash([]);
+    }
+  }
   jet(sx, sy, sh, L ? sideColor(L) : "#4ea8ff", shot.launch?.tas, shot.launcherPilot || shot.launcherName || "shooter");
   if (shot.targetId) jet(tx, ty, th, T ? sideColor(T) : "#ff5c5c", g.targetSpeed, shot.targetPilot || shot.targetName || "target");
   ctx.fillStyle = "rgba(200,208,220,0.9)";
@@ -215,9 +253,86 @@ function drawDiagram(canvas, shot, L, T) {
     `off-boresight ${fmtDeg(g.offBoresight)}`,
     isNum(g.altitudeDelta) ? `Δalt ${g.altitudeDelta >= 0 ? "+" : "−"}${fmtAlt(Math.abs(g.altitudeDelta))}` : "",
     isNum(g.closure) ? `closure ${units.metric ? `${Math.round(g.closure * 3.6)} km/h` : `${Math.round(g.closure * 1.943844)} kt`}` : "",
+    isNum(heat?.seen) ? `heat seen ${heat.seen.toFixed(2)}${isNum(heat.seenAB) ? ` · ${heat.seenAB.toFixed(1)} if AB` : ""}` : "",
   ].filter(Boolean);
   lines.forEach((s, i) => ctx.fillText(s, 10, 16 + i * 14));
   ctx.textAlign = "right";
   ctx.fillStyle = "rgba(141,154,171,0.9)";
   ctx.fillText("line of sight ↑", w - 8, h - 10);
+}
+
+// -- IR shots ------------------------------------------------------------------------------
+
+const RESIST = (k) => (k <= 0.25 ? "very hard" : k <= 0.5 ? "hard" : k <= 1 ? "medium" : k <= 2 ? "easy" : "very easy");
+const k2 = (v) => (v >= 10 ? v.toFixed(0) : v.toFixed(v >= 1 ? 1 : 2));
+
+/** Chips for an IR missile: DCS seeker facts, heat at launch, flares, the decoy estimate. */
+function irChips(ir, shot, chip, cms, chaff, T) {
+  const sk = ir.seeker || {}, h = ir.heat || {}, g = shot.geometry || {};
+  const name = sk.display || shot.weaponName;
+  const dcs = (text, cls = "") => chip(text, `${cls} dcs`.trim());
+  const est = (text, cls = "") => chip(`~ ${text}`, `${cls} est`.trim());
+  dcs(sk.allAspect ? `${name} · IR seeker · all-aspect` : `${name} · IR · rear-aspect only (±${Math.round(sk.aspectLimit)}° of the tail)`);
+  if (isNum(sk.ccm)) dcs(`Flare resistance ${sk.ccm} (${RESIST(sk.ccm)} to decoy)`);
+  const lim = [isNum(sk.gimbal) ? `gimbal ${Math.round(sk.gimbal)}°` : "", isNum(sk.offBoresight) ? `launch look ${Math.round(sk.offBoresight)}°` : "",
+    isNum(sk.fuze) ? `fuze ${sk.fuze} m` : ""].filter(Boolean);
+  if (lim.length) dcs(lim.join(" · "));
+  // Heat at launch, as the missile saw it.
+  if (isNum(h.ir) && isNum(h.seen)) {
+    const off = isNum(h.tailAngle) ? `${Math.round(h.tailAngle)}° off its tail` : "";
+    if (h.ab === true) dcs(`${h.type} in afterburner at launch: heat ${k2(h.seen)} (${k2(h.irAB)} × ${h.aspectFactor} ${off})`, "warn");
+    else if (h.ab === false) dcs(`${h.type} heat at launch ${k2(h.seen)} = ${k2(h.ir)}${h.abState === "noAB" ? "" : " dry"} × ${h.aspectFactor} (${off})`);
+    else dcs(`${h.type} heat at launch ${k2(h.seen)} dry, ${k2(h.seenAB)} if in AB (not recorded) · ${off}`);
+  }
+  if (isNum(g.offBoresight) && isNum(sk.offBoresight) && g.offBoresight > sk.offBoresight + 2) {
+    dcs(`Off-boresight ${Math.round(g.offBoresight)}° > ${name} launch look angle ${Math.round(sk.offBoresight)}°`, "warn");
+  }
+  if (h.outsideAspect) dcs(`Launched ${Math.round(h.tailAngle)}° off the target's tail: outside the ${name}'s rear cone (±${Math.round(sk.aspectLimit)}°)`, "warn");
+  if (isNum(g.range) && isNum(sk.dMin) && g.range < sk.dMin) dcs(`Inside min range (${fmtShort(sk.dMin)})`, "warn");
+  // Flares.
+  const f = ir.flares || {};
+  if (cms.length || f.beforeLaunch) {
+    const bits = [`Flares ×${cms.length} by ${T?.pilot || T?.name || "the target"}`];
+    if (cms.length) bits.push(`first ${fmtRel(Math.min(...cms))}`);
+    if (f.beforeLaunch) bits.push(`${f.beforeLaunch} in the 5 s before launch`);
+    chip(bits.join(" · "));
+  }
+  if (chaff.length) chip(`Chaff ×${chaff.length} (radar only)`);
+  if (ir.decoy) {
+    est(`Likely went for a flare at ${fmtRel(ir.decoy.t)} (est.): predicted miss ${fmtShort(ir.decoy.zemFlare)} to the flare vs ${fmtShort(ir.decoy.zemTarget)} to the jet`, "bad");
+  } else if (cms.length && shot.outcome !== "active") {
+    est("Flares seen, the missile stayed on the jet (est.)");
+  }
+  if (isNum(ir.gimbalExceeded)) dcs(`Target beyond the seeker gimbal (${Math.round(sk.gimbal)}°) from ${fmtRel(ir.gimbalExceeded)}`, "warn");
+  if (isNum(sk.ssd) && isNum(h.seen) && isNum(g.range)) {
+    const reach = sk.ssd * Math.sqrt(h.seen);
+    est(`Seeker reach at launch ~${fmtDist(reach)}${isNum(h.seenAB) ? ` (~${fmtDist(sk.ssd * Math.sqrt(h.seenAB))} if in AB)` : ""} · launched at ${fmtDist(g.range)} (est.)`);
+  }
+}
+
+/** Fly-out charts for an IR missile: predicted miss and look angle, target vs the best flare. */
+function irCharts(ir, card, mk, xs) {
+  const ser = ir.series;
+  const x = ser.map((r) => r.t);
+  const clip = (v) => (isNum(v) ? Math.min(v, 1000) : null);
+  // Up to where the missile passed the target: the end of the flare fight.
+  const xMax = Math.min(xs[xs.length - 1], x[x.length - 1] + 1);
+  const bands = ir.decoy ? [{ x0: ir.decoy.t, x1: xMax, color: "rgba(255,159,67,.14)" }] : [];
+  const flareSeen = ser.some((r) => isNum(r.zemFlare));
+  mk("Predicted miss (est.)", [
+    { name: "jet", color: "#ffd166", x, y: ser.map((r) => clip(r.zem)) },
+    flareSeen ? { name: "best flare", color: "#ff9f43", x, y: ser.map((r) => clip(r.zemFlare)), dash: [4, 3] } : null,
+  ].filter(Boolean), (v) => fmtShort(v), { yMin: 0, xMax, bands });
+  const gim = ir.seeker?.gimbal;
+  mk("Seeker look angle (°)", [
+    { name: "jet", color: "#ffd166", x, y: ser.map((r) => (isNum(r.look) ? r.look : null)) },
+    flareSeen ? { name: "best flare", color: "#ff9f43", x, y: ser.map((r) => (isNum(r.lookFlare) ? r.lookFlare : null)), dash: [4, 3] } : null,
+    isNum(gim) ? { name: "gimbal (DCS)", color: "rgba(255,92,92,.7)", x: [x[0], x[x.length - 1]], y: [gim, gim], dash: [2, 3] } : null,
+  ].filter(Boolean), (v) => `${Math.round(v)}°`, { yMin: 0, xMax, bands });
+  if (ser.some((r) => isNum(r.heat))) {
+    mk("Heat seen by the missile (DCS scale)", [
+      { name: "heat", color: "#ff9f43", x, y: ser.map((r) => (isNum(r.heat) ? r.heat : null)) },
+      ser.some((r) => isNum(r.heatAB)) ? { name: "if in AB", color: "#fff1a8", x, y: ser.map((r) => (isNum(r.heatAB) ? r.heatAB : null)), dash: [2, 3] } : null,
+    ].filter(Boolean), (v) => v.toFixed(1), { yMin: 0, xMax, bands });
+  }
 }

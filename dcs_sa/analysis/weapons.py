@@ -141,6 +141,7 @@ class Shot:
     dcs_confirmed: Optional[bool] = None   # DCS reported the launch
     dcs_hit: Optional[str] = None          # what DCS says this weapon hit
     submunitions: int = 0                  # bomblets it dispensed (AGM-154A, CBUs)
+    ir: Optional[Dict] = None              # IR missiles: seeker, target heat, flares (analysis.ir)
 
     def to_dict(self) -> Dict:
         return _clean(asdict(self))

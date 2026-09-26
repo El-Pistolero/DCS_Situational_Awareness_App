@@ -170,7 +170,14 @@ export function groupPasses(strikes, gap = 5) {
 }
 
 // DCS type names that do not say which variant they are.
-const WEAPON_ALIASES = { AGM_154: "AGM-154C", AGM_154A: "AGM-154A", AGM_154B: "AGM-154B" };
+const WEAPON_ALIASES = {
+  AGM_154: "AGM-154C", AGM_154A: "AGM-154A", AGM_154B: "AGM-154B",
+  // DCS type names of air-to-air missiles (its Lua "display_name").
+  AIM_9: "AIM-9M", AIM_9X: "AIM-9X", "GAR-8": "AIM-9B", AIM_120: "AIM-120B", AIM_120C: "AIM-120C", AIM_7: "AIM-7M",
+  P_73: "R-73", P_60: "R-60M", P_27T: "R-27T", P_27TE: "R-27ET", P_27P: "R-27R", P_27PE: "R-27ER", P_77: "R-77",
+  P_24T: "R-24T", P_24R: "R-24R", P_40T: "R-40TD", P_40R: "R-40RD", P_33E: "R-33", R_550: "R.550 Magic II", MMagicII: "R.550 Magic II",
+  R_550_M1: "R.550 Magic I",
+};
 
-/** Display name for a DCS weapon type: "AGM_154" -> "AGM-154C", "GBU_12" -> "GBU-12". */
+/** Display name for a DCS weapon type: "AGM_154" -> "AGM-154C", "P_73" -> "R-73", "GBU_12" -> "GBU-12". */
 export const weaponLabel = (name) => WEAPON_ALIASES[name] || String(name || "").replace(/_/g, "-");

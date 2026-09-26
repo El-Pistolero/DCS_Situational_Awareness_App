@@ -63,7 +63,7 @@ export function createSelectionUI(host, { actions, describe, onClose = null, car
     if (box && box.dataset.txt !== txt) {
       box.dataset.txt = txt;
       box.innerHTML = "";
-      for (const l of lines) box.append(el("div", { class: typeof l === "string" ? "" : l.cls || "" }, typeof l === "string" ? l : l.text));
+      for (const l of lines) box.append(el("div", { class: typeof l === "string" ? "" : l.cls || "", title: typeof l === "string" ? null : l.title || null }, typeof l === "string" ? l : l.text));
     }
   }
 

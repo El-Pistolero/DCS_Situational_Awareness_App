@@ -2,7 +2,7 @@
 
 import {
   api, aspectDeg, bearing, bisectRight, braa, el, fmtAlt, fmtClock, fmtDeg, fmtDist, fmtHdg, fmtMass, fmtNum, fmtShort,
-  fmtPct, fmtSpeed, fmtVs, fmtZulu, isHostile, isNum, radarAt, rampColor, rampCss, roundsAt, sampleTrack,
+  fmtPct, fmtRel, fmtSpeed, fmtVs, fmtZulu, isHostile, isNum, radarAt, rampColor, rampCss, roundsAt, sampleTrack,
   sideColor, slantRange, units, distance, M_TO_FT, MPS_TO_KT, MPS_TO_FPM,
 } from "./util.js";
 import { LAYERS, TacticalMap } from "./map.js";
@@ -20,6 +20,9 @@ import { RESULT_COLOR, drawStrikes, kAlt, missText, prepareStrikes, weaponsInFli
 import { FAMILY_LABEL, groupPasses, posAt, strikeGeometry, weaponLabel } from "./strikegeom.js";
 import { buildStrikeCard, buildStrikeThumb } from "./strikecard.js";
 import { COORD_FORMATS, copyText, fmtCoord } from "./coords.js";
+import {
+  AMBER, HEAT_CSS, HEAT_NOTE, abAt, drawHeatLobes, drawReach, drawSeekers, flareColor, heatNow, heatText, irInFlight, prepareIR,
+} from "./irviz.js";
 
 const $ = (id) => document.getElementById(id);
 const pref = (k, d) => { try { return localStorage.getItem(`dcs-sa.${k}`) ?? d; } catch { return d; } };
@@ -38,6 +41,7 @@ const SET = createSettings({
     strikeTti: true, strikeBda: true, strikeLar: false,
     stalks: "off", lighting: "day", grid: false, coords: "dd", strikeLabels: "auto", exposure: false, labelSize: "m",
     charts: "Altitude,Speed,AOA,G,Throttle,Energy", evHide: "", wtab: "all", objChip: "all",
+    irHeat: "sel", irSeeker: "sel", irReach: false,
   },
   modeDefaults: {
     a2a: {
@@ -46,13 +50,15 @@ const SET = createSettings({
       strikeRelease: false, strikePaths: false, strikeFuture: false, strikeImpacts: false, strikeFootprints: false,
       strikeTti: false, strikeBda: false, strikeLar: false, stalks: "off",
       charts: "Altitude,Speed,G,AOA,Energy,Turn rate", evHide: "release,impact,landing,takeoff,message,bookmark", wtab: "a2a",
+      irHeat: "all", irSeeker: "all", cm: "show",
     },
     a2g: {
       labels: "targets", trailSec: 300, trailColor: "alt", radar: "known", rings: "hostile", pointers: "always", vectors: 0,
       bullseye: "off", braa: false, ground: "show", weapons: "all", bomblets: "dots",
       strikeRelease: true, strikePaths: true, strikeFuture: true, strikeImpacts: true, strikeFootprints: true,
       strikeTti: true, strikeBda: true, strikeLar: true, strikeLabels: "full", stalks: "all", exposure: true,
-      charts: "Altitude,Speed,Vert speed,G,Mach", evHide: "lock,landing,takeoff,message,bookmark,radar", wtab: "a2g",
+      charts: "Altitude,Speed,Vert speed,G,Mach", evHide: "lock,landing,takeoff,message,bookmark,radar,flares", wtab: "a2g",
+      irHeat: "off", irSeeker: "sel",
     },
   },
 });
@@ -64,6 +70,7 @@ const TEMP = {};
 const DECLUTTER = {
   labels: (v) => (v === "none" ? "none" : "minimal"), cm: () => "hide", bomblets: () => "hide",
   trailSec: (v) => (v === 0 ? 0 : Math.min(v, 30)), vectors: () => 0, bullseye: () => "off", braa: () => false, strikeLabels: () => "auto",
+  irHeat: () => "off", irSeeker: (v) => (v === "all" ? "sel" : v), irReach: () => false,
 };
 const cfg = (k) => {
   const v = k in TEMP ? TEMP[k] : SET.get(k);
@@ -205,6 +212,7 @@ function cycleSetting(key, order, label) {
 function onDisplayChange(key) {
   stopsCache = null;
   if (!key || key === "trailColor") setTrailColor(S.trailColor);
+  else if (key.startsWith("ir")) updateLegend();
   if (!key || key === "lighting") scene3d?.setLighting?.(cfg("lighting"));
   if (!S.analysis) return;
   renderTicks();
@@ -217,7 +225,7 @@ const DISPLAY = [
   { title: "Objects", rows: [
     { key: "air", label: "Aircraft", type: "select", options: [["show", "Show"], ["hide", "Hide"]] },
     { key: "ground", label: "Ground & ships", type: "select", options: [["show", "Show"], ["threats", "Only SAM / AAA / armed ships"], ["hide", "Hide"]] },
-    { key: "cm", label: "Chaff & flares", type: "select", options: [["show", "Show"], ["hide", "Hide"]] },
+    { key: "cm", label: "Flares & chaff", type: "select", options: [["show", "Show"], ["flares", "Flares only"], ["hide", "Hide"]] },
     { key: "dead", label: "Destroyed units", type: "select", options: [["show", "Show as X"], ["fade", "Hide after 60 s"], ["hide", "Hide"]] },
     { key: "blue", label: "Blue", type: "toggle" }, { key: "red", label: "Red", type: "toggle" }, { key: "neutral", label: "Neutral", type: "toggle" },
   ] },
@@ -244,6 +252,14 @@ const DISPLAY = [
     { key: "exposure", label: "Mark my path inside SAM rings", type: "toggle", title: "Red where the selected jet (or you) was inside a hostile SAM / AAA envelope" },
     { key: "pointers", label: "Threat arrows at the edge", type: "select", options: [["follow", "While following"], ["always", "Always"], ["off", "Off"]] },
   ] },
+  { title: "Heat (IR)", rows: [
+    { key: "irHeat", label: "Heat lobes", type: "select", options: [["sel", "Selected + IR targets"], ["all", "All aircraft"], ["off", "Off"]],
+      title: HEAT_NOTE },
+    { key: "irSeeker", label: "IR missile seekers", type: "select", options: [["sel", "Selected + at me"], ["all", "All IR missiles"], ["off", "Off"]],
+      title: "Gimbal limit (DCS), the line to what the seeker is steering at, and the flare it likely went for (estimate)" },
+    { key: "irReach", label: "Seeker reach (estimate)", type: "toggle",
+      title: "How far an IR seeker could see the jet from each side: DCS seeker sensitivity x the square root of its heat. An estimate, not launch range." },
+  ] },
   { title: "Overlays", rows: [
     { key: "bullseye", label: "Bullseye", type: "select", options: [["rings", "Rings"], ["calls", "Rings + bullseye calls"], ["off", "Off"]] },
     { key: "braa", label: "BRAA from me on bandits", type: "toggle" },
@@ -254,7 +270,7 @@ const DISPLAY = [
     { key: "labels", label: "Labels", type: "select", options: [["aircraft", "Aircraft"], ["targets", "Aircraft + targets"], ["all", "All"], ["minimal", "Minimal"], ["none", "Off"]] },
     { key: "labelSize", label: "Label size", type: "select", options: [["s", "Small"], ["m", "Medium"], ["l", "Large"], ["xl", "Extra large (second screen)"]] },
     { key: "trailSec", label: "Trails", type: "select", options: [[30, "30 s"], [60, "60 s"], [90, "90 s"], [300, "5 min"], [1000000, "Full"], [0, "Off"]] },
-    { key: "trailColor", label: "Trail colour", type: "select", options: [["side", "Side"], ["alt", "Altitude"], ["speed", "Speed"], ["g", "G"], ["ps", "Energy (Ps)"], ["aoa", "AOA"]] },
+    { key: "trailColor", label: "Trail colour", type: "select", options: [["side", "Side"], ["alt", "Altitude"], ["speed", "Speed"], ["g", "G"], ["ps", "Energy (Ps)"], ["aoa", "AOA"], ["heat", "Heat (afterburner)"]] },
     { key: "coords", label: "Coordinates", type: "select", options: COORD_FORMATS },
   ] },
   { title: "3D", rows: [
@@ -347,6 +363,11 @@ function describeTarget(tg) {
   if (isAir(o)) {
     const v = S.series.has(o.id) ? seriesAt(o.id) : null;
     if (p?.present) lines.push([fmtAlt(p.alt), fmtHdg(p.hdg), v ? fmtSpeed(v.IAS ?? v.TAS) : "", v && isNum(v.GLoad) ? `${v.GLoad.toFixed(1)} g` : ""].filter(Boolean).join(" · "));
+    const h = S.analysis.ir?.heat?.[o.id];
+    const hn = heatNow(h, S.t);
+    if (hn && p?.present) {
+      lines.push({ text: `heat ${heatText(hn).replace(/^IR /, "")}${hn.lit !== null && h.state === "recorded" ? ` (${h.src === "Afterburner" ? "recorded" : "engine data"})` : ""}`, title: HEAT_NOTE });
+    }
   } else if (isWeapon(o)) {
     const st = strikeOf(o.id);
     const shot = S.analysis.weapons.shots.find((x) => x.weaponId === o.id);
@@ -360,6 +381,13 @@ function describeTarget(tg) {
       sub = `${FAMILY_LABEL[st.family] || "weapon"} · ${st.launcherPilot || st.launcherName || ""}`;
     } else if (shot) {
       lines.push(`${shot.launcherPilot || shot.launcherName || "?"} → ${shot.targetPilot || shot.targetName || "—"} · ${shot.outcome}`);
+      const sk = shot.ir?.seeker;
+      if (sk) {
+        sub = `${sk.display || shot.weaponName} · IR ${sk.allAspect ? "all-aspect" : "rear-aspect"} · ${shot.launcherPilot || shot.launcherName || ""}`;
+        lines.push(`flare resistance ${sk.ccm} · gimbal ${Math.round(sk.gimbal)}° (DCS)`);
+        const d = shot.ir.decoy;
+        if (d && S.t >= shot.launchTime + d.t) lines.push({ text: `likely went for a flare ${fmtRel(d.t)} (est.)`, cls: "bad" });
+      }
     }
   } else {
     const eng = o.pb?.eng;
@@ -707,6 +735,8 @@ function setupRecording(key, analysis, playback) {
   for (const k of analysis.weapons.kills) S.deaths.set(k.victimId, k.time);
   S.strikes = prepareStrikes(analysis.strikes || [], S.objects, analysis.weapons.submunitions || {});
   S.strikeIds = new Set((analysis.strikes || []).map((x) => x.weaponId));
+  S.ir = prepareIR(analysis, S.objects);
+  S.irNames = new Map(S.ir.shots.map((x) => [x.s.weaponId, x.sk.display || x.s.weaponName]));
   // Bomblets per dispenser: DCS's count for the load (it records one object for all of them).
   S.subCount = new Map((analysis.strikes || []).filter((x) => x.submunitions).map((x) => [x.weaponId, x.submunitions]));
   modeSw?.refresh?.();
@@ -1374,7 +1404,12 @@ const TRAIL_MODES = {
   g: { title: "G", kind: "limit", lo: 0, hi: 9, limit: 7.5, channel: "GLoad" },
   ps: { title: "Ps", kind: "div", lo: -60, hi: 60, limit: 3, channel: "Ps" },
   aoa: { title: "AOA", kind: "limit", lo: 0, hi: 25, limit: 20, channel: "AOA" },
+  // Afterburner from recorded engine data (0 = not recorded, 1 = dry or no AB, 2 = lit).
+  heat: { title: "Heat", kind: "cat", lo: 0, hi: 2 },
 };
+// [r, g, b] 0..1 like rampColor(): not recorded (grey, never the side colour), dry, lit.
+const HEAT_TRAIL = [[0.42, 0.46, 0.52], [0.85, 0.57, 0.23], [1, 0.945, 0.66]];
+const rgbCss = (c) => `rgb(${c.map((v) => Math.round(v * 255)).join(",")})`;
 const trailCache = new Map();
 const trailRanges = new Map();
 
@@ -1413,6 +1448,10 @@ function valuesFor(o, mode) {
   const pb = o.pb, n = pb.t.length;
   let out = null;
   if (mode === "alt") out = Float32Array.from(pb.alt || [], (v) => (isNum(v) ? v : NaN));
+  else if (mode === "heat") {
+    const h = S.analysis?.ir?.heat?.[o.id];
+    out = Float32Array.from(pb.t, (t) => { const lit = abAt(h, t); return lit === null ? 0 : lit ? 2 : 1; });
+  }
   else if (mode === "speed") {
     out = new Float32Array(n).fill(NaN);
     for (let k = 1; k < n; k++) {
@@ -1454,13 +1493,25 @@ function trailRange(mode) {
 
 function trailColorAt(vals, k, mode, range) {
   const def = TRAIL_MODES[mode];
+  if (def.kind === "cat") return HEAT_TRAIL[vals[k]] || HEAT_TRAIL[0];
   return rampColor(vals[k], range[0], range[1], def.kind, def.limit);
 }
 
 function updateLegend() {
   const box = $("trailLegend");
   const def = TRAIL_MODES[S.trailColor];
-  if (!def || !S.analysis) { box.classList.add("hidden"); return; }
+  box.innerHTML = "";
+  const heatKey = S.analysis && cfg("irHeat") !== "off" && Object.keys(S.analysis.ir?.heat || {}).length;
+  if (heatKey) {
+    box.append(el("div", { title: HEAT_NOTE }, "Heat (DCS) · Su-27 dry = 1 · dotted = if in AB"),
+      el("div", { class: "legend-bar", style: { background: HEAT_CSS } }),
+      el("div", { class: "legend-ends" }, el("span", {}, "⅛"), el("span", {}, "1"), el("span", {}, "8")));
+  }
+  if (def?.kind === "cat" && S.analysis) {
+    box.append(el("div", { class: "legend-cats" }, ...[["AB lit", 2], ["dry / no AB", 1], ["not recorded", 0]].map(([label, v]) =>
+      el("span", {}, el("i", { style: { background: rgbCss(HEAT_TRAIL[v]) } }), label))));
+  }
+  if (!def || !S.analysis || def.kind === "cat") { box.classList.toggle("hidden", !box.childElementCount); return; }
   const [lo, hi] = trailRange(S.trailColor);
   const ends = {
     alt: [fmtAlt(lo, { suffix: false }), fmtAlt(hi)],
@@ -1470,7 +1521,6 @@ function updateLegend() {
     aoa: ["0°", "25°"],
   }[S.trailColor];
   const note = { g: " (magenta > 7.5)", aoa: " (magenta > 20°)", ps: " (grey = sustaining)" }[S.trailColor] || "";
-  box.innerHTML = "";
   box.append(el("div", {}, `${def.title} ${ends[0]} ${S.trailColor === "ps" ? "…" : "–"} ${ends[1]}${note}`),
     el("div", { class: "legend-bar", style: { background: rampCss(def.kind, {
       limitFrac: isNum(def.limit) && isNum(def.lo) ? (def.limit - def.lo) / (def.hi - def.lo) : 0.85,
@@ -1519,7 +1569,7 @@ function shown(o, t) {
     if (w === "a2g" && !ag) return false;
     return true;
   }
-  if (cat === "countermeasure") return cfg("cm") !== "hide";
+  if (cat === "countermeasure") return cfg("cm") === "show" || (cfg("cm") === "flares" && o.cmKind !== "chaff");
   if (AIR.includes(cat)) return cfg("air") !== "hide";
   if (["ground", "sea"].includes(cat) || cat === "misc" || cat === "navaid") {
     const g = cfg("ground");
@@ -1587,6 +1637,76 @@ function strikeTargetIds() {
   return ids;
 }
 
+/**
+ * Aircraft that get a heat lobe now: Map id -> true when it is the target of
+ * an IR missile in flight (its heat label shows too).
+ */
+function heatLobeIds(t) {
+  const out = new Map();
+  const mode = cfg("irHeat");
+  if (mode === "off" || !S.ir) return out;
+  for (const x of irInFlight(S.ir, t)) if (x.target && seekerShown(x)) out.set(x.target.id, true);
+  if (mode === "all") {
+    for (const o of S.objects.values()) if (AIR.includes(o.category) && !out.has(o.id)) out.set(o.id, false);
+  } else if (S.selected && AIR.includes(S.objects.get(S.selected)?.category) && !out.has(S.selected)) out.set(S.selected, false);
+  return out;
+}
+
+/** Does the IR-seeker setting show this IR shot? */
+function seekerShown(x) {
+  const mode = cfg("irSeeker");
+  if (mode === "all") return true;
+  if (mode === "off") return false;
+  const sh = x.s;
+  return [sh.weaponId, sh.launcherId, sh.targetId].includes(S.selected) || (!!S.me && sh.targetId === S.me);
+}
+
+/** Heat lobes, IR seekers and the seeker-reach estimate (the IR overlay). */
+function drawIR(ctx, m, objs, phase) {
+  if (!S.ir) return;
+  const scale = { s: 0.9, m: 1, l: 1.25, xl: 1.5 }[cfg("labelSize")] || 1;
+  const byId = new Map(objs.map((o) => [o.id, o]));
+  if (phase === "under") {
+    const ids = heatLobeIds(S.t);
+    if (ids.size) drawHeatLobes(ctx, m, objs.filter((o) => ids.has(o.id) && (!S.isolate || S.isolate.ids.has(o.id))), S.t, S.ir.heat, { scale });
+    return;
+  }
+  const list = irInFlight(S.ir, S.t).filter((x) => seekerShown(x) && byId.has(x.s.weaponId));
+  if (list.length) {
+    if (!S.ir.flareObjs) S.ir.flareObjs = [...S.objects.values()].filter((o) => o.category === "countermeasure" && o.cmKind !== "chaff");
+    const flares = S.ir.flareObjs.filter((f) => f.pb.t[0] <= S.t && S.t <= (f.pb.end ?? f.pb.t[f.pb.t.length - 1]));
+    const sel = S.selected;
+    drawSeekers(ctx, m, list, S.t, {
+      labelScale: scale, flares,
+      detail: (x) => list.length <= 2 || [x.s.weaponId, x.s.launcherId, x.s.targetId].includes(sel),
+      alphaOf: S.isolate ? (id) => isoAlpha(id) : null,
+    });
+  }
+  if (cfg("irReach")) {
+    const items = [], done = new Set();
+    for (const x of list) {
+      const o = x.target && byId.get(x.target.id);
+      if (!o || done.has(o.id)) continue;
+      done.add(o.id);
+      items.push({ target: o, sk: x.sk, hn: heatNow(S.ir.heat[o.id], S.t) });
+    }
+    // The selected bandit, against the IR missile I fired most in this recording.
+    const so = byId.get(S.selected);
+    const me = S.objects.get(S.me);
+    if (so && AIR.includes(so.category) && !done.has(so.id) && me && isHostile(me, so)) {
+      const mine = S.ir.shots.filter((x) => x.s.launcherId === S.me);
+      if (mine.length) {
+        const counts = new Map();
+        for (const x of mine) counts.set(x.sk.key, (counts.get(x.sk.key) || 0) + 1);
+        const key = [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+        const sk = mine.find((x) => x.sk.key === key).sk;
+        items.push({ target: so, sk, hn: heatNow(S.ir.heat[so.id], S.t), label: `if you fired an ${sk.display || key}` });
+      }
+    }
+    if (items.length) drawReach(ctx, m, items, { labelScale: scale });
+  }
+}
+
 function sceneObjects() {
   if (!S.analysis) return [];
   const t = S.t;
@@ -1597,6 +1717,7 @@ function sceneObjects() {
   const bullsCalls = cfg("bullseye") === "calls" && S.analysis.bullseye;
   const deadMode = cfg("dead");
   const targets = cfg("labels") === "targets" ? strikeTargetIds() : null;
+  const heatIds = heatLobeIds(t);
   for (const o of S.objects.values()) {
     const p = sampleTrack(o.pb, t);
     if (!p || !isNum(p.lon)) continue;
@@ -1609,8 +1730,18 @@ function sceneObjects() {
     if (!shown(o, t)) continue;
     const row = { ...o, lon: p.lon, lat: p.lat, alt: p.alt, hdg: p.hdg, pitch: p.pitch, roll: p.roll, dead, v: {} };
     if (targets && targets.has(o.id)) row.labelMe = true;
+    if (o.category === "countermeasure") {
+      // DCS writes no owner on flares: coloured by the jet it came from (inferred), fading over its life.
+      row.cmColor = flareColor(o.owner ? S.objects.get(o.owner) : null);
+      row.age = t - o.pb.t[0];
+    }
+    if (heatIds.has(o.id) && !dead && (o.id === S.selected || heatIds.get(o.id))) {
+      const txt = heatText(heatNow(S.analysis.ir?.heat?.[o.id], t));
+      if (txt) row.tag2 = txt;
+    }
     if (o.category === "weapon") {
-      row.name = weaponLabel(o.name);
+      const irName = S.irNames?.get(o.id);
+      row.name = irName ? `${irName} · IR` : weaponLabel(o.name);
       // The strike overlay tags weapons in flight ("AGM-154A → target · 0:42"): no second label.
       if (S.strikeIds.has(o.id) && cfg("strikeTti")) row.noLabel = true;
     }
@@ -1693,6 +1824,7 @@ let hitboxes = [];
 function drawMap(ctx, m) {
   const objs = sceneObjects();
   map.gridOverlay = cfg("grid");
+  drawIR(ctx, m, objs, "under");
   hitboxes = drawScene(ctx, m, objs, {
     selectedId: S.selected, focusId: S.me, labels: S.labels, showTrails: S.trailSec > 0, showRadar: S.radar,
     rounds: currentRounds(), ringFilter, lockLines: cfg("lockLines"), vectors: cfg("vectors"),
@@ -1709,6 +1841,7 @@ function drawMap(ctx, m) {
     // Objects win over strike marks at the same spot (they come first).
     hitboxes = hitboxes.concat(hits);
   }
+  drawIR(ctx, m, objs, "over");
   // Pinned objects keep their radar cone whatever the radar setting says.
   if (S.pinned.size && S.radar !== "all") {
     for (const o of objs) if (S.pinned.has(o.id) && o.id !== S.selected) drawRadar(ctx, m, o, { assumed: true });
@@ -2368,10 +2501,12 @@ function renderWeapons(panel) {
       el("td", { class: "tog", title: ag ? "Strike card: release, fall, impact, BDA" : "Why did it hit / miss?", onclick: (e) => { e.stopPropagation(); toggle(); } }, open ? "▾" : "▸"),
       el("td", { class: "num" }, fmtClock(s.launchTime - S.start)),
       el("td", {}, s.launcherPilot || s.launcherName || "?"),
-      el("td", {}, ag ? weaponLabel(s.weaponName) : s.weaponName),
+      el("td", {}, weaponLabel(s.weaponName),
+        s.ir ? el("span", { class: "ir-pill", title: `Heat-seeker (DCS: IR seeker${s.ir.seeker?.allAspect ? ", all-aspect" : ", rear-aspect only"}). No RWR warning; flares can decoy it.` }, "IR") : ""),
       el("td", {}, ag ? strike?.targetName || "—" : s.targetPilot || s.targetName || "—"),
       el("td", { class: "num" }, ag ? fmtShort(strike?.missDistance) : fmtDist(g.range)),
-      el("td", {}, outcomePill(ag ? strike?.result || s.outcome : s.outcome), s.dcsHit ? dcsBadge(`DCS reported a hit on ${s.dcsHit}`) : s.dcsConfirmed ? dcsBadge("DCS reported this launch") : "")));
+      el("td", {}, outcomePill(ag ? strike?.result || s.outcome : s.outcome), s.dcsHit ? dcsBadge(`DCS reported a hit on ${s.dcsHit}`) : s.dcsConfirmed ? dcsBadge("DCS reported this launch") : "",
+        s.ir?.decoy ? el("span", { class: "ir-pill decoy", title: `Estimate: from ${fmtRel(s.ir.decoy.t)} its predicted miss was ${fmtShort(s.ir.decoy.zemFlare)} to a flare vs ${fmtShort(s.ir.decoy.zemTarget)} to the jet` }, "flare?") : "")));
     if (open) {
       const card = ag && strike ? strikeCard(strike) : buildShotCard(s, { objects: S.objects, start: S.start, seek, onReplay: replayShot, charts });
       shots.append(el("tr", { class: "shotcard-row" }, el("td", { colspan: 7 }, card)));
@@ -2409,7 +2544,7 @@ function renderWeapons(panel) {
     kills.append(el("div", { class: "ev", style: { padding: "4px 0", cursor: "pointer" }, onclick: () => seek(k.time - 5) },
       el("span", { class: "num muted" }, fmtClock(k.time - S.start), "  "),
       el("b", { class: "k-kill" }, k.victimPilot || k.victimName), " ",
-      k.killerId ? `← ${k.killerPilot || k.killerName} (${k.weaponName})` : `destroyed (${k.cause})`,
+      k.killerId ? `← ${k.killerPilot || k.killerName} (${weaponLabel(k.weaponName)})` : `destroyed (${k.cause})`,
       k.confirmedBy === "DCS" ? dcsBadge("DCS reported this kill") : "",
       k.note ? el("div", { class: "faint", style: { fontSize: "11px", marginLeft: "52px" } }, k.note) : ""));
   }

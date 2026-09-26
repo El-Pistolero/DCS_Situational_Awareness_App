@@ -445,6 +445,15 @@ tr.shotcard-row > td { padding: 0 0 8px; background: transparent !important; }
 .chips.verdict span { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line-2); }
 .chips.verdict span.warn { color: var(--warn); border-color: var(--warn); }
 .chips.verdict span.good { color: var(--green); border-color: #2c6b45; }
+/* IR: DCS data carries a small badge; estimates are dashed and italic. */
+.chips.verdict span.dcs::after { content: "DCS"; font-size: 8px; letter-spacing: .04em; margin-left: 6px; padding: 0 3px; border-radius: 3px;
+  background: rgba(255,179,71,.16); color: #ffb347; vertical-align: 1px; }
+.chips.verdict span.est { border-style: dashed; font-style: italic; }
+.chips.verdict span.bad { color: #ff8a8a; border-color: #8a3a3a; }
+.shotcard .irnote { font-size: 10.5px; color: var(--muted); margin: 2px 0 8px; line-height: 1.35; }
+.ir-pill { display: inline-block; font-size: 9.5px; font-weight: 600; letter-spacing: .04em; color: #1b1206; background: #ffb347;
+  border-radius: 3px; padding: 0 4px; margin-left: 5px; vertical-align: 1px; }
+.ir-pill.decoy { background: transparent; color: #ffb347; border: 1px dashed #ffb347; font-style: italic; font-weight: 500; }
 
 /* ---------- Values read from DCS ---------- */
 .dcs-badge { font-size: 9px; font-weight: 700; letter-spacing: 0.04em; color: #0b0f14; background: var(--cyan); border-radius: 3px; padding: 0 4px; margin-left: 5px; vertical-align: 1px; }
@@ -547,3 +556,6 @@ body.mode-a2g .mapwrap::after { box-shadow: inset 0 0 0 2px var(--orange); }
 table.grid.targets td { vertical-align: middle; }
 table.grid.targets tr.tgroup td { background: #131d27; font-size: 12px; padding-top: 7px; }
 .mapchip.warn { color: var(--warn); border-color: #7a4d1f; cursor: help; }
+.legend-cats { display: flex; gap: 8px; flex-wrap: wrap; font-size: 10px; color: var(--muted); margin-top: 3px; }
+.legend-cats i { display: inline-block; width: 14px; height: 4px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+#trailLegend > div + .legend-bar { margin-top: 3px; }
