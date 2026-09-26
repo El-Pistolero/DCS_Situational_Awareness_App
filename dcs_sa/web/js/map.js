@@ -4,6 +4,8 @@
 // machine is offline the map falls back to a lat/lon grid and everything
 // tactical still draws.
 
+import { chrome, cssVar, rgba } from "./theme.js";
+
 const TILE = 256;
 
 export const LAYERS = {
@@ -261,13 +263,13 @@ export class TacticalMap {
   _draw() {
     const ctx = this.ctx;
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    ctx.fillStyle = "#0b0f14";
+    ctx.fillStyle = chrome().bg;
     ctx.fillRect(0, 0, this.w, this.h);
     const layer = LAYERS[this.layer];
     if (layer.url && this.failedTiles < 24) this._drawTiles(layer);
     if (!layer.url || this.failedTiles >= 24) this._drawGrid();
     if (layer.dim) {
-      ctx.fillStyle = `rgba(8,11,16,${layer.dim})`;
+      ctx.fillStyle = rgba("--bg", layer.dim);
       ctx.fillRect(0, 0, this.w, this.h);
     }
     // Lat/long grid over imagery too, when asked (it is always drawn without tiles).
@@ -281,7 +283,7 @@ export class TacticalMap {
     this._drawScale();
     if (layer.attribution && this.failedTiles < 24) {
       ctx.font = "10px system-ui, sans-serif";
-      ctx.fillStyle = "rgba(200,205,214,0.55)";
+      ctx.fillStyle = chrome().faint;
       ctx.textAlign = "right";
       ctx.fillText(layer.attribution, this.w - 6, this.h - 6);
     }
@@ -352,15 +354,15 @@ export class TacticalMap {
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(a + Math.PI / 2);
-    ctx.fillStyle = "rgba(8,12,17,0.7)";
+    ctx.fillStyle = rgba("--bg", 0.7);
     ctx.beginPath(); ctx.arc(0, 0, 14, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = "#ff5c5c";
     ctx.beginPath(); ctx.moveTo(0, -11); ctx.lineTo(5, 2); ctx.lineTo(-5, 2); ctx.closePath(); ctx.fill();
-    ctx.fillStyle = "rgba(220,225,232,0.85)";
+    ctx.fillStyle = chrome().scaleText;
     ctx.beginPath(); ctx.moveTo(0, 11); ctx.lineTo(5, 2); ctx.lineTo(-5, 2); ctx.closePath(); ctx.fill();
     ctx.restore();
     ctx.font = "bold 10px ui-monospace, monospace";
-    ctx.fillStyle = "#ffffff";
+    ctx.fillStyle = cssVar("--text");
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText("N", x + Math.cos(a) * 21, y + Math.sin(a) * 21);
@@ -377,9 +379,9 @@ export class TacticalMap {
     const lons = [tl[0], br[0], tr[0], bl[0]], lats = [tl[1], br[1], tr[1], bl[1]];
     const minLon = Math.floor(Math.min(...lons) / step) * step, maxLon = Math.max(...lons);
     const minLat = Math.floor(Math.min(...lats) / step) * step, maxLat = Math.max(...lats);
-    ctx.strokeStyle = `rgba(160,178,196,${alpha})`;
+    ctx.strokeStyle = chrome().grid(alpha);
     ctx.lineWidth = 1;
-    ctx.fillStyle = `rgba(190,202,214,${Math.min(0.85, alpha * 3)})`;
+    ctx.fillStyle = chrome().gridText(Math.min(0.85, alpha * 3));
     ctx.font = "10px ui-monospace, monospace";
     for (let lon = minLon; lon <= maxLon; lon += step) {
       const a = this.project(lon, minLat), b = this.project(lon, maxLat);
@@ -402,12 +404,12 @@ export class TacticalMap {
     const nice = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 25, 50, 100, 200, 500].find((v) => v >= target * 0.6) || 500;
     const px = (nice * unit) / mpp;
     const x = 12, y = this.h - 16;
-    ctx.strokeStyle = "rgba(220,225,232,0.8)";
+    ctx.strokeStyle = chrome().scale;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.moveTo(x, y - 5); ctx.lineTo(x, y); ctx.lineTo(x + px, y); ctx.lineTo(x + px, y - 5);
     ctx.stroke();
-    ctx.fillStyle = "rgba(220,225,232,0.85)";
+    ctx.fillStyle = chrome().scaleText;
     ctx.font = "11px ui-monospace, monospace";
     ctx.textAlign = "left";
     ctx.fillText(`${nice} ${metric ? "km" : "nm"}`, x + px + 6, y);

@@ -526,6 +526,7 @@ async function openSetup() {
   } catch { /* offline */ }
   if (!dlg.open) dlg.showModal();
 }
+import("./settings.js").then((m) => m.wireSettingsButton("btnSettings"));
 $("btnSetup").onclick = openSetup;
 $("btnSetup2").onclick = openSetup;
 const post = (body) => api("/api/live/source", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });

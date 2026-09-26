@@ -19,7 +19,7 @@ body.live { overflow: hidden; }
 
 .lv-own {
   position: absolute; left: 10px; top: 10px; display: grid; grid-template-columns: repeat(5, auto); gap: 4px 16px;
-  background: rgba(8,12,17,0.82); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; font-family: var(--mono);
+  background: var(--overlay); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; font-family: var(--mono);
 }
 .lv-own .k { font-size: 10px; color: var(--muted); letter-spacing: 0.06em; }
 .lv-own .v { font-size: 20px; font-variant-numeric: tabular-nums; }

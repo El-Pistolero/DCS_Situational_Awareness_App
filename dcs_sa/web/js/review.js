@@ -15,6 +15,7 @@ import { buildShotCard } from "./shotcard.js";
 import { watchRecordings } from "./watch.js";
 import { MODES, createSettings, modeSwitch, reflectMode } from "./modes.js";
 import { createDisplayPanel } from "./layers.js";
+import { wireSettingsButton } from "./settings.js";
 import { createSelectionUI } from "./selmenu.js";
 import { RESULT_COLOR, drawStrikes, kAlt, missText, prepareStrikes, weaponsInFlight } from "./strikeviz.js";
 import { FAMILY_LABEL, groupPasses, posAt, strikeGeometry, weaponLabel } from "./strikegeom.js";
@@ -564,6 +565,7 @@ async function init() {
     actions: ACTIONS, describe: describeTarget, cardHost: $("hudCol"),
     onClose: () => { if (S.selTarget?.kind === "point") { S.selTarget = null; sel.set(null); } else select(null); },
   });
+  wireSettingsButton("btnSettings");
   $("btnFollow").onclick = () => setFollow(!S.follow);
   $("btn2d").onclick = () => setView("2d");
   $("btn3d").onclick = () => setView("3d");

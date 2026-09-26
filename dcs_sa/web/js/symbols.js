@@ -1,5 +1,6 @@
 // Drawing of tactical objects on the map.  Shared by review and live views.
 
+import { cssVar, rgba } from "./theme.js";
 import { COLORS, M_TO_FT, MPS_TO_KT, destination, isNum, sideColor, units } from "./util.js";
 
 const TAU = Math.PI * 2;
@@ -84,7 +85,7 @@ function drawWeapon(ctx, x, y, ang, color, ir = false) {
   ctx.translate(x, y);
   ctx.rotate(ang);
   ctx.strokeStyle = color;
-  ctx.fillStyle = "#fff";
+  ctx.fillStyle = cssVar("--text");
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.moveTo(-7, 0); ctx.lineTo(7, 0);
@@ -148,8 +149,8 @@ function drawBullseye(ctx, map, obj) {
   const [x, y] = map.project(obj.lon, obj.lat);
   const nm = 1852;
   ctx.save();
-  ctx.strokeStyle = "rgba(200,205,214,0.35)";
-  ctx.fillStyle = "rgba(200,205,214,0.55)";
+  ctx.strokeStyle = rgba("--muted", 0.45);
+  ctx.fillStyle = rgba("--muted", 0.7);
   ctx.font = "10px ui-monospace, monospace";
   ctx.lineWidth = 1;
   const mpp = map.metersPerPixel();
@@ -159,7 +160,7 @@ function drawBullseye(ctx, map, obj) {
     ctx.beginPath(); ctx.arc(x, y, rp, 0, TAU); ctx.stroke();
     ctx.fillText(`${r}`, x + 3, y - rp - 2);
   }
-  ctx.strokeStyle = "rgba(200,205,214,0.8)";
+  ctx.strokeStyle = rgba("--muted", 0.9);
   ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.arc(x, y, 6, 0, TAU); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(x - 10, y); ctx.lineTo(x + 10, y); ctx.moveTo(x, y - 10); ctx.lineTo(x, y + 10); ctx.stroke();
@@ -515,14 +516,14 @@ export function drawScene(ctx, map, objects, opts = {}) {
       }
       if (o.tag) lines.push(o.tag);
       if (o.tag2) lines.push(o.tag2);
-      const color = o.category === "weapon" ? "#e8ecf2" : sideColor(o);
+      const color = o.category === "weapon" ? cssVar("--text") : sideColor(o);
       const lx = x + 14, ly = y - 8;
       for (let i = 0; i < lines.length; i++) {
         const txt = lines[i];
         ctx.lineWidth = 3;
-        ctx.strokeStyle = "rgba(6,9,13,0.85)";
+        ctx.strokeStyle = rgba("--bg", 0.85);
         ctx.strokeText(txt, lx, ly + i * (fs + 1));
-        ctx.fillStyle = i === 0 ? color : "rgba(220,225,232,0.8)";
+        ctx.fillStyle = i === 0 ? color : rgba("--text", 0.8);
         ctx.fillText(txt, lx, ly + i * (fs + 1));
       }
     }
@@ -611,7 +612,7 @@ export function drawEdgePointers(ctx, map, from, list, inset = 22) {
       const vert = Math.sin(a.ang) > 0.3 ? -1 : Math.sin(a.ang) < -0.3 ? 1 : 0;
       const ty = Math.max(10, Math.min(map.h - 10, iy + vert * (8 + (a.edge === "h" ? 13 * clash : 0))));
       ctx.lineWidth = 3;
-      ctx.strokeStyle = "rgba(6,9,13,0.9)";
+      ctx.strokeStyle = rgba("--bg", 0.9);
       ctx.strokeText(it.text, tx, ty);
       ctx.fillStyle = it.color;
       ctx.fillText(it.text, tx, ty);

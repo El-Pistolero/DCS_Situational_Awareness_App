@@ -5,6 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DCS SA Guide</title>
 <link rel="icon" type="image/png" href="/static/favicon-32.png">
+<script>
+  try {
+    var t = localStorage.getItem("dcs-sa.theme");
+    document.documentElement.dataset.theme = ["green", "bright", "blue"].indexOf(t) >= 0 ? t : "green";
+  } catch (e) { document.documentElement.dataset.theme = "green"; }
+</script>
 <link rel="stylesheet" href="/static/css/app.css">
 <style>
   /* The app pages never scroll; this one does (and keeps its header and contents in view). */

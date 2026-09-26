@@ -52,6 +52,7 @@ From now on, open the app from the **DCS SA** icon on your desktop, or press the
 3. Press the **Space bar** (or the **▶** button at the bottom left) to play or pause. Drag along the timeline at the bottom to jump around.
 4. Click any aircraft, missile or ground unit to see what it is. **Right-click** it for everything you can do with it.
 5. For the list of keyboard shortcuts, click the **⌨** button at the top right, or press **?** (hold **Shift** and press **/** on most keyboards). **V** switches between the map and 3D.
+6. The **⚙** button next to it opens **Settings**, where you can change the look: **Cockpit green** (green on black, the default), **Bright** (black on white, for a lit room) or **Night blue**. Your choice is remembered.
 
 To go back to the list, click **Recordings** (top left). To read this guide inside the app, click **Guide** on the Flight debrief page.
 

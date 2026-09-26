@@ -6,6 +6,12 @@
 <title>DCS SA Debrief</title>
 <meta name="description" content="Tacview / ACMI flight recording debrief for DCS World">
 <link rel="icon" type="image/png" href="/static/favicon-32.png">
+<script>
+  try {
+    var t = localStorage.getItem("dcs-sa.theme");
+    document.documentElement.dataset.theme = ["green", "bright", "blue"].indexOf(t) >= 0 ? t : "green";
+  } catch (e) { document.documentElement.dataset.theme = "green"; }
+</script>
 <link rel="stylesheet" href="/static/css/app.css">
 <link rel="stylesheet" href="/static/css/strike.css">
 </head>
@@ -26,6 +32,7 @@
       </select>
       <button id="btnDebrief" title="Download a text debrief" disabled>Debrief .md</button>
       <a href="/live" target="_blank" rel="noopener"><button title="Open the live second-screen view">Live view ↗</button></a>
+      <button id="btnSettings" title="Settings (theme)">⚙</button>
       <button id="btnKeys" title="Keyboard shortcuts (?)">⌨</button>
     </div>
   </header>

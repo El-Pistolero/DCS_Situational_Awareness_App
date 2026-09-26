@@ -5,6 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DCS SA Live</title>
 <link rel="icon" type="image/png" href="/static/favicon-32.png">
+<script>
+  try {
+    var t = localStorage.getItem("dcs-sa.theme");
+    document.documentElement.dataset.theme = ["green", "bright", "blue"].indexOf(t) >= 0 ? t : "green";
+  } catch (e) { document.documentElement.dataset.theme = "green"; }
+</script>
 <link rel="stylesheet" href="/static/css/app.css">
 <link rel="stylesheet" href="/static/css/live.css">
 </head>
@@ -28,6 +34,7 @@
     <button id="btnOrient" class="only2d" title="Heading-up / north-up">Heading up</button>
     <select id="layerSel" class="only2d" title="Ground"></select>
     <button id="btnSound" title="Audible missile warning (S)">🔇 Sound</button>
+    <button id="btnSettings" title="Settings (theme)">⚙</button>
     <button id="btnKeys" title="Keyboard shortcuts (?)">⌨</button>
     <button id="btnSetup" title="Connection settings (Ctrl+,)">⚙ Connect</button>
   </header>
