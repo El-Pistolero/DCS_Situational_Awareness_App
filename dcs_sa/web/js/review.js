@@ -682,30 +682,61 @@ function setMe(target) {
 // Library
 // ---------------------------------------------------------------------------
 
-/** The version line: up to date, an update to get, or a failed check to retry. */
+/** The version line: up to date, an update to get and install, or a failed check. */
 function renderVersion(host, up, tries = 0) {
   host.innerHTML = "";
   host.classList.toggle("note-update", !!up?.available);
   // Only the newest render of this line may schedule a follow-up, so going
   // back to the library repeatedly cannot stack up pollers.
   const gen = (host._gen = (host._gen || 0) + 1);
-  const check = async (force, n = 0) => {
+  const check = async (force, n = 0, path = "/api/update") => {
     if (host._gen !== gen) return;
     try {
-      const { body } = await api(`/api/update${force ? "?force=1" : ""}`);
+      const { body } = await api(`${path}${force ? "?force=1" : ""}`);
       if (S.status) S.status.update = body;
       if (host._gen === gen) renderVersion(host, body, n);
     } catch { /* app not reachable; the line keeps what it last showed */ }
   };
+  const post = async (path) => {
+    try {
+      const { body } = await api(path, { method: "POST" });
+      if (!body.ok && body.error) flash(body.error);
+      return body;
+    } catch (err) { flash(err.message); return { ok: false }; }
+  };
   const version = up?.current || S.status?.version || "";
+
   if (up?.available) {
-    host.append(`DCS SA ${up.latest} is out (you have ${version}). `,
-      el("button", { onclick: async () => { try { await api("/api/open-release", { method: "POST" }); } catch { /* offline */ } } }, "Get it"),
-      el("span", { class: "muted" }, " Your recordings and settings are kept."));
+    const inst = up.install || {};
+    const mb = (n) => `${(n / 1048576).toFixed(1)} MB`;
+    host.append(`DCS SA ${up.latest} is out (you have ${version}). `);
+    if (inst.state === "downloading") {
+      const pct = inst.total ? Math.round((inst.done / inst.total) * 100) : null;
+      host.append(el("span", {}, pct === null ? `Downloading… ${mb(inst.done || 0)}` : `Downloading… ${pct}%`));
+      setTimeout(() => check(false, 0), 700);
+    } else if (inst.state === "ready") {
+      host.append(el("button", { onclick: async () => {
+        flash("Installing — DCS SA will close and reopen");
+        await post("/api/update/install");
+      } }, "Install now"),
+        el("span", { class: "muted" }, " Downloaded and checked. DCS SA closes, updates and reopens."));
+    } else {
+      // Windows only: elsewhere (and if anything goes wrong) fall back to the page.
+      const canInstall = (S.status?.platform || "") === "win32";
+      host.append(el("button", { onclick: async () => {
+        if (!canInstall) { await post("/api/open-release"); return; }
+        const body = await post("/api/update/download");
+        if (body.ok) check(false, 0); else await post("/api/open-release");
+      } }, canInstall ? "Get it" : "Open download page"),
+        inst.state === "failed"
+          ? el("span", { class: "muted" }, ` Last try failed: ${inst.error}. `)
+          : el("span", { class: "muted" }, canInstall
+            ? " Downloads and installs itself; your recordings and settings are kept."
+            : " Opens the download page; the installer only runs on Windows."));
+    }
     return;
   }
-  // The answer arrives on a background thread, so an unsettled line asks again
-  // by itself.  Without this it sat on "checking for updates…" for good.
+
   const settled = up?.enabled === false || (up?.checked && !up?.checking);
   const gaveUp = tries >= 20;   // ~25 s: far longer than the 6 s request timeout
   const status = up?.enabled === false ? "update checks are off"

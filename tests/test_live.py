@@ -531,6 +531,125 @@ class PausedMissionTests(unittest.TestCase):
         self.assertIn("self", w.objects)
 
 
+class UpdateDownloadTests(unittest.TestCase):
+    """Fetching and checking the installer, without leaving the app."""
+
+    def setUp(self):
+        import tempfile
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_only_this_project_s_own_release_downloads_are_allowed(self):
+        from dcs_sa.update import safe_asset_url
+
+        good = ("https://github.com/El-Pistolero/DCS_Situational_Awareness_App"
+                "/releases/download/v0.1.53/DCS-SA-Setup.exe")
+        self.assertTrue(safe_asset_url(good))
+        for bad in (good.replace("https", "http"),
+                    "https://evil.example/DCS-SA-Setup.exe",
+                    "https://github.com/someone/else/releases/download/v1/DCS-SA-Setup.exe",
+                    "https://github.com/El-Pistolero/DCS_Situational_Awareness_App/raw/HEAD/x.exe",
+                    "", None):
+            self.assertFalse(safe_asset_url(bad), bad)
+
+    def _serve(self, payload):
+        """A stand-in for the release download, on localhost."""
+        import http.server
+        import threading as th
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        th.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        return f"http://127.0.0.1:{srv.server_address[1]}/DCS-SA-Setup.exe"
+
+    def test_a_good_download_is_kept_and_a_tampered_one_is_not(self):
+        import hashlib
+        from unittest import mock
+
+        from dcs_sa import update
+
+        payload = b"pretend installer" * 100
+        url = self._serve(payload)
+        dest = self.dir / "DCS-SA-Setup.exe"
+        good = hashlib.sha256(payload).hexdigest()
+        with mock.patch.object(update, "safe_asset_url", return_value=True):
+            update.download(url, dest, good, expected_size=len(payload))
+            self.assertEqual(dest.read_bytes(), payload)
+
+            dest.unlink()
+            with self.assertRaises(ValueError):
+                update.download(url, dest, "0" * 64, expected_size=len(payload))
+            self.assertFalse(dest.exists())                       # nothing runnable left behind
+            self.assertFalse((self.dir / "DCS-SA-Setup.exe.part").exists())
+
+    def test_an_unexpected_address_is_refused_before_any_request(self):
+        from dcs_sa import update
+
+        with self.assertRaises(ValueError):
+            update.download("https://evil.example/x.exe", self.dir / "x.exe")
+
+    def test_the_downloader_reports_ready_and_reuses_the_file(self):
+        import hashlib
+        from unittest import mock
+
+        from dcs_sa import update
+
+        payload = b"installer bytes" * 50
+        url = self._serve(payload)
+        d = update.Downloader(self.dir)
+        with mock.patch.object(update, "safe_asset_url", return_value=True):
+            d.start("0.1.53", url, hashlib.sha256(payload).hexdigest(), len(payload))
+            for _ in range(200):
+                if d.status().get("state") != "downloading":
+                    break
+                time.sleep(0.02)
+        self.assertEqual(d.status()["state"], "ready", d.status())
+        self.assertTrue(d.ready_file().is_file())
+        # Asked again, it recognises the file it already has.
+        self.assertEqual(d.start("0.1.53", url, None, len(payload))["state"], "ready")
+
+    def test_a_failed_download_is_reported_not_raised(self):
+        from dcs_sa import update
+
+        d = update.Downloader(self.dir)
+        d.start("0.1.53", "https://evil.example/x.exe", None, 10)
+        for _ in range(200):
+            if d.status().get("state") != "downloading":
+                break
+            time.sleep(0.02)
+        self.assertEqual(d.status()["state"], "failed")
+        self.assertIsNone(d.ready_file())
+
+    def test_install_refuses_when_nothing_was_downloaded(self):
+        from dcs_sa.config import Config
+        from dcs_sa.server.app import start, stop
+
+        cfg = Config()
+        cfg.port = 0
+        cfg.bridge_enabled = False
+        cfg.recording_dirs = []
+        app, httpd, url = start(cfg)
+        try:
+            req = urllib.request.Request(url + "api/update/install", data=b"{}", method="POST")
+            body = json.loads(urllib.request.urlopen(req, timeout=5).read())
+            self.assertFalse(body["ok"])
+            self.assertIn("nothing downloaded", body["error"])
+        finally:
+            stop(app, httpd)
+
+
 class LiveSessionTests(unittest.TestCase):
     def test_reset_starts_a_new_session(self):
         w = LiveWorld()

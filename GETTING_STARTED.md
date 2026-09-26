@@ -130,9 +130,7 @@ DCS SA remembers this and connects again by itself the next time you open it. To
 
 The **Flight debrief** page always shows which version you have, just under the Guide line: *"DCS SA 0.1.51 · up to date"*, with a **Check again** link. When a newer one exists it says so instead — *"DCS SA 0.1.52 is out (you have 0.1.51)"* — with a **Get it** button. DCS SA checks about once an hour, and never downloads or installs anything by itself.
 
-1. Click **Get it**. Your browser opens the download page. Click **DCS-SA-Setup.exe** under **Assets**.
-2. Close DCS SA.
-3. Double-click the downloaded **DCS-SA-Setup** and click through the installer as before. It replaces the old version.
+Click **Get it** and DCS SA does the rest: it downloads the new version, checks it against the published checksum, and shows **Install now**. Click that and the app closes, updates and reopens by itself. Nothing to find in your Downloads folder, and no wizard to click through.
 
 Your recordings, settings and the DCS bridge stay. You never have to reinstall the bridge: DCS SA brings its scripts up to date by itself each time it starts, and DCS picks them up the next time you start DCS.
 

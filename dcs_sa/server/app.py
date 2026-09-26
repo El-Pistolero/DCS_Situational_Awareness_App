@@ -13,6 +13,7 @@ import mimetypes
 import os
 import re
 import socket
+import sys
 import threading
 import time
 import webbrowser
@@ -26,7 +27,7 @@ from .. import __version__
 from ..config import Config
 from .. import usersettings
 from ..diagnostics import console, install as install_console
-from ..update import REPO as UPDATE_REPO, RELEASES_PAGE, UpdateChecker
+from ..update import REPO as UPDATE_REPO, RELEASES_PAGE, Downloader, UpdateChecker, launch_installer
 from ..dcs_profile import read_profile
 from ..telemetry.dcs_bridge import DcsBridgeListener
 from ..telemetry.live_world import LiveWorld
@@ -143,6 +144,8 @@ class App:
         self.open_debrief = None      # (key) -> show that recording in the debrief window
         self.profile = read_profile()
         self.updates = UpdateChecker(cfg.update_check)
+        self.downloads = Downloader(Path(cfg.upload_dir).parent / "updates")
+        self.quit: Any = None   # set by the desktop shell, to close for an install
         self.tiles = TileCache(str(Path(cfg.upload_dir).parent / "tilecache"))
         self.dcsmap = DcsMapStore(str(Path(cfg.upload_dir).parent / "tilecache" / "dcs"))
         self.store.extras = lambda: {"flightlog_dir": self.flightlog_dir, "airbases": self.dcsmap.airbases}
@@ -179,6 +182,7 @@ class App:
             "profile": self.profile,
             "dcsMap": self.dcsmap.status(),
             "desktop": self.desktop,
+            "platform": sys.platform,
             "update": self.updates.status(),
             "warnings": self.warnings,
         }
@@ -254,7 +258,8 @@ def make_handler(app: App):
                 if path == "/api/status":
                     return self._json(app.status())
                 if path == "/api/update":
-                    return self._json(app.updates.status(force=q.get("force") == "1"))
+                    return self._json({**app.updates.status(force=q.get("force") == "1"),
+                                       "install": app.downloads.status()})
                 if path == "/api/console":
                     since = int(q.get("since") or 0)
                     return self._json({"entries": console.entries(since), **console.counts(),
@@ -337,6 +342,28 @@ def make_handler(app: App):
                         app.open_debrief(key)
                         return self._json({"ok": True})
                     return self._json({"ok": False})
+                if path == "/api/update/download":
+                    up = app.updates.status()
+                    if not up.get("available") or not up.get("download"):
+                        return self._json({"ok": False, "error": "no update to download"})
+                    if os.name != "nt":
+                        return self._json({"ok": False, "error": "the installer only runs on Windows"})
+                    state = app.downloads.start(str(up.get("latest")), str(up["download"]),
+                                                up.get("sha256"), int(up.get("size") or 0))
+                    return self._json({"ok": True, "install": state})
+                if path == "/api/update/install":
+                    installer = app.downloads.ready_file()
+                    if installer is None:
+                        return self._json({"ok": False, "error": "nothing downloaded yet"})
+                    try:
+                        launch_installer(installer)
+                    except (OSError, RuntimeError) as exc:
+                        log.warning("Could not start the installer: %s", exc)
+                        return self._json({"ok": False, "error": str(exc)})
+                    log.info("Installing the update; DCS SA will close and reopen")
+                    # The running exe cannot be replaced, so step out of the way.
+                    threading.Timer(1.0, lambda: app.quit and app.quit()).start()
+                    return self._json({"ok": True})
                 if path == "/api/open-release":
                     # Opens the project's own releases page in the system browser.
                     # No URL comes from the page, so this can't be pointed elsewhere.

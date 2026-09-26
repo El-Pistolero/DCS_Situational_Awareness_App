@@ -132,6 +132,15 @@ def run(cfg: Config, live_only: bool = False) -> int:
                     pass
 
         app.open_debrief = open_debrief
+        # Installing an update replaces this exe, so the app has to let go first.
+        def quit_for_update() -> None:
+            for win in list(getattr(webview, "windows", []) or []):
+                try:
+                    win.destroy()
+                except Exception:  # noqa: BLE001 - already closing
+                    pass
+
+        app.quit = quit_for_update
         # Keep settings (modes, Display choices) between runs: pywebview 5 is private by default.
         storage = os.path.join(os.path.expanduser("~"), ".dcs-sa", "webview")
         os.makedirs(storage, exist_ok=True)
@@ -155,6 +164,7 @@ def run(cfg: Config, live_only: bool = False) -> int:
 
         app.open_live_window = lambda: launch(url + "live")
         app.open_debrief = lambda key: launch(f"{url}#rec={key}" if key else url)
+        app.quit = lambda: os._exit(0)   # no window to close in the browser fallback
         launch(first)
         print(f"DCS SA running at {url} - close the window to quit.")
         try:
