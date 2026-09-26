@@ -527,6 +527,7 @@ async function openSetup() {
   if (!dlg.open) dlg.showModal();
 }
 import("./settings.js").then((m) => m.wireSettingsButton("btnSettings"));
+import("./console.js").then((m) => m.reportPageErrors());
 $("btnSetup").onclick = openSetup;
 $("btnSetup2").onclick = openSetup;
 const post = (body) => api("/api/live/source", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -544,6 +545,8 @@ $("btnDisc").onclick = async () => { await post({ type: "none" }); S.trails.clea
 // -- keyboard -----------------------------------------------------------------------
 
 const LIVE_KEYS = [
+  { keys: ["Shift+C"], group: "Panels", label: "Console (diagnostics)",
+    run: () => import("./console.js").then((m) => m.openConsole()) },
   { keys: ["v"], group: "View", label: "2D / 3D", run: () => setView(S.view === "3d" ? "2d" : "3d") },
   { keys: ["c"], group: "View", label: "3D camera: orbit → chase → padlock", when: () => S.view === "3d", run: () => cycleCam() },
   { keys: ["t"], group: "View", label: "Padlock: next threat", run: () => cyclePadlock() },

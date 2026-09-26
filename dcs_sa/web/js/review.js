@@ -16,6 +16,7 @@ import { watchRecordings } from "./watch.js";
 import { MODES, createSettings, modeSwitch, reflectMode } from "./modes.js";
 import { createDisplayPanel } from "./layers.js";
 import { wireSettingsButton } from "./settings.js";
+import { openConsole, reportPageErrors } from "./console.js";
 import { createSelectionUI } from "./selmenu.js";
 import { RESULT_COLOR, drawStrikes, kAlt, missText, prepareStrikes, weaponsInFlight } from "./strikeviz.js";
 import { FAMILY_LABEL, groupPasses, posAt, strikeGeometry, weaponLabel } from "./strikegeom.js";
@@ -566,6 +567,7 @@ async function init() {
     onClose: () => { if (S.selTarget?.kind === "point") { S.selTarget = null; sel.set(null); } else select(null); },
   });
   wireSettingsButton("btnSettings");
+  reportPageErrors();
   $("btnFollow").onclick = () => setFollow(!S.follow);
   $("btn2d").onclick = () => setView("2d");
   $("btn3d").onclick = () => setView("3d");
@@ -1169,6 +1171,7 @@ const KEYS = [
   { keys: ["Shift+a"], group: "Mode", label: "Dogfight (A-A) mode on / off", run: () => SET.toggle("a2a") },
   { keys: ["Shift+g"], group: "Mode", label: "Ground-attack (A-G) mode on / off", run: () => SET.toggle("a2g") },
   { keys: ["d"], group: "View", label: "Display options", run: () => display.toggle() },
+  { keys: ["Shift+C"], group: "Panels", label: "Console (diagnostics)", run: () => openConsole() },
   { keys: ["z"], group: "View", label: "Declutter on / off", run: () => { S.declutter = !S.declutter; onDisplayChange(null); } },
   { keys: ["r"], group: "View", label: "SAM rings: all → hostile → near → off", run: () => cycleSetting("rings", ["all", "hostile", "near", "off"], "SAM rings") },
   { keys: ["b"], group: "View", label: "Bullseye: rings → calls → off", run: () => cycleSetting("bullseye", ["rings", "calls", "off"], "Bullseye") },

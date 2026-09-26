@@ -379,6 +379,96 @@ class BuildVersionTests(unittest.TestCase):
             self.assertIn('__version__ = "0.1.0"', (copy / "dcs_sa" / "__init__.py").read_text())
 
 
+class ConsoleTests(unittest.TestCase):
+    """The diagnostics buffer behind the console panel."""
+
+    def test_keeps_the_newest_and_counts_problems(self):
+        from dcs_sa.diagnostics import ConsoleBuffer
+
+        c = ConsoleBuffer(capacity=3)
+        for i in range(5):
+            c.add("INFO", f"line {i}")
+        c.add("WARNING", "careful")
+        c.add("ERROR", "broken")
+        rows = c.entries()
+        self.assertEqual([r["message"] for r in rows], ["line 4", "careful", "broken"])
+        self.assertEqual(c.counts()["warnings"], 1)
+        self.assertEqual(c.counts()["errors"], 1)
+        self.assertEqual([r["seq"] for r in rows], [5, 6, 7])   # numbering survives the drop
+
+    def test_since_returns_only_what_is_new(self):
+        from dcs_sa.diagnostics import ConsoleBuffer
+
+        c = ConsoleBuffer()
+        c.add("INFO", "one")
+        first = c.entries()[-1]["seq"]
+        self.assertEqual(c.entries(since=first), [])
+        c.add("INFO", "two")
+        self.assertEqual([r["message"] for r in c.entries(since=first)], ["two"])
+
+    def test_it_captures_the_app_s_own_logging(self):
+        import logging
+
+        from dcs_sa.diagnostics import ConsoleBuffer
+
+        c = ConsoleBuffer()
+        logger = logging.getLogger("dcs_sa.test_only")
+        logger.addHandler(c)
+        logger.setLevel(logging.INFO)
+        try:
+            logger.info("bridge: receiving")
+            logger.debug("too quiet to show")
+            logger.warning("port busy")
+        finally:
+            logger.removeHandler(c)
+        rows = c.entries()
+        self.assertEqual([r["message"] for r in rows], ["bridge: receiving", "port busy"])
+        self.assertEqual(rows[0]["source"], "test_only")   # the dcs_sa. prefix is dropped
+        self.assertEqual(rows[1]["level"], "WARNING")
+
+    def test_a_broken_log_call_never_raises_into_the_app(self):
+        import logging
+
+        from dcs_sa.diagnostics import ConsoleBuffer
+
+        c = ConsoleBuffer()
+        rec = logging.LogRecord("x", logging.INFO, __file__, 1, "%d apples", ("not a number",), None)
+        c.emit(rec)   # must not raise
+        self.assertIn("unprintable", c.entries()[-1]["message"])
+
+    def test_the_api_serves_and_accepts_entries(self):
+        from dcs_sa.config import Config
+        from dcs_sa.diagnostics import console
+        from dcs_sa.server.app import start, stop
+
+        console.clear()
+        cfg = Config()
+        cfg.port = 0
+        cfg.bridge_enabled = False
+        cfg.recording_dirs = []
+        app, httpd, url = start(cfg)
+        try:
+            got = json.loads(urllib.request.urlopen(url + "api/console", timeout=5).read())
+            self.assertTrue(any("starting" in e["message"] for e in got["entries"]), got["entries"])
+            # A page reporting its own error lands in the same buffer.
+            req = urllib.request.Request(url + "api/console", method="POST",
+                                         data=json.dumps({"level": "ERROR", "message": "page blew up"}).encode())
+            urllib.request.urlopen(req, timeout=5)
+            after = json.loads(urllib.request.urlopen(url + "api/console", timeout=5).read())
+            self.assertEqual(after["entries"][-1]["message"], "page blew up")
+            self.assertEqual(after["entries"][-1]["source"], "page")
+            self.assertEqual(after["errors"], 1)
+            # An unknown level is refused rather than stored.
+            bad = urllib.request.Request(url + "api/console", method="POST",
+                                         data=json.dumps({"level": "SHOUT", "message": "x"}).encode())
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(bad, timeout=5)
+            self.assertEqual(ctx.exception.code, 400)
+        finally:
+            stop(app, httpd)
+            console.clear()
+
+
 class LiveSessionTests(unittest.TestCase):
     def test_reset_starts_a_new_session(self):
         w = LiveWorld()

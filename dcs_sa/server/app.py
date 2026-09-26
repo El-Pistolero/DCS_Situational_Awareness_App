@@ -25,6 +25,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from .. import __version__
 from ..config import Config
 from .. import usersettings
+from ..diagnostics import console, install as install_console
 from ..update import REPO as UPDATE_REPO, RELEASES_PAGE, UpdateChecker
 from ..dcs_profile import read_profile
 from ..telemetry.dcs_bridge import DcsBridgeListener
@@ -254,6 +255,10 @@ def make_handler(app: App):
                     return self._json(app.status())
                 if path == "/api/update":
                     return self._json(app.updates.status(force=q.get("force") == "1"))
+                if path == "/api/console":
+                    since = int(q.get("since") or 0)
+                    return self._json({"entries": console.entries(since), **console.counts(),
+                                       "startedAt": console.started})
                 if path == "/api/recordings":
                     return self._json({"recordings": app.store.scan(), "dirs": app.store.dirs})
                 if path.startswith("/api/recording/"):
@@ -353,6 +358,17 @@ def make_handler(app: App):
                     result = install_bridge()
                     app.profile = read_profile()
                     return self._json(result, 200 if result.get("ok") else 404)
+                if path == "/api/console":
+                    body = self._body_json()
+                    if body.get("clear"):
+                        console.clear()
+                        log.info("Console cleared")
+                        return self._json({"ok": True})
+                    level = str(body.get("level") or "ERROR").upper()
+                    if level not in ("INFO", "WARNING", "ERROR"):
+                        return self._error(400, "unknown level")
+                    console.add(level, str(body.get("message") or "")[:2000], source="page")
+                    return self._json({"ok": True})
                 if path == "/api/player":
                     # "Remember this name as me": kept for the next runs too.
                     body = self._body_json()
@@ -535,7 +551,9 @@ def start(cfg: Config):
     Returns (app, httpd, url).  Used by both the console server and the
     desktop shell.
     """
+    install_console()
     app = App(cfg)
+    log.info("DCS SA %s starting", __version__)
     try:
         from ..dcs_profile import refresh_bridge
         for path in refresh_bridge():

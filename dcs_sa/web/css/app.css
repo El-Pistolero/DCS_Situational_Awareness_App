@@ -410,6 +410,24 @@ table.grid tr.current td { background: #1f2c1f; }
 .set-note { font-size: 12px; margin: 0 0 12px; }
 .settings-dlg .row-end { display: flex; justify-content: flex-end; }
 
+.console-dlg { width: min(900px, 94vw); }
+.con-head { display: flex; align-items: baseline; gap: 12px; }
+.con-head h2 { margin: 0 0 6px; }
+.con-tools { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.con-tools label { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+.con-spacer { flex: 1; }
+.con-body { height: 52vh; overflow: auto; background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 8px; font: 11.5px/1.5 var(--mono); }
+.con-empty { padding: 12px 4px; }
+.con-row { display: grid; grid-template-columns: 62px 44px 92px minmax(0, 1fr); gap: 8px;
+  padding: 1px 0; border-bottom: 1px solid transparent; white-space: pre-wrap; word-break: break-word; }
+.con-row:hover { background: var(--panel); }
+.con-t, .con-src { color: var(--faint); }
+.con-lv { color: var(--muted); }
+.con-msg { color: var(--text); }
+.lvl-warning .con-lv, .lvl-warning .con-msg { color: var(--orange); }
+.lvl-error .con-lv, .lvl-error .con-msg, .lvl-critical .con-lv, .lvl-critical .con-msg { color: var(--red); }
+
 .version-line { margin: 10px 0; font-size: 12px; }
 .version-line.note-update { font-size: 13px; }
 button.linklike { background: none; border: 0; padding: 0 0 0 8px; color: var(--blue); cursor: pointer; font-size: inherit; }

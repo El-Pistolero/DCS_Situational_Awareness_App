@@ -6,6 +6,7 @@
 
 import { el } from "./util.js";
 import { THEMES, applyTheme, storedTheme } from "./theme.js";
+import { openConsole } from "./console.js";
 
 let dlg = null;
 
@@ -25,6 +26,12 @@ function build() {
   form.append(themes);
 
   form.append(el("p", { class: "muted set-note" }, "Your choice is remembered on this PC."));
+
+  const tools = el("fieldset", {}, el("legend", {}, "Troubleshooting"));
+  tools.append(el("div", { class: "set-row" },
+    el("button", { type: "button", onclick: () => { box.close(); openConsole(); } }, "Open console"),
+    el("small", { class: "muted" }, "What DCS SA is doing: telemetry, the bridge, files, warnings and errors.")));
+  form.append(tools);
   form.append(el("div", { class: "row-end" }, el("button", { value: "close" }, "Close")));
   box.append(form);
   document.body.append(box);

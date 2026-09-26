@@ -8,6 +8,7 @@ recent events - and computes a threat picture for the focus aircraft.
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 import threading
@@ -20,6 +21,8 @@ from ..acmi import types as T
 from ..acmi.model import Event
 from ..analysis import geo
 from ..analysis import ir as IR
+
+log = logging.getLogger(__name__)
 from ..analysis.strike import family
 from ..analysis.weapons import LAUNCHER_RADIUS, SUBMUNITION_RE, weapon_kind
 
@@ -184,7 +187,10 @@ class LiveWorld:
 
     def set_status(self, source: str, state: str, detail: str = "") -> None:
         with self._lock:
+            before = self.status.get("state") if isinstance(self.status, dict) else None
             self.status = {"source": source, "state": state, "detail": detail, "since": time.time()}
+        if before != state:
+            log.info("%s: %s%s", source, state, f" ({detail})" if detail else "")
 
     def set_focus(self, obj_id: Optional[str]) -> None:
         with self._lock:
@@ -365,6 +371,8 @@ class LiveWorld:
                     for o in payload.get("world") or []
                     if isinstance(o.get("lat"), (int, float)) and isinstance(o.get("lon"), (int, float)) and "radar" in o
                 ]
+            if self.bridge_status.get("state") != "receiving":
+                log.info("DCS bridge: receiving (%s)", (payload.get("self") or {}).get("name") or "own aircraft")
             self.bridge_status = {
                 "state": "receiving",
                 "packets": self.bridge_status.get("packets", 0) + 1,
