@@ -24,6 +24,7 @@ from .. import threatdb
 from ..analysis.dcsmerge import find_and_merge
 from ..analysis.report import analyze, guess_player, to_markdown
 from ..career import CareerStore, summarise
+from ..diagnostics import console
 from ..analysis.weapons import _weapon_samples as weapon_samples
 
 log = logging.getLogger(__name__)
@@ -191,6 +192,9 @@ class RecordingStore:
             return self._jobs.get(key)
 
     def _work(self, key: str, path: str, job: Job) -> None:
+        # Everything logged while this recording is read belongs to it, so the
+        # Career page can show why a mission came out the way it did.
+        mark = console.counts()["seq"]
         try:
             job.state = "parsing"
             t0 = time.time()
@@ -219,8 +223,11 @@ class RecordingStore:
             # never spoil a debrief that otherwise worked.
             if self.career is not None:
                 try:
-                    self.career.remember(summarise(key, report, path=path,
-                                                   modified=os.path.getmtime(path)))
+                    record = summarise(key, report, path=path, modified=os.path.getmtime(path))
+                    record["log"] = [{"t": e["t"], "level": e["level"], "source": e["source"],
+                                      "message": e["message"]}
+                                     for e in console.entries(since=mark)][-40:]
+                    self.career.remember(record)
                 except Exception as exc:  # noqa: BLE001
                     log.warning("could not record this mission in the career: %s", exc)
         except Exception as exc:  # surface any parse failure to the UI

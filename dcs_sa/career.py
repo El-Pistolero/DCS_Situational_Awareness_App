@@ -22,7 +22,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 log = logging.getLogger(__name__)
 
@@ -72,20 +72,37 @@ def summarise(key: str, report: Dict[str, Any], *, path: str = "", modified: Opt
 
     category = {str(o.get("id")): str(o.get("category") or "") for o in report.get("objects") or []}
     by_weapon: Dict[str, Dict[str, int]] = {}
+    events: List[Dict[str, Any]] = []
     for s in shots:
         name = str(s.get("weaponName") or "?")
-        row = by_weapon.setdefault(name, {"fired": 0, "hits": 0, "misses": 0, "kills": 0, "dcsHits": 0})
+        row = by_weapon.setdefault(name, {"fired": 0, "hits": 0, "misses": 0, "kills": 0,
+                                          "dcsHits": 0, "decoyed": 0})
         row["fired"] += 1
         outcome = str(s.get("outcome") or "")
         if outcome == "kill":
             row["kills"] += 1
-        scored = _scored(outcome, category.get(str(s.get("targetId")), ""))
+        cat = category.get(str(s.get("targetId")), "")
+        scored = _scored(outcome, cat)
         if scored == "hit":
             row["hits"] += 1
         elif scored == "miss":
             row["misses"] += 1
         if s.get("dcsHit"):
             row["dcsHits"] += 1
+        decoyed = bool((s.get("ir") or {}).get("decoy"))
+        if decoyed:
+            row["decoyed"] += 1
+        # One row per shot, so any figure on the page can be opened up.
+        events.append({
+            "t": _num(s.get("launchTime")),
+            "weapon": name,
+            "target": s.get("targetName") or None,
+            "category": cat,
+            "outcome": outcome,
+            "scored": scored,
+            "decoyed": decoyed,
+            "dcsHit": bool(s.get("dcsHit")),
+        })
 
     guns = {"bursts": len(bursts), "rounds": sum(int(b.get("rounds") or 0) for b in bursts),
             "kills": sum(1 for b in bursts if b.get("kill"))}
@@ -100,6 +117,20 @@ def summarise(key: str, report: Dict[str, Any], *, path: str = "", modified: Opt
         if not name:
             continue
         against.setdefault(str(name), {"kills": 0, "shotAt": 0, "category": ""})["shotAt"] += 1
+
+    for k in kills:
+        events.append({
+            "t": _num(k.get("time")),
+            "weapon": k.get("weaponName") or (k.get("weaponKind") or "gun"),
+            "target": k.get("victimName") or None,
+            "category": k.get("victimCategory") or "",
+            "outcome": "kill",
+            "scored": "hit",
+            "decoyed": False,
+            "dcsHit": bool(k.get("confirmedBy")),
+            "killOf": k.get("victimPilot") or None,
+        })
+    events.sort(key=lambda e: (e.get("t") is None, e.get("t") or 0.0))
 
     landings = [l for l in report.get("landings") or [] if l.get("aircraftId") == me]
     losses = [k for k in weapons.get("kills") or [] if k.get("victimId") == me]
@@ -124,6 +155,7 @@ def summarise(key: str, report: Dict[str, Any], *, path: str = "", modified: Opt
         "groundKills": sum(1 for k in kills if (k.get("victimCategory") or "") in ("ground", "sea")),
         "byWeapon": by_weapon,
         "against": against,
+        "events": events,
         "guns": guns,
         "landings": len(landings),
         "grades": [l.get("grade") for l in landings if l.get("grade")],
@@ -139,6 +171,7 @@ class CareerStore:
         self.path = Path(path)
         self._lock = threading.Lock()
         self._records: Dict[str, Dict[str, Any]] = {}
+        self._excluded: Set[str] = set()
         self._loaded = False
 
     # -- persistence -----------------------------------------------------------
@@ -157,12 +190,16 @@ class CareerStore:
         records = data.get("records") if isinstance(data, dict) else None
         if isinstance(records, dict):
             self._records = {k: v for k, v in records.items() if isinstance(v, dict)}
+        excluded = data.get("excluded") if isinstance(data, dict) else None
+        if isinstance(excluded, list):
+            self._excluded = {str(k) for k in excluded}
 
     def _save(self) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"v": VERSION, "records": self._records}, separators=(",", ":")),
+            tmp.write_text(json.dumps({"v": VERSION, "records": self._records,
+                                       "excluded": sorted(self._excluded)}, separators=(",", ":")),
                            encoding="utf-8")
             os.replace(tmp, self.path)
         except OSError as exc:
@@ -183,10 +220,32 @@ class CareerStore:
                 log.info("Career: recorded %s (%d kills, %d shots)", record.get("title") or key,
                          record.get("kills") or 0, record.get("shots") or 0)
 
+    def set_included(self, key: str, included: bool) -> bool:
+        """Count this mission towards the totals, or leave it out.
+
+        Kept apart from the mission record, so re-opening a recording (which
+        rewrites that record) cannot quietly put an excluded mission back.
+        """
+        with self._lock:
+            self._load()
+            if key not in self._records:
+                return False
+            if included:
+                self._excluded.discard(key)
+            else:
+                self._excluded.add(key)
+            self._save()
+            return True
+
+    def included(self, key: str) -> bool:
+        with self._lock:
+            self._load()
+            return key not in self._excluded
+
     def records(self, profile: Optional[str] = None) -> List[Dict[str, Any]]:
         with self._lock:
             self._load()
-            rows = list(self._records.values())
+            rows = [dict(r, included=str(k) not in self._excluded) for k, r in self._records.items()]
         if profile and profile != "all":
             rows = [r for r in rows if r.get("profile") == profile]
         return sorted(rows, key=lambda r: r.get("startedAt") or r.get("recordedAt") or 0)
@@ -209,18 +268,24 @@ class CareerStore:
         with self._lock:
             self._load()
             self._records = {}
+            self._excluded = set()
             self._save()
 
 
 def totals(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
-    """Add records up into the numbers the stats page shows."""
-    rows = list(rows)
+    """Add records up into the numbers the stats page shows.
+
+    Missions the user has unticked are left out, so a coop sortie or a test
+    flight need not skew a career.
+    """
+    rows = [r for r in rows if r.get("included", True)]
     by_weapon: Dict[str, Dict[str, int]] = {}
     against: Dict[str, Dict[str, int]] = {}
     by_aircraft: Dict[str, Dict[str, int]] = {}
     for r in rows:
         for name, w in (r.get("byWeapon") or {}).items():
-            row = by_weapon.setdefault(name, {"fired": 0, "hits": 0, "misses": 0, "kills": 0, "dcsHits": 0})
+            row = by_weapon.setdefault(name, {"fired": 0, "hits": 0, "misses": 0, "kills": 0,
+                                              "dcsHits": 0, "decoyed": 0})
             for k in row:
                 row[k] += int(w.get(k) or 0)
         for name, a in (r.get("against") or {}).items():

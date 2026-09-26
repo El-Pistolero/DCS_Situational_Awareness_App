@@ -36,7 +36,7 @@ class SummariseTests(unittest.TestCase):
         self.assertEqual(self.sortie["against"]["MiG-29S"]["category"], "fixedwing")
 
     def test_weapons_are_counted_by_name(self):
-        self.assertEqual(self.sortie["byWeapon"]["AIM_120C"], {"fired": 1, "hits": 1, "misses": 0, "kills": 1, "dcsHits": 0})
+        self.assertEqual(self.sortie["byWeapon"]["AIM_120C"], {"fired": 1, "hits": 1, "misses": 0, "kills": 1, "dcsHits": 0, "decoyed": 0})
         self.assertEqual(self.dogfight["byWeapon"]["AIM_9"]["fired"], 2)
         self.assertEqual(self.dogfight["byWeapon"]["AIM_9"]["kills"], 1)
 
@@ -89,7 +89,7 @@ class ScoringTests(unittest.TestCase):
             ], "kills": [], "bursts": []},
         }
         row = summarise("k", report)
-        self.assertEqual(row["byWeapon"]["AIM_9"], {"fired": 2, "hits": 1, "misses": 1, "kills": 1, "dcsHits": 0})
+        self.assertEqual(row["byWeapon"]["AIM_9"], {"fired": 2, "hits": 1, "misses": 1, "kills": 1, "dcsHits": 0, "decoyed": 0})
         self.assertEqual(row["byWeapon"]["Mk_82"]["hits"], 1)
         t = totals([row])
         self.assertAlmostEqual(t["accuracy"], 2 / 3)
@@ -115,6 +115,74 @@ class TotalsTests(unittest.TestCase):
         t = totals([])
         self.assertEqual(t["missions"], 0)
         self.assertIsNone(t["accuracy"])
+
+
+class DrillDownTests(unittest.TestCase):
+    """Every figure has to be openable: one row per shot and kill."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dogfight = record("sample_dogfight")
+
+    def test_every_shot_and_kill_has_a_row(self):
+        events = self.dogfight["events"]
+        shots = [e for e in events if e["outcome"] != "kill"]
+        kills = [e for e in events if e["outcome"] == "kill"]
+        self.assertEqual(len(shots) + len([e for e in events if e["outcome"] == "kill" and "killOf" not in e]),
+                         len([e for e in events if "killOf" not in e]))
+        self.assertTrue(kills)
+        for e in events:
+            self.assertIn("t", e)
+            self.assertIn("weapon", e)
+            self.assertIn("scored", e)
+
+    def test_rows_are_in_time_order(self):
+        times = [e["t"] for e in self.dogfight["events"] if e["t"] is not None]
+        self.assertEqual(times, sorted(times))
+
+    def test_a_decoyed_shot_is_flagged_and_counted(self):
+        decoyed = [e for e in self.dogfight["events"] if e["decoyed"]]
+        self.assertTrue(decoyed, "the demo dogfight has an AIM-9 that goes for a flare")
+        self.assertEqual(decoyed[0]["scored"], "miss")
+        self.assertEqual(self.dogfight["byWeapon"]["AIM_9"]["decoyed"], len(decoyed))
+
+
+class IncludeTests(unittest.TestCase):
+    """Missions can be left out of the totals without being forgotten."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.store = CareerStore(str(Path(self._tmp.name) / "career.json"))
+        self.addCleanup(self._tmp.cleanup)
+        self.store.remember({"key": "a", "profile": "E", "kills": 3, "shots": 4, "hits": 3, "misses": 1})
+        self.store.remember({"key": "b", "profile": "E", "kills": 7, "shots": 7, "hits": 7, "misses": 0})
+
+    def test_unticking_drops_it_from_the_totals_but_keeps_the_record(self):
+        self.assertEqual(totals(self.store.records())["kills"], 10)
+        self.assertTrue(self.store.set_included("b", False))
+        self.assertEqual(totals(self.store.records())["kills"], 3)
+        self.assertEqual(len(self.store.records()), 2)          # still listed
+        self.assertFalse(self.store.included("b"))
+
+    def test_the_choice_survives_a_restart(self):
+        self.store.set_included("b", False)
+        again = CareerStore(str(self.store.path))
+        self.assertEqual(totals(again.records())["kills"], 3)
+        self.assertFalse(again.included("b"))
+
+    def test_reopening_a_mission_does_not_silently_re_include_it(self):
+        self.store.set_included("b", False)
+        self.store.remember({"key": "b", "profile": "E", "kills": 7})   # analysed again
+        self.assertFalse(self.store.included("b"))
+        self.assertEqual(totals(self.store.records())["kills"], 3)
+
+    def test_ticking_it_back_on_restores_the_totals(self):
+        self.store.set_included("b", False)
+        self.store.set_included("b", True)
+        self.assertEqual(totals(self.store.records())["kills"], 10)
+
+    def test_an_unknown_mission_is_refused(self):
+        self.assertFalse(self.store.set_included("nope", False))
 
 
 class StoreTests(unittest.TestCase):

@@ -766,6 +766,37 @@ class AutoQueueTests(_TempSettings, unittest.TestCase):
         app._queue_update({"latest": "9.9.9", "download": "https://e/x.exe", "size": 1})
 
 
+class KeepAliveTests(unittest.TestCase):
+    """A POST to an unknown route must not poison the connection."""
+
+    def test_an_unhandled_post_still_reads_its_body(self):
+        import http.client
+
+        from dcs_sa.config import Config
+        from dcs_sa.server.app import start, stop
+
+        cfg = Config()
+        cfg.port = 0
+        cfg.bridge_enabled = False
+        cfg.recording_dirs = []
+        app, httpd, url = start(cfg)
+        host, port = url.rstrip("/").split("//")[1].split(":")
+        conn = http.client.HTTPConnection(host, int(port), timeout=5)
+        try:
+            # An unknown route with a body, then a normal request down the same
+            # connection: the leftover bytes used to be read as the next request.
+            conn.request("POST", "/api/nope", body=json.dumps({"key": "x"}),
+                         headers={"Content-Type": "application/json"})
+            self.assertEqual(conn.getresponse().read() and 404, 404)
+            conn.request("GET", "/api/status")
+            second = conn.getresponse()
+            self.assertEqual(second.status, 200)
+            self.assertIn("version", json.loads(second.read()))
+        finally:
+            conn.close()
+            stop(app, httpd)
+
+
 class LiveSessionTests(unittest.TestCase):
     def test_reset_starts_a_new_session(self):
         w = LiveWorld()

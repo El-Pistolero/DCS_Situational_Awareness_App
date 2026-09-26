@@ -39,6 +39,25 @@
   .bar-cell .b { height: 6px; background: var(--green); border-radius: 3px; min-width: 2px; }
   .cr-empty { padding: 28px 0; color: var(--muted); }
   .cr-note { color: var(--faint); font-size: 12px; margin-top: 6px; }
+  .figure { background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer;
+    border-bottom: 1px dotted var(--line-2); }
+  .figure:hover { color: var(--blue); border-bottom-color: var(--blue); }
+  .cr-tile .v .figure { font: inherit; }
+  .drill { border: 1px solid var(--blue); border-radius: 8px; padding: 12px 14px; margin: 0 0 60px;
+    background: var(--panel); }
+  .drill.hidden { display: none; }
+  .dr-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+  .dr-head h3 { margin: 0; font-size: 15px; }
+  .dr-head .sp { flex: 1; }
+  .dr-sub { margin: 18px 0 6px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .dr-log { height: auto; max-height: 220px; }
+  .dr-res { font-size: 11px; padding: 1px 7px; border-radius: 10px; border: 1px solid var(--line-2); }
+  .dr-res.r-kill { color: var(--green); border-color: var(--green); }
+  .dr-res.r-hit { color: var(--green); }
+  .dr-res.r-miss { color: var(--muted); }
+  .dr-res.r-flare { color: var(--orange); border-color: var(--orange); }
+  table.cr tr.off td { opacity: 0.45; }
+  .mi-tick { display: flex; }
 </style>
 </head>
 <body>
@@ -49,6 +68,7 @@
   <label class="muted" style="font-size:12px">Pilot <select id="profile"></select></label>
 </header>
 <main class="cr-wrap" id="career">Loading…</main>
+<div class="cr-wrap"><section class="drill hidden" id="drill"></section></div>
 <script type="module" src="/static/js/career.js"></script>
 </body>
 </html>

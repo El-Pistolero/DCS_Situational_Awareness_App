@@ -234,13 +234,25 @@ def make_handler(app: App):
         def _error(self, status: int, message: str) -> None:
             self._json({"error": message}, status)
 
-        def _body_json(self) -> Dict[str, Any]:
+        def _read_body(self) -> bytes:
+            """Consume the request body exactly once, whatever the route does."""
+            if getattr(self, "_body", None) is not None:
+                return self._body
             length = int(self.headers.get("Content-Length") or 0)
-            if length <= 0:
-                return {}
-            if length > 1 << 20:
+            self._body = self.rfile.read(length) if 0 < length <= (1 << 20) else b""
+            if length > (1 << 20):
+                # Too big to hold: drain it so the connection stays usable.
+                left = length
+                while left > 0:
+                    chunk = self.rfile.read(min(left, 65536))
+                    if not chunk:
+                        break
+                    left -= len(chunk)
                 raise ValueError("body too large")
-            return json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            return self._body
+
+        def _body_json(self) -> Dict[str, Any]:
+            return json.loads(self._read_body().decode("utf-8") or "{}")
 
         # -- routing -------------------------------------------------------------
 
@@ -340,6 +352,7 @@ def make_handler(app: App):
         def do_POST(self) -> None:
             url = urlparse(self.path)
             path = url.path
+            self._body = None
             if self._foreign_request():
                 log.warning("Refused POST %s from %s (Host %s)", path, self.headers.get("Origin"), self.headers.get("Host"))
                 return self._error(403, "request from another website refused")
@@ -433,11 +446,18 @@ def make_handler(app: App):
                     app._set_player_names(names)
                     usersettings.update(playerNames=names or None)
                     return self._json({"ok": True, "playerNames": names})
+                if path == "/api/career/include":
+                    body = self._body_json()
+                    key = str(body.get("key") or "")
+                    if not app.career.set_included(key, bool(body.get("included", True))):
+                        return self._error(404, "unknown mission")
+                    return self._json({"ok": True, "key": key, "included": app.career.included(key)})
                 if path == "/api/settings":
                     body = self._body_json()
                     if "autoDownloadUpdates" in body:
                         usersettings.update(autoDownloadUpdates=bool(body["autoDownloadUpdates"]))
                     return self._json({"ok": True, "autoDownload": app.auto_download()})
+                self._read_body()   # an unknown route must not leave bytes behind
                 return self._error(404, "not found")
             except (ValueError, json.JSONDecodeError) as exc:
                 return self._error(400, str(exc))
