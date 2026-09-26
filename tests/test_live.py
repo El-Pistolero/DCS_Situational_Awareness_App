@@ -4,6 +4,7 @@ import threading
 import time
 import unittest
 import urllib.request
+from pathlib import Path
 
 from dcs_sa.acmi.model import Event
 from dcs_sa.telemetry.live_world import LiveWorld
@@ -128,7 +129,24 @@ class LiveWorldTests(unittest.TestCase):
         self.assertEqual(w.snapshot()["events"][0]["kind"], "Destroyed")
 
 
-class ServerTests(unittest.TestCase):
+class _TempSettings:
+    """Keep the tests away from the real Documents/DCS-SA/settings.json."""
+
+    def setUp(self):
+        import tempfile
+        from unittest import mock
+
+        from dcs_sa import usersettings
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.settings_path = Path(self._tmp.name) / "settings.json"
+        patcher = mock.patch.object(usersettings, "PATH", self.settings_path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self._tmp.cleanup)
+
+
+class ServerTests(_TempSettings, unittest.TestCase):
     def test_api_smoke(self):
         from dcs_sa.config import Config
         from dcs_sa.server.app import start, stop
@@ -190,6 +208,51 @@ class ServerTests(unittest.TestCase):
         finally:
             stop(app, httpd)
 
+
+
+class RememberedSettingsTests(_TempSettings, unittest.TestCase):
+    def _start(self):
+        from dcs_sa.config import Config
+        from dcs_sa.server.app import start
+
+        cfg = Config()
+        cfg.port = 0
+        cfg.bridge_enabled = False
+        cfg.recording_dirs = []
+        return start(cfg)
+
+    def test_tacview_connection_and_pilot_name_are_remembered(self):
+        from dcs_sa.server.app import stop
+
+        def post(url, path, body):
+            req = urllib.request.Request(url.rstrip("/") + path, data=json.dumps(body).encode(), method="POST")
+            return json.loads(urllib.request.urlopen(req, timeout=5).read())
+
+        app, httpd, url = self._start()
+        try:
+            self.assertIsNone(app.live.source_kind)  # nothing saved yet: no connection attempt
+            post(url, "/api/live/source", {"type": "tacview", "host": "127.0.0.1", "port": 9, "password": "pw"})
+            post(url, "/api/player", {"names": [" Viper 1-1 ", "Ethan", "Viper 1-1"]})
+        finally:
+            stop(app, httpd)
+        saved = json.loads(self.settings_path.read_text())
+        self.assertEqual(saved["tacview"], {"host": "127.0.0.1", "port": 9, "password": "pw", "autoconnect": True})
+        self.assertEqual(saved["playerNames"], ["Viper 1-1", "Ethan"])
+
+        app, httpd, url = self._start()  # next run
+        try:
+            self.assertEqual(app.live.source_kind, "tacview")
+            self.assertEqual((app.cfg.tacview_host, app.cfg.tacview_port), ("127.0.0.1", 9))
+            self.assertEqual(app.cfg.player_names[:2], ["Viper 1-1", "Ethan"])
+            post(url, "/api/live/source", {"type": "none"})
+        finally:
+            stop(app, httpd)
+        self.assertFalse(json.loads(self.settings_path.read_text())["tacview"]["autoconnect"])
+        app, httpd, url = self._start()
+        try:
+            self.assertIsNone(app.live.source_kind)  # disconnected on purpose: stays off
+        finally:
+            stop(app, httpd)
 
 
 class LiveSessionTests(unittest.TestCase):

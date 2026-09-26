@@ -348,6 +348,8 @@ table.grid tr.current td { background: #1f2c1f; }
   z-index: 50;
   max-width: 90vw;
 }
+.toast.info { background: var(--panel-2); border-color: var(--blue); color: var(--text); }
+.toast button { margin-left: 8px; }
 
 /* ---------- Responsive ---------- */
 

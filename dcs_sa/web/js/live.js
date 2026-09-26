@@ -528,7 +528,7 @@ $("btnRp").onclick = async () => { await post({ type: "replay", key: $("rpFile")
 $("btnInstall").onclick = async () => {
   try {
     const { body } = await api("/api/install-bridge", { method: "POST" });
-    alert(body.ok ? `Installed in:\n${body.installed.join("\n")}\n\nRestart DCS (or the mission) to activate.` : body.error);
+    alert(body.ok ? `Installed in:\n${body.installed.join("\n")}\n\nNow quit DCS completely and start it again: DCS only reads these scripts when it starts.` : body.error);
   } catch (err) { alert(`Install failed: ${err.message}`); }
   openSetup();
 };

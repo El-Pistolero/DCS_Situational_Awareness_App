@@ -456,7 +456,7 @@ const ACTIONS = [
   { id: "wcam", label: "Weapon cam", icon: "🎥", primary: true, group: "view", applies: onObj((o) => isWeapon(o) && !o.dispenser),
     active: (tg) => S.weaponCam?.id === tg.id, run: (tg) => (S.weaponCam?.id === tg.id ? stopWeaponCam() : startWeaponCam(tg.id)) },
   { id: "me", label: "This is me", icon: "★", group: "view", applies: onObj((o) => isAir(o) && o.id !== S.me),
-    run: (tg) => { S.me = tg.id; renderAllPanels(); map.invalidate(); } },
+    run: (tg) => setMe(tg) },
   { id: "isolate", label: "Isolate (show only what it touched)", short: "Isolate", key: "X", icon: "◐", primary: true, group: "focus", applies: onObj(() => true),
     active: (tg) => S.isolate?.id === tg.id, run: (tg) => setIsolate(S.isolate?.id === tg.id ? null : tg.id) },
   { id: "shots", label: "Its shots & strikes", short: "Its shots", icon: "➶", primary: true, group: "focus", applies: onObj((o) => shooterOf(o.id)),
@@ -644,10 +644,34 @@ async function init() {
   requestAnimationFrame(tick);
 }
 
-function toast(msg) {
-  const t = el("div", { class: "toast" }, msg);
+function toast(msg, { info = false, ms = 5000 } = {}) {
+  const t = el("div", { class: info ? "toast info" : "toast" }, msg);
   document.body.append(t);
-  setTimeout(() => t.remove(), 5000);
+  setTimeout(() => t.remove(), ms);
+  return t;
+}
+
+/** "This is me": remembered for this recording, and the pilot name can be remembered for the next ones. */
+function setMe(target) {
+  const o = S.objects.get(target.id) || target;
+  S.me = o.id;
+  setPref(`me.${S.key}`, o.id);
+  renderAllPanels();
+  map.invalidate();
+  const name = (o.pilot || "").trim();
+  const known = (S.status?.playerNames || []).map((n) => n.toLowerCase());
+  if (!name || known.includes(name.toLowerCase())) return;
+  const t = toast([`Is "${name}" your pilot name? `,
+    el("button", { onclick: async () => {
+      t.remove();
+      const names = [name, ...(S.status?.playerNames || [])];
+      try {
+        const { body } = await api("/api/player", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ names }) });
+        if (S.status) S.status.playerNames = body.playerNames;
+        flash(`Saved: new recordings will pick ${name}'s jet as yours`);
+      } catch { flash("Could not save the pilot name"); }
+    } }, "Remember it"),
+    el("button", { onclick: () => t.remove() }, "No")], { info: true, ms: 12000 });
 }
 
 // ---------------------------------------------------------------------------
@@ -779,7 +803,9 @@ function setupRecording(key, analysis, playback) {
   if (playback.roundsTruncated) toast(`Showing the first ${S.rounds.length} of ${playback.roundsTotal} gun rounds.`);
   S.start = playback.start; S.end = playback.end;
   S.t = S.start;
-  S.me = analysis.player;
+  // "This is me" picked earlier for this recording wins over the guess.
+  const savedMe = pref(`me.${key}`, null);
+  S.me = savedMe && analysis.objects?.some((o) => o.id === savedMe) ? savedMe : analysis.player;
   $("recTitle").textContent = `${analysis.recording.title} · ${fmtClock(analysis.recording.duration)} · ${analysis.recording.aircraftCount} aircraft`;
   $("btnDebrief").disabled = false;
   renderTicks();
@@ -2321,7 +2347,7 @@ function renderFlight(panel) {
   const air = ["fixedwing", "rotorcraft", "air"].includes(o.category);
   panel.append(el("div", { class: "ac-head" },
     el("div", { class: "who" }, o.pilot || o.name, el("small", {}, [o.name, o.group, o.coalition].filter(Boolean).join(" · "))),
-    air && o.id !== S.me ? el("button", { onclick: () => { S.me = o.id; renderAllPanels(); map.invalidate(); } }, "This is me") : el("span", { class: "pill on" }, o.id === S.me ? "ME" : o.category)));
+    air && o.id !== S.me ? el("button", { onclick: () => setMe(o) }, "This is me") : el("span", { class: "pill on" }, o.id === S.me ? "ME" : o.category)));
   if (!air) {
     const eng = o.pb?.eng;
     panel.append(el("dl", { class: "kv" }, el("dt", {}, "Type"), el("dd", {}, o.type || "—"),

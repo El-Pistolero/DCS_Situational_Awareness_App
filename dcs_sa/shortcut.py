@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Tuple
 
 APP_NAME = "DCS SA"
 LIVE_NAME = "DCS SA Live"
-SETTINGS = Path.home() / "Documents" / "DCS-SA" / "settings.json"
+from .usersettings import PATH as SETTINGS
 
 
 def _repo_root() -> Path:

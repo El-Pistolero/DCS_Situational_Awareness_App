@@ -19,11 +19,12 @@ import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .. import __version__
 from ..config import Config
+from .. import usersettings
 from ..dcs_profile import read_profile
 from ..telemetry.dcs_bridge import DcsBridgeListener
 from ..telemetry.live_world import LiveWorld
@@ -143,11 +144,18 @@ class App:
         self.live.dcsmap = self.dcsmap
         self.flightlog_dir = str(Path(cfg.upload_dir).parent / "flightlogs")
         self.live.recorder = FlightRecorder(self.flightlog_dir)
-        # No name configured: use the active DCS logbook pilot.
-        if not cfg.player_names and self.profile.get("player"):
-            cfg.player_names = [str(self.profile["player"])]
-            self.store.player_names = cfg.player_names
-            self.live.world.player_names = [n.lower() for n in cfg.player_names]
+        # No name configured: names picked with "This is me", then the active DCS logbook pilot.
+        if not cfg.player_names:
+            names = [n for n in usersettings.load().get("playerNames") or [] if isinstance(n, str) and n.strip()]
+            if self.profile.get("player"):
+                names.append(str(self.profile["player"]))
+            if names:
+                self._set_player_names(list(dict.fromkeys(names)))
+
+    def _set_player_names(self, names: List[str]) -> None:
+        self.cfg.player_names = names
+        self.store.player_names = names
+        self.live.world.player_names = [n.lower() for n in names]
 
     def status(self) -> Dict[str, Any]:
         return {
@@ -325,11 +333,12 @@ def make_handler(app: App):
                     app.profile = read_profile()
                     return self._json(result, 200 if result.get("ok") else 404)
                 if path == "/api/player":
+                    # "Remember this name as me": kept for the next runs too.
                     body = self._body_json()
-                    names = [n for n in (body.get("names") or []) if isinstance(n, str) and n.strip()]
-                    app.cfg.player_names = names
-                    app.store.player_names = names
-                    app.live.world.player_names = [n.lower() for n in names]
+                    names = list(dict.fromkeys(n.strip() for n in (body.get("names") or [])
+                                               if isinstance(n, str) and n.strip()))[:8]
+                    app._set_player_names(names)
+                    usersettings.update(playerNames=names or None)
                     return self._json({"ok": True, "playerNames": names})
                 return self._error(404, "not found")
             except (ValueError, json.JSONDecodeError) as exc:
@@ -440,7 +449,11 @@ def make_handler(app: App):
             if kind == "tacview":
                 host = str(body.get("host") or app.cfg.tacview_host)
                 port = int(body.get("port") or app.cfg.tacview_port)
-                app.live.connect_tacview(host, port, str(body.get("password") or ""))
+                password = str(body.get("password") or "")
+                app.cfg.tacview_host, app.cfg.tacview_port = host, port
+                app.live.connect_tacview(host, port, password)
+                # Connect again by itself next time DCS SA starts.
+                usersettings.update(tacview={"host": host, "port": port, "password": password, "autoconnect": True})
             elif kind == "replay":
                 key = body.get("key")
                 path = app.store.path_for(key) if key else None
@@ -449,6 +462,9 @@ def make_handler(app: App):
                 app.live.replay(path, float(body.get("speed") or 1.0), float(body.get("startAt") or 0.0))
             elif kind in ("none", None):
                 app.live.disconnect()
+                saved = usersettings.load().get("tacview")
+                if isinstance(saved, dict) and saved.get("autoconnect"):
+                    usersettings.update(tacview={**saved, "autoconnect": False})
             else:
                 return self._error(400, f"unknown source type {kind!r}")
             return self._json({"ok": True, "source": app.live.source_kind})
@@ -513,6 +529,15 @@ def start(cfg: Config):
         app.live.replay(cfg.replay_file, cfg.replay_speed)
     elif cfg.tacview_autoconnect:
         app.live.connect_tacview(cfg.tacview_host, cfg.tacview_port, cfg.tacview_password)
+    else:
+        saved = usersettings.load().get("tacview")
+        if isinstance(saved, dict) and saved.get("autoconnect"):
+            try:
+                cfg.tacview_host = str(saved.get("host") or cfg.tacview_host)
+                cfg.tacview_port = int(saved.get("port") or cfg.tacview_port)
+            except (TypeError, ValueError):
+                pass
+            app.live.connect_tacview(cfg.tacview_host, cfg.tacview_port, str(saved.get("password") or ""))
     httpd = _Server((cfg.host, cfg.port), make_handler(app))
     threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.5},
                      name="http", daemon=True).start()
