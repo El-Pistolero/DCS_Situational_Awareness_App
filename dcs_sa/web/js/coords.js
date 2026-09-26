@@ -97,8 +97,8 @@ export function toUTM(lon, lat) {
 
 // --- MGRS -------------------------------------------------------------------
 
-// 100 km column letters by set (zone % 3: 1, 2, 0); row letters cycle every
-// 2,000 km, even zones starting at F.
+// 100 km column letters indexed by zone % 3 (sets 1, 2, 3 = zone % 3 of 1, 2, 0);
+// row letters cycle every 2,000 km, even zones starting at F.
 const COLS = ["STUVWXYZ", "ABCDEFGH", "JKLMNPQR"];
 const ROWS = "ABCDEFGHJKLMNPQRSTUV";
 
@@ -129,7 +129,15 @@ export async function copyText(text) {
     }
   } catch { /* no permission or page not focused: fall back below */ }
   let ta = null, prev = null;
+  // Behind a modal <dialog> the page is inert: the textarea cannot take focus, and
+  // execCommand would copy nothing yet return true. Then hand the text to the copy event.
+  const onCopy = (e) => {
+    if (document.activeElement === ta || !e.clipboardData) return; // the selection is ours
+    e.clipboardData.setData("text/plain", s);
+    e.preventDefault();
+  };
   try {
+    document.addEventListener("copy", onCopy, true);
     prev = document.activeElement;
     ta = document.createElement("textarea");
     ta.value = s;
@@ -144,6 +152,7 @@ export async function copyText(text) {
   } catch {
     return false;
   } finally {
+    try { document.removeEventListener("copy", onCopy, true); } catch { /* no DOM */ }
     try { ta?.remove(); prev?.focus?.({ preventScroll: true }); } catch { /* detached */ }
   }
 }
