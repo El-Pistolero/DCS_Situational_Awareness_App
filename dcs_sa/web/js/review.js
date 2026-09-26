@@ -724,6 +724,13 @@ function renderVersion(host, up, tries = 0) {
     } else {
       // Windows only: elsewhere (and if anything goes wrong) fall back to the page.
       const canInstall = (S.status?.platform || "") === "win32";
+      const queued = canInstall && S.status?.autoDownload && inst.state !== "failed";
+      if (queued) {
+        // The download starts by itself; this is only ever a moment's wait.
+        host.append(el("span", {}, "Getting it ready…"));
+        setTimeout(() => check(false, 0), 900);
+        return;
+      }
       host.append(el("button", { onclick: async () => {
         if (!canInstall) { await post("/api/open-release"); return; }
         const body = await post("/api/update/download");

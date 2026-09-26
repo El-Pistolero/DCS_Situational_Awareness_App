@@ -650,6 +650,82 @@ class UpdateDownloadTests(unittest.TestCase):
             stop(app, httpd)
 
 
+class AutoQueueTests(_TempSettings, unittest.TestCase):
+    """An update should be downloaded before anyone asks for it."""
+
+    def test_finding_an_update_queues_the_download(self):
+        from unittest import mock
+
+        from dcs_sa import update as up
+
+        release = {"tag_name": "v9.9.9", "html_url": "https://x/y",
+                   "assets": [{"name": "DCS-SA-Setup.exe", "browser_download_url": "https://e/setup.exe",
+                               "size": 123, "digest": "sha256:" + "a" * 64}]}
+        seen = []
+        c = up.UpdateChecker(enabled=True)
+        c.on_available = seen.append
+        with mock.patch.object(up, "fetch_latest", return_value=release):
+            c.status()
+            for _ in range(100):
+                if seen:
+                    break
+                time.sleep(0.02)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0]["latest"], "9.9.9")
+        self.assertEqual(seen[0]["download"], "https://e/setup.exe")
+        self.assertEqual(seen[0]["sha256"], "a" * 64)
+        self.assertEqual(seen[0]["size"], 123)
+
+    def test_no_update_means_nothing_is_queued(self):
+        from unittest import mock
+
+        from dcs_sa import update as up
+
+        release = {"tag_name": "v0.0.1", "assets": []}      # older than us
+        seen = []
+        c = up.UpdateChecker(enabled=True)
+        c.on_available = seen.append
+        with mock.patch.object(up, "fetch_latest", return_value=release):
+            c.status()
+            for _ in range(50):
+                if c.status().get("checked"):
+                    break
+                time.sleep(0.02)
+        self.assertEqual(seen, [])
+
+    def test_a_callback_that_throws_does_not_break_the_check(self):
+        from unittest import mock
+
+        from dcs_sa import update as up
+
+        def boom(_state):
+            raise RuntimeError("disk full")
+
+        c = up.UpdateChecker(enabled=True)
+        c.on_available = boom
+        with mock.patch.object(up, "fetch_latest", return_value={"tag_name": "v9.9.9", "assets": []}):
+            c.status()
+            for _ in range(100):
+                if c.status().get("checked"):
+                    break
+                time.sleep(0.02)
+        self.assertTrue(c.status()["available"])   # the state still landed
+
+    def test_the_setting_is_remembered_and_respected(self):
+        from dcs_sa.config import Config
+        from dcs_sa.server.app import App
+
+        cfg = Config()
+        app = App(cfg)
+        self.assertTrue(app.auto_download())       # on unless turned off
+        from dcs_sa import usersettings
+        usersettings.update(autoDownloadUpdates=False)
+        self.assertFalse(app.auto_download())
+        # With it off, finding an update queues nothing.
+        app.downloads.start = lambda *a, **k: self.fail("should not download")
+        app._queue_update({"latest": "9.9.9", "download": "https://e/x.exe", "size": 1})
+
+
 class LiveSessionTests(unittest.TestCase):
     def test_reset_starts_a_new_session(self):
         w = LiveWorld()

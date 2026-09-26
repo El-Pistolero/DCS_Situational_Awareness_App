@@ -225,6 +225,9 @@ class UpdateChecker:
     def __init__(self, enabled: bool = True, interval: float = INTERVAL) -> None:
         self.enabled = enabled
         self.interval = interval
+        #: Called with the state as soon as a newer version is found, so the
+        #: download can be queued without waiting for anyone to click.
+        self.on_available = None
         self._lock = threading.Lock()
         self._state: Dict[str, Any] = {"checked": False, "available": False,
                                        "current": __version__, "page": RELEASES_PAGE}
@@ -264,3 +267,8 @@ class UpdateChecker:
             self._state = state
             self._checked_at = time.monotonic()
             self._busy = False
+        if state.get("available") and self.on_available:
+            try:
+                self.on_available(state)
+            except Exception as exc:  # noqa: BLE001 - queuing is a convenience
+                log.warning("Could not queue the update: %s", exc)

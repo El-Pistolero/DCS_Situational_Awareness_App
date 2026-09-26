@@ -147,6 +147,7 @@ class App:
         self.updates = UpdateChecker(cfg.update_check)
         self.downloads = Downloader(Path(cfg.upload_dir).parent / "updates")
         self.career = CareerStore(str(Path(cfg.upload_dir).parent / "career.json"))
+        self.updates.on_available = self._queue_update
         self.store.career = self.career
         self.quit: Any = None   # set by the desktop shell, to close for an install
         self.tiles = TileCache(str(Path(cfg.upload_dir).parent / "tilecache"))
@@ -168,6 +169,18 @@ class App:
         self.store.player_names = names
         self.live.world.player_names = [n.lower() for n in names]
 
+    def auto_download(self) -> bool:
+        saved = usersettings.load().get("autoDownloadUpdates")
+        return bool(self.cfg.update_auto_download if saved is None else saved)
+
+    def _queue_update(self, state: Dict[str, Any]) -> None:
+        """An update exists: fetch it now so it is ready when the user looks."""
+        if sys.platform != "win32" or not self.auto_download() or not state.get("download"):
+            return
+        log.info("Update %s found; downloading it in the background", state.get("latest"))
+        self.downloads.start(str(state.get("latest")), str(state["download"]),
+                             state.get("sha256"), int(state.get("size") or 0))
+
     def status(self) -> Dict[str, Any]:
         return {
             "version": __version__,
@@ -186,6 +199,7 @@ class App:
             "dcsMap": self.dcsmap.status(),
             "desktop": self.desktop,
             "platform": sys.platform,
+            "autoDownload": self.auto_download(),
             "update": self.updates.status(),
             "warnings": self.warnings,
         }
@@ -419,6 +433,11 @@ def make_handler(app: App):
                     app._set_player_names(names)
                     usersettings.update(playerNames=names or None)
                     return self._json({"ok": True, "playerNames": names})
+                if path == "/api/settings":
+                    body = self._body_json()
+                    if "autoDownloadUpdates" in body:
+                        usersettings.update(autoDownloadUpdates=bool(body["autoDownloadUpdates"]))
+                    return self._json({"ok": True, "autoDownload": app.auto_download()})
                 return self._error(404, "not found")
             except (ValueError, json.JSONDecodeError) as exc:
                 return self._error(400, str(exc))
@@ -596,6 +615,8 @@ def start(cfg: Config):
     install_console()
     app = App(cfg)
     log.info("DCS SA %s starting", __version__)
+    # Look for an update straight away rather than waiting for a page to ask.
+    threading.Timer(3.0, app.updates.status).start()
     try:
         from ..dcs_profile import refresh_bridge
         for path in refresh_bridge():

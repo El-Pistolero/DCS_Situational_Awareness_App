@@ -27,6 +27,20 @@ function build() {
 
   form.append(el("p", { class: "muted set-note" }, "Your choice is remembered on this PC."));
 
+  const updates = el("fieldset", {}, el("legend", {}, "Updates"));
+  const auto = el("input", { type: "checkbox", onchange: async (e) => {
+    try {
+      await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoDownloadUpdates: e.target.checked }) });
+    } catch { /* offline */ }
+  } });
+  fetch("/api/status").then((r) => r.json()).then((st) => { auto.checked = st.autoDownload !== false; })
+    .catch(() => { auto.checked = true; });
+  updates.append(el("label", { class: "set-row" }, auto,
+    el("span", {}, el("b", {}, "Get updates ready automatically"),
+      el("small", { class: "muted" }, "Downloads a new version as soon as there is one, so it is only ever one click to install."))));
+  form.append(updates);
+
   const tools = el("fieldset", {}, el("legend", {}, "Troubleshooting"));
   tools.append(el("div", { class: "set-row" },
     el("button", { type: "button", onclick: () => { box.close(); openConsole(); } }, "Open console"),
