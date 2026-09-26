@@ -13,6 +13,7 @@ a = Analysis(
         ("dcs-scripts/DCS-SA-Hook.lua", "dcs-scripts"),
         ("samples/sample_sortie.acmi", "samples"),
         ("samples/sample_strike.acmi", "samples"),
+        ("samples/sample_dogfight.acmi", "samples"),
         ("packaging/dcs-sa.ico", "packaging"),
     ],
     hiddenimports=["webview", "clr_loader", "pythonnet"],

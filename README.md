@@ -2,7 +2,10 @@
 
 A desktop app for **DCS World** that shows you everything about a sortie. It works **live on a second screen** while you fly, and as a detailed **debrief** afterwards.
 
-It reads **Tacview** data. Tacview is the program; **ACMI** (`.acmi`) is its file format. You were half-right about both!
+It reads **Tacview** data. Tacview is the program; **ACMI** (`.acmi`) is its file format.
+
+> ### 👉 New here? Start with the **[step-by-step guide (GETTING_STARTED.md)](GETTING_STARTED.md)**
+> How to download and install the app, try the demo flights, record your own flights in DCS and set up the live second screen, with every click spelled out. No experience with GitHub needed.
 
 ![3D chase view](docs/3d-approach.png)
 
@@ -27,8 +30,8 @@ It reads **Tacview** data. Tacview is the program; **ACMI** (`.acmi`) is its fil
 It's a normal desktop app: install it once, then open it from the **DCS SA** icon on your desktop.
 
 **Option A: the installer (recommended)**
-1. On GitHub open **Actions → Build Windows exe**, click the latest run, and download **DCS-SA-windows** (or grab `DCS-SA-Setup.exe` from a Release).
-2. Run `DCS-SA-Setup.exe`. It installs for your Windows user only (no admin rights needed) and puts two icons on your desktop and in the Start menu: **DCS SA** (the debrief) and **DCS SA Live** (straight into the second-screen view).
+1. On GitHub open **Actions → Build Windows exe** (you must be signed in), click the newest run with a green tick, and under **Artifacts** download **DCS-SA-windows** (a zip with `DCS-SA-Setup.exe` and `DCS-SA.exe`). If there is a Release, `DCS-SA-Setup.exe` is attached there too.
+2. Unzip it and run `DCS-SA-Setup.exe` (on "Windows protected your PC", click **More info → Run anyway**: the exe isn't code-signed). It installs for your Windows user only (no admin rights needed) and adds **DCS SA** (the debrief) and **DCS SA Live** (straight into the second-screen view) to the Start menu, plus a **DCS SA** desktop icon; tick the box for a **DCS SA Live** desktop icon too.
 3. Double-click **DCS SA**. It opens in its own window; close the window to quit.
 
 **Option B: the single exe.** The same download has `DCS-SA.exe`. Put it anywhere and double-click it. The first time it runs, it adds the **DCS SA** icons to your desktop and Start menu.
