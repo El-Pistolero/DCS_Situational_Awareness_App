@@ -87,7 +87,9 @@ On multiplayer servers, the server decides what may be shown. The bridge only ev
 
 ## Step 6 (optional): everyone else live too
 
-The bridge in Step 5 shows **your** jet. To also see every other aircraft and missile live, the app can connect to Tacview's **real-time telemetry**. Tacview sells this as part of its paid **Advanced** edition.
+The bridge in Step 5 shows **your** jet. To also see every other aircraft and missile live, the app can connect to the **real-time telemetry** of the Tacview exporter that comes with DCS.
+
+> **Do I need to buy Tacview Advanced?** You shouldn't. Tacview's paid Advanced edition is what the *Tacview program* needs to show real-time telemetry, but DCS SA connects to DCS's exporter directly and doesn't use the Tacview program at all. Try the free setup below first. Everything else in this guide (recordings, debriefs, your own jet live) never needs a paid Tacview.
 
 1. In DCS, in the same **Options → SPECIAL → Tacview** page, switch **real-time telemetry** on.
 2. In the DCS SA live view, click **⚙ Connect**. Under **Tacview real-time telemetry**, leave the address as it is (`127.0.0.1`, port `42674`) and click **Connect**.

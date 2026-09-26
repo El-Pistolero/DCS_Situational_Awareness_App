@@ -46,7 +46,7 @@ To build the exe yourself, double-click `build_exe.bat`; the result is `dist\DCS
 
 1. **Recordings for the debrief:** in DCS go to *Options → Special → Tacview*, then enable recording. Files land in `Documents\Tacview` and the app finds them automatically. You can also drag and drop any `.acmi` onto the app.
 2. **Your jet live on the second screen, and DCS's own map in 3D:** open the live view (*Live view ↗* button), click **⚙ Connect**, then **Install DCS bridge into Export.lua**. Restart the mission. This installs two small scripts. One streams your own aircraft (flight data, inputs, stores, RWR); the other (`Scripts\Hooks\DCS-SA-Hook.lua`) lets the app read DCS's terrain and airfields. Your other exporters (Tacview, SRS, DCS-BIOS) keep working.
-3. **Everyone else live (optional):** Tacview's *real-time telemetry* streams every aircraft and missile. Enable it in the Tacview settings in DCS, then in the live view use **⚙ Connect → Tacview → Connect** (default `127.0.0.1:42674`). This needs Tacview Advanced on the PC running DCS.
+3. **Everyone else live (optional):** Tacview's *real-time telemetry* streams every aircraft and missile. Enable it in the Tacview settings in DCS, then in the live view use **⚙ Connect → Tacview → Connect** (default `127.0.0.1:42674`). DCS SA connects to DCS's own Tacview exporter directly, so you shouldn't need to buy anything: Tacview's paid **Advanced** edition is what the *Tacview program* needs to show real-time telemetry, and DCS SA doesn't use that program. (Not yet tested against every DCS version; recordings and the bridge never need it.)
 
 On a multiplayer server the server decides what may be exported. The bridge only ever *reads*, and anything the server blocks simply doesn't appear.
 
