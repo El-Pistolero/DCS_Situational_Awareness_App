@@ -38,6 +38,8 @@ from ..flightlog import FlightRecorder
 log = logging.getLogger(__name__)
 
 WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
+# The step-by-step guide: the repo's GETTING_STARTED.md (bundled next to dcs_sa in the exe).
+GUIDE = WEB_ROOT.parent.parent / "GETTING_STARTED.md"
 MAX_UPLOAD = 4 * 1024 * 1024 * 1024
 
 
@@ -229,6 +231,12 @@ def make_handler(app: App):
                     return self._static("index.html")
                 if path in ("/live", "/live.html"):
                     return self._static("live.html")
+                if path in ("/guide", "/guide.html"):
+                    return self._static("guide.html")
+                if path == "/api/guide":
+                    if not GUIDE.is_file():
+                        return self._error(404, "guide not found")
+                    return self._send(200, GUIDE.read_bytes(), "text/markdown; charset=utf-8")
                 if path.startswith("/static/"):
                     return self._static(path[len("/static/"):])
                 if path.startswith("/tiles/dcs/"):

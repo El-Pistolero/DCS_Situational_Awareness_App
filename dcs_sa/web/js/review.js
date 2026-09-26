@@ -689,6 +689,9 @@ async function showLibrary() {
     el("h1", {}, "Flight debrief"),
     el("p", { class: "lead" }, "Open a Tacview recording (.acmi) to replay the sortie and review telemetry, weapons, radar and landings.",
       player ? ` Your DCS pilot profile is "${player}"; that jet is picked automatically.` : ""),
+    el("p", { class: "lead" }, "New here? ",
+      el("button", { onclick: () => { location.href = "/guide#step-3-try-it-with-a-demo-flight-no-dcs-needed"; } }, "Guide"),
+      " walks you through it step by step, from the demo flights to setting up DCS."),
   );
   const drop = el("div", { class: "drop" }, "Drop an .acmi file here, or ",
     el("button", { onclick: () => fileInput.click() }, "choose a file"));

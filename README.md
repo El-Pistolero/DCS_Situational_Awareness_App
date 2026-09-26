@@ -34,7 +34,7 @@ It's a normal desktop app: install it once, then open it from the **DCS SA** ico
 2. Unzip it and run `DCS-SA-Setup.exe` (on "Windows protected your PC", click **More info → Run anyway**: the exe isn't code-signed). It installs for your Windows user only (no admin rights needed) and adds **DCS SA** (the debrief) and **DCS SA Live** (straight into the second-screen view) to the Start menu, plus a **DCS SA** desktop icon; tick the box for a **DCS SA Live** desktop icon too.
 3. Double-click **DCS SA**. It opens in its own window; close the window to quit.
 
-**Option B: the single exe.** The same download has `DCS-SA.exe`. Put it anywhere and double-click it. The first time it runs, it adds the **DCS SA** icons to your desktop and Start menu.
+**Option B: the single exe.** The same download has `DCS-SA.exe`. Put it where you want to keep it, then double-click it. The first time it runs, it adds the **DCS SA** icons to your desktop and Start menu (pointing at where it is then, so don't move it afterwards). Use either the installer or the single exe, not both; if the installer has been used, the single exe leaves the icons alone.
 
 **Option C: run from source**
 1. Install [Python 3.10+](https://www.python.org/downloads/) (tick *Add to PATH*).
@@ -45,8 +45,8 @@ To build the exe yourself, double-click `build_exe.bat`; the result is `dist\DCS
 ## Set up DCS (one time)
 
 1. **Recordings for the debrief:** in DCS go to *Options → Special → Tacview*, then enable recording. Files land in `Documents\Tacview` and the app finds them automatically. You can also drag and drop any `.acmi` onto the app.
-2. **Your jet live on the second screen, and DCS's own map in 3D:** open the live view (*Live view ↗* button), click **⚙ Connect**, then **Install DCS bridge into Export.lua**. Restart the mission. This installs two small scripts. One streams your own aircraft (flight data, inputs, stores, RWR); the other (`Scripts\Hooks\DCS-SA-Hook.lua`) lets the app read DCS's terrain and airfields. Your other exporters (Tacview, SRS, DCS-BIOS) keep working.
-3. **Everyone else live (optional):** Tacview's *real-time telemetry* streams every aircraft and missile. Enable it in the Tacview settings in DCS, then in the live view use **⚙ Connect → Tacview → Connect** (default `127.0.0.1:42674`). DCS SA connects to DCS's own Tacview exporter directly, so you shouldn't need to buy anything: Tacview's paid **Advanced** edition is what the *Tacview program* needs to show real-time telemetry, and DCS SA doesn't use that program. (Not yet tested against every DCS version; recordings and the bridge never need it.)
+2. **Your jet live on the second screen, and DCS's own map in 3D:** open the live view (*Live view ↗* button), click **⚙ Connect**, then **Install DCS bridge into Export.lua**. Restart DCS (quit to the desktop and start it again: DCS only reads the scripts when it starts). This installs two small scripts, and the app keeps them up to date when it is updated. One streams your own aircraft (flight data, inputs, stores, RWR); the other (`Scripts\Hooks\DCS-SA-Hook.lua`) lets the app read DCS's terrain and airfields. Your other exporters (Tacview, SRS, DCS-BIOS) keep working.
+3. **Everyone else live (optional):** Tacview's *real-time telemetry* streams every aircraft and missile. Enable it in the Tacview settings in DCS, then in the live view use **⚙ Connect → Tacview → Connect** (default `127.0.0.1:42674`); the app remembers it and reconnects on its next start. DCS SA connects to DCS's own Tacview exporter directly, so you shouldn't need to buy anything: Tacview's paid **Advanced** edition is what the *Tacview program* needs to show real-time telemetry, and DCS SA doesn't use that program. (Not yet tested against every DCS version; recordings and the bridge never need it.)
 
 On a multiplayer server the server decides what may be exported. The bridge only ever *reads*, and anything the server blocks simply doesn't appear.
 

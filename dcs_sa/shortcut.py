@@ -49,6 +49,21 @@ def installed_by_setup() -> bool:
     return getattr(sys, "frozen", False) and any(Path(sys.executable).parent.glob("unins*.exe"))
 
 
+def installed_copy_exists() -> bool:
+    """The installer has put DCS SA on this PC (its icons point there).
+
+    Checked so that a loose DCS-SA.exe, say the one left in Downloads, never
+    repoints the installed app's icons at itself.
+    """
+    roots = [os.environ.get("LOCALAPPDATA", ""), os.environ.get("ProgramFiles", ""),
+             os.environ.get("ProgramFiles(x86)", "")]
+    for root in filter(None, roots):
+        folder = Path(root) / ("Programs" if root == roots[0] else "") / "DCS SA"
+        if (folder / "DCS-SA.exe").is_file() and any(folder.glob("unins*.exe")):
+            return True
+    return False
+
+
 # -- Windows -----------------------------------------------------------------
 
 
@@ -157,7 +172,8 @@ def first_run() -> Optional[List[str]]:
         settings = json.loads(SETTINGS.read_text())
     except (OSError, ValueError):
         pass
-    if settings.get("shortcutsCreated") or not getattr(sys, "frozen", False) or installed_by_setup():
+    if (settings.get("shortcutsCreated") or not getattr(sys, "frozen", False) or installed_by_setup()
+            or installed_copy_exists()):
         return None
     try:
         made = install_shortcuts()

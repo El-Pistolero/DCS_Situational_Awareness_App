@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DCS SA Guide</title>
+<link rel="icon" type="image/png" href="/static/favicon-32.png">
+<link rel="stylesheet" href="/static/css/app.css">
+<style>
+  /* The app pages never scroll; this one does (and keeps its header and contents in view). */
+  html, body { height: auto; }
+  body { overflow: visible; }
+  .gd-top { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 12px; padding: 8px 16px;
+    background: var(--panel); border-bottom: 1px solid var(--line); }
+  .gd-top .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  .gd-top .brand img { width: 22px; height: 22px; }
+  .gd-wrap { display: grid; grid-template-columns: 240px minmax(0, 780px); gap: 32px; justify-content: center; padding: 20px 16px 80px; }
+  #toc { position: sticky; top: 64px; align-self: start; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+  #toc a { color: var(--muted); text-decoration: none; }
+  #toc a:hover { color: var(--text); }
+  .guide { line-height: 1.6; font-size: 15px; }
+  .guide h1 { font-size: 26px; margin: 0 0 12px; }
+  .guide h2 { font-size: 20px; margin: 32px 0 8px; padding-top: 8px; border-top: 1px solid var(--line); scroll-margin-top: 60px; }
+  .guide a { color: var(--blue); }
+  .guide code { font-family: var(--mono); background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  .guide ol, .guide ul { padding-left: 24px; }
+  .guide li { margin: 4px 0; }
+  .guide li p { margin: 6px 0; }
+  .guide blockquote { margin: 12px 0; padding: 4px 14px; border-left: 3px solid var(--blue); background: var(--panel); }
+  .guide table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 12px 0; }
+  .guide th, .guide td { border: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+  .guide th { background: var(--panel); }
+  .guide hr { border: 0; border-top: 1px solid var(--line-2); margin: 24px 0; }
+  .guide .note { background: var(--panel-2); border: 1px solid var(--blue); border-radius: 6px; padding: 8px 12px; }
+  @media (max-width: 800px) { .gd-wrap { grid-template-columns: minmax(0, 1fr); } #toc { display: none; } }
+</style>
+</head>
+<body>
+<header class="gd-top">
+  <button id="back">← Back to DCS SA</button>
+  <div class="brand"><img src="/static/icon.png" alt="">Step-by-step guide</div>
+</header>
+<div class="gd-wrap">
+  <nav id="toc" aria-label="Contents"></nav>
+  <main class="guide" id="guide">Loading the guide…</main>
+</div>
+<script type="module" src="/static/js/guide.js"></script>
+</body>
+</html>

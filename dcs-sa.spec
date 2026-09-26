@@ -15,6 +15,7 @@ a = Analysis(
         ("samples/sample_strike.acmi", "samples"),
         ("samples/sample_dogfight.acmi", "samples"),
         ("packaging/dcs-sa.ico", "packaging"),
+        ("GETTING_STARTED.md", "."),
     ],
     hiddenimports=["webview", "clr_loader", "pythonnet"],
     excludes=["tkinter", "unittest", "pydoc"],

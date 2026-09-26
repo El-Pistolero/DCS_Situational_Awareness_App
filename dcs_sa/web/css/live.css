@@ -39,6 +39,8 @@ body.live { overflow: hidden; }
 .lv-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; background: rgba(11,15,20,0.8); padding: 20px; }
 .lv-empty h2 { margin: 0 0 6px; }
 .lv-empty p { color: var(--muted); max-width: 440px; }
+.lv-empty a, .lv-guide { color: var(--blue); }
+.lv-guide { font-size: 13px; font-weight: normal; margin-left: 10px; }
 
 .threats { display: grid; gap: 6px; }
 .threat { display: grid; grid-template-columns: 52px 1fr auto; gap: 8px; align-items: center; background: var(--panel-2); border: 1px solid var(--line); border-left: 4px solid var(--line-2); border-radius: 6px; padding: 6px 8px; }

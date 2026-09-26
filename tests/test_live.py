@@ -203,6 +203,9 @@ class ServerTests(_TempSettings, unittest.TestCase):
                 self.assertEqual(json.loads(urllib.request.urlopen(req, timeout=5).read()), {"ok": False})
             html = urllib.request.urlopen(url, timeout=5).read()
             self.assertIn(b"review.js", html)
+            self.assertIn(b"guide.js", urllib.request.urlopen(url + "guide", timeout=5).read())
+            guide = urllib.request.urlopen(url + "api/guide", timeout=5).read().decode("utf-8")
+            self.assertIn("## Step 3: Try it with a demo flight", guide)
             with self.assertRaises(urllib.error.HTTPError):
                 urllib.request.urlopen(url + "static/../../dcs_sa/config.py", timeout=5)
         finally:
