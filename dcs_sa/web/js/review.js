@@ -2315,7 +2315,15 @@ function updateFlight() {
 
   const th = v.Throttle;
   bar($("bThr"), isNum(th) ? Math.min(th, 1) : th); $("bThrv").textContent = fmtPct(th);
-  bar($("bAB"), v.Afterburner); $("bABv").textContent = fmtPct(v.Afterburner);
+  if (isNum(v.Afterburner)) { bar($("bAB"), v.Afterburner); $("bABv").textContent = fmtPct(v.Afterburner); }
+  else {
+    // No Afterburner channel: what the IR analysis read from engine data (or that the type has none).
+    const h = S.analysis.ir?.heat?.[o.id];
+    const lit = abAt(h, S.t);
+    bar($("bAB"), lit === null ? null : lit ? 1 : 0);
+    $("bABv").textContent = h?.state === "noAB" ? "none" : lit === null ? "—" : lit ? "ON" : "OFF";
+    $("bABv").title = h?.state === "recorded" ? `from ${h.src === "FuelFlowWeight" ? "fuel flow" : h.src}` : h?.state === "noAB" ? "This type has no afterburner (DCS)" : "Not recorded";
+  }
   bar($("bGear"), v.LandingGear); $("bGearv").textContent = isNum(v.LandingGear) ? (v.LandingGear > 0.95 ? "DOWN" : v.LandingGear < 0.05 ? "UP" : "TRANS") : "—";
   bar($("bFlaps"), v.Flaps); $("bFlapsv").textContent = fmtPct(v.Flaps);
   bar($("bBrk"), v.AirBrakes); $("bBrkv").textContent = fmtPct(v.AirBrakes);
@@ -2327,6 +2335,8 @@ function updateFlight() {
   const add = (k, val) => kv.append(el("dt", {}, k), el("dd", {}, val));
   add("Fuel", fmtMass(v.FuelWeight));
   if (isNum(v.FuelFlowWeight)) add("Fuel flow", `${fmtMass(v.FuelFlowWeight)}/h`);
+  const hn = heatNow(S.analysis.ir?.heat?.[o.id], S.t);
+  if (hn) kv.append(el("dt", { title: HEAT_NOTE }, "Heat (IR)"), el("dd", { title: HEAT_NOTE }, `${heatText(hn).replace(/^IR /, "")} · DCS scale`));
   add("Radar", isNum(v.RadarMode) ? (v.RadarMode > 0 ? `ON · ${fmtDist(v.RadarRange)}` : "OFF") : isNum(v.RadarActive) ? (v.RadarActive > 0 ? "ON (DCS)" : "OFF (DCS)") : "—");
   const row = sceneObjects().find((x) => x.id === o.id);
   const vol = row && radarVolume(row, { assumed: true });

@@ -83,16 +83,31 @@ Every air-to-ground weapon in a recording (JSOW, JDAM, laser-guided and dumb bom
 
 The demo `samples/sample_strike.acmi` has a full JSOW strike: two JSOW-As on a moving column and SA-11 launchers, a JSOW-C on the SA-11 radar, a GBU-12 and a dive-bombing Mk-82 that misses.
 
+## Heat-seekers (AIM-9, R-73) and heat
+
+DCS gives every aircraft type a heat value (its *IR emission coefficient*: 1.0 is a Su-27 at military power; an F-16 is 0.6 dry and 3.0 in afterburner, an A-10 0.53) and makes a jet look **×1.5 hotter from the tail, ×1 from the beam and ×0.5 nose-on**. Each IR missile has its own seeker data: how far it sees a heat-1.0 target, how easily flares fool it, its gimbal limit and whether it is all-aspect. The app ships these numbers from DCS's own files (`dcs_sa/web/data/ir.json`) and draws them:
+
+* **Heat lobes** around jets (Display → Heat (IR)): the teardrop points out of the tailpipe and its area is the heat DCS gives the jet, so afterburner makes it five times bigger on an F-16. Label: "IR 0.6", "IR 3.0 AB".
+* **Afterburner is never guessed.** Tacview files carry engine data only for the recording player's jet, so the app knows *your* afterburner (from fuel flow). For everyone else the dry lobe is solid and the afterburner one is a dotted outline: "IR 0.77 · 4.0 if AB". Trail colour **Heat (afterburner)** shows when you had it lit (grey where it's not recorded).
+* **IR missiles in flight:** the seeker's gimbal limit as a faint wedge, a line to what it's steering at with its look angle ("look 18°/45°"), and flares within 1° of that line ringed. When its predicted miss becomes far smaller against a flare than against the jet, the line **jumps to that flare** and says so: "flare? +2.4 s (est.)".
+* **Flares** are coloured by the jet that dropped them (DCS doesn't record whose they are; the app takes the jet they appeared next to) and fade over their 9 s life. The timeline lists each salvo ("Ivanov dropped flares x6") and each likely decoy.
+* **Shot card** for an IR shot: seeker facts (all-aspect or rear-only, flare resistance, gimbal, launch look angle, fuze), the target's heat as the missile saw it at launch, flares by the target, and charts of the **predicted miss** and **look angle** against the jet and the best flare, and the heat the missile saw.
+* **Seeker reach (estimate)**, off by default: a dashed shape around the target showing roughly how far that seeker could see it from each side. DCS doesn't publish how heat scales its seeker range, so this is labelled *est.* and is not launch range.
+
+Everything from DCS carries a small **DCS** badge; everything worked out from the recorded paths is dashed or marked *est.* DCS records no lock or tone, so the app never claims one.
+
+The demo `samples/sample_dogfight.acmi` is an F-16 against a MiG-29: the first AIM-9M goes for the MiG's flares, the MiG's R-73 is beaten by a break and a flare burst, and the second AIM-9M kills the MiG from its six.
+
 ## Dogfight (A-A) and Ground attack (A-G) modes
 
 The **ALL | A-A | A-G** switch in the top bar (keys **Shift+A** / **Shift+G**; press again to go back to ALL) changes what the map concentrates on. It only changes when you change it.
 
-* **A-A:** aircraft, missiles and guns; ground units only where they can shoot at you; SAM rings only when you're near them; bandits get **BRAA** and bullseye calls; 10-second velocity vectors; energy-coloured trails; the Weapons tab shows the air-to-air shots.
+* **A-A:** aircraft, missiles and guns; ground units only where they can shoot at you; SAM rings only when you're near them; bandits get **BRAA** and bullseye calls; 10-second velocity vectors; energy-coloured trails; heat lobes on every jet and every IR missile's seeker; the Weapons tab shows the air-to-air shots.
 * **A-G:** every strike mark, the JSOW launch zone, hostile SAM rings, ground-unit labels near the targets, 5-minute altitude-coloured trails, altitude stalks in 3D; opens the Strike tab.
 * **ALL** is exactly your own settings. Anything you change while in A-A or A-G is remembered for that mode only (a coloured dot marks those rows in **Display**); **Reset** puts a mode back to its defaults.
 * No mode ever hides a missile aimed at you, a spike, the missile warning or bingo.
 
-**Display ▾** (key **D**) has every map option in one place: objects and coalitions, weapons and submunitions, strike marks, SAM rings, radar cones, lock lines, threat arrows, bullseye and BRAA, velocity vectors, grid, labels, trails, coordinates (decimal, the F-16 DED's deg-min, deg-min-sec or MGRS), and 3D stalks and lighting. **Z** declutters and **Z** again restores.
+**Display ▾** (key **D**) has every map option in one place: objects and coalitions, weapons and submunitions, strike marks, SAM rings, radar cones, lock lines, threat arrows, bullseye and BRAA, velocity vectors, heat lobes and IR seekers, grid, labels, trails, coordinates (decimal, the F-16 DED's deg-min, deg-min-sec or MGRS), and 3D stalks and lighting. **Z** declutters and **Z** again restores.
 
 ## Selecting things
 
@@ -130,7 +145,7 @@ When Tacview writes a new recording after a mission, a banner offers to open the
 
 ## Try it without DCS
 
-The app ships with two generated demo sorties. `samples/sample_sortie.acmi`: takeoff from Batumi, an AIM-120 kill, a notched R-27, a strafing pass and a landing. `samples/sample_strike.acmi`: a JSOW strike on a vehicle column and an SA-11 site, then a GBU-12 and a Mk-82 dive-bomb pass. Open them from the recordings list. To see the live view in action without DCS, go to *⚙ Connect → Replay a recording*.
+The app ships with three generated demo sorties. `samples/sample_sortie.acmi`: takeoff from Batumi, an AIM-120 kill, a notched R-27, a strafing pass and a landing. `samples/sample_strike.acmi`: a JSOW strike on a vehicle column and an SA-11 site, then a GBU-12 and a Mk-82 dive-bomb pass. `samples/sample_dogfight.acmi`: a turning fight with AIM-9Ms, an R-73 and flares. Open them from the recordings list. To see the live view in action without DCS, go to *⚙ Connect → Replay a recording*.
 
 ## Command line
 
@@ -169,3 +184,4 @@ The app is Python standard library only. Nothing is sent anywhere except map and
 * The flight log only covers your own session, so DCS-confirmed hits and kills are available for flights you recorded with the scripts installed; other recordings fall back to geometry, and say so.
 * Stick input comes from control-surface deflection. On fly-by-wire jets (F-16, F/A-18) that's what the flight computer commanded, not raw stick position. A recording that carries Tacview's `PitchControlInput` etc. shows true inputs.
 * If a recording doesn't mark weapon parents or lock targets, the app infers them (nearest launcher, closest approach) and labels the source.
+* Heat values and seeker data are from DCS 2.9's files. Flare owners, "went for a flare" and seeker reach are estimates from the recorded paths; AI afterburner is not in Tacview recordings, so both values are shown.
