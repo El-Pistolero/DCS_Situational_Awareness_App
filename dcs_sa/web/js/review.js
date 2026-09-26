@@ -679,16 +679,19 @@ function setMe(target) {
 // ---------------------------------------------------------------------------
 
 /** The version line: up to date, an update to get, or a failed check to retry. */
-function renderVersion(host, up) {
+function renderVersion(host, up, tries = 0) {
   host.innerHTML = "";
   host.classList.toggle("note-update", !!up?.available);
-  const check = async (force) => {
+  // Only the newest render of this line may schedule a follow-up, so going
+  // back to the library repeatedly cannot stack up pollers.
+  const gen = (host._gen = (host._gen || 0) + 1);
+  const check = async (force, n = 0) => {
+    if (host._gen !== gen) return;
     try {
       const { body } = await api(`/api/update${force ? "?force=1" : ""}`);
       if (S.status) S.status.update = body;
-      renderVersion(host, body);
-      if (body.checking) setTimeout(() => check(false), 1200);   // still asking GitHub
-    } catch { /* app not reachable */ }
+      if (host._gen === gen) renderVersion(host, body, n);
+    } catch { /* app not reachable; the line keeps what it last showed */ }
   };
   const version = up?.current || S.status?.version || "";
   if (up?.available) {
@@ -697,13 +700,19 @@ function renderVersion(host, up) {
       el("span", { class: "muted" }, " Your recordings and settings are kept."));
     return;
   }
+  // The answer arrives on a background thread, so an unsettled line asks again
+  // by itself.  Without this it sat on "checking for updates…" for good.
+  const settled = up?.enabled === false || (up?.checked && !up?.checking);
+  const gaveUp = tries >= 20;   // ~25 s: far longer than the 6 s request timeout
   const status = up?.enabled === false ? "update checks are off"
-    : up?.checking || !up?.checked ? "checking for updates…"
-    : up?.latest ? "up to date"
-    : "couldn't check for updates";
+    : settled ? (up?.latest ? "up to date" : "couldn't check for updates")
+    : gaveUp ? "couldn't check for updates"
+    : "checking for updates…";
   host.append(el("span", { class: "muted" }, `DCS SA ${version} · ${status}`));
-  if (up?.enabled !== false && !up?.checking && up?.checked) {
+  if (up?.enabled !== false && (settled || gaveUp)) {
     host.append(el("button", { class: "linklike", onclick: () => check(true) }, "Check again"));
+  } else if (up?.enabled !== false) {
+    setTimeout(() => check(false, tries + 1), 1200);
   }
 }
 
