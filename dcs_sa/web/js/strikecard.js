@@ -195,8 +195,10 @@ export function strikeVerdicts(strike, geom) {
   if (cluster && isNum(geom?.hof)) {
     const fp = strike.footprint || {};
     const pat = isNum(fp.major) && isNum(fp.minor) ? `: pattern ${fmtPair(2 * fp.major, 2 * fp.minor)}` : "";
-    if (geom.hof > 900) add("warn", `Opened ${fmtShort(geom.hof)} above the target${pat}; high opening: thin pattern`);
-    else add("info", `Opened ${fmtShort(geom.hof)} above the target${pat}`);
+    // HOF is over the pattern centre's elevation: only call it "the target" when there is one.
+    const over = geom.target ? "the target" : "the ground";
+    if (geom.hof > 900) add("warn", `Opened ${fmtShort(geom.hof)} above ${over}${pat}; high opening: thin pattern`);
+    else add("info", `Opened ${fmtShort(geom.hof)} above ${over}${pat}`);
   }
 
   // Which way a unitary weapon missed.
@@ -402,7 +404,7 @@ function bdaList(strike, ctx) {
     list.append(el("div", {
       class: "stk-bda-row",
       title: "Jump to 3 s before and select the unit",
-      onclick: () => { ctx.seek?.(r.time - 3); ctx.onSelect?.(r.id); },
+      onclick: () => { if (isNum(r.time)) ctx.seek?.(r.time - 3); ctx.onSelect?.(r.id); },
     },
     el("span", { class: "stk-bda-name", title: r.name }, r.name),
     el("span", { class: "stk-bda-meta", title: `Destroyed ${dt} ${open ? "after the dispenser opened" : "from the impact"}, ${fmtShort(r.distance)} from the ${cluster ? "pattern centre" : "impact point"}` },
@@ -907,7 +909,9 @@ function attackRun(strike, ctx, card) {
     if (!x.length || !(msl || agl || ias || gl)) { note.textContent = "No telemetry for the attack run."; return; }
     note.remove();
     const rel = releasesIn(strike, ctx, t0, t1);
-    const marks = rel.map((r) => ({ x: r, w: 0, color: r === rt ? "#ffd166" : "rgba(255,159,67,0.95)" }));
+    // This strike's release last, so it is drawn over the jet's other releases.
+    const marks = rel.filter((r) => r !== rt).map((r) => ({ x: r, w: 0, color: "rgba(255,159,67,0.95)" }));
+    marks.push({ x: rt, w: 0, color: "#ffd166" });
     const wrap = el("div", { class: "stk-charts" });
     holder.append(wrap);
     const mk = (title, series, yFormat, minSpan, quantum) => {

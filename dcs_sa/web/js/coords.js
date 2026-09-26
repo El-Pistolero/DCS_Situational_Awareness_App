@@ -28,13 +28,14 @@ const wrapLon = (lon) => (lon < -180 || lon > 180 ? ((((lon + 180) % 360) + 360)
  * dd   41.6421°N 041.7171°E
  * ddm  N 41°38.526' E 041°43.028'
  * dms  N 41°38'31.6" E 041°43'01.7"
- * mgrs 37T GG 09863 10345 ("" outside 80°S-84°N, where MGRS uses UPS instead)
+ * mgrs 37T GG 26290 13606 ("" outside 80°S-84°N, where MGRS uses UPS instead)
  */
 export function fmtCoord(lon, lat, fmt = "dd") {
   if (!isNum(lon) || !isNum(lat) || Math.abs(lat) > 90) return "—";
   lon = wrapLon(lon);
   if (fmt === "mgrs") return toMGRS(lon, lat);
-  const f = FIELDS[fmt] ? fmt : "dd";
+  // Own keys only: a stray stored setting like "toString" must not reach FIELDS' prototype.
+  const f = Object.hasOwn(FIELDS, fmt) ? fmt : "dd";
   const [la, ns] = axis(lat, 2, f, "N", "S"), [lo, ew] = axis(lon, 3, f, "E", "W");
   return f === "dd" ? `${la}${ns} ${lo}${ew}` : `${ns} ${la} ${ew} ${lo}`;
 }
@@ -43,8 +44,8 @@ export function fmtCoord(lon, lat, fmt = "dd") {
 
 const A = 6378137, F = 1 / 298.257223563, K0 = 0.9996;
 const E = Math.sqrt(F * (2 - F));
-// Krüger series to n^6 (Karney 2011): nanometre-accurate across the widened
-// Norway / Svalbard zones, where the classic Snyder series drifts.
+// Krüger series to n^6 (Karney 2011): nanometre-accurate out to the edges of
+// the widened Norway / Svalbard zones (6° from the central meridian).
 const N1 = F / (2 - F), N2 = N1 * N1, N3 = N2 * N1, N4 = N3 * N1, N5 = N4 * N1, N6 = N5 * N1;
 const RECT = (A / (1 + N1)) * (1 + N2 / 4 + N4 / 64 + N6 / 256);
 const ALPHA = [
@@ -118,23 +119,27 @@ export function toMGRS(lon, lat, digits = 5) {
 
 /** Copy text to the clipboard; true on success, never throws. */
 export async function copyText(text) {
-  const s = String(text ?? "");
+  let s;
+  try { s = String(text ?? ""); } catch { return false; }
+  // Plain http from another machine (a tablet on the LAN) has no navigator.clipboard at all.
   try {
     if (globalThis.navigator?.clipboard?.writeText) {
       await navigator.clipboard.writeText(s);
       return true;
     }
-  } catch { /* not a secure context or no permission: fall back below */ }
+  } catch { /* no permission or page not focused: fall back below */ }
   let ta = null, prev = null;
   try {
     prev = document.activeElement;
     ta = document.createElement("textarea");
     ta.value = s;
     ta.setAttribute("readonly", ""); // no on-screen keyboard on touch devices
-    ta.style.cssText = "position:fixed;top:0;left:0;opacity:0;pointer-events:none";
+    // 16px stops iOS zooming in on focus.
+    ta.style.cssText = "position:fixed;top:0;left:0;opacity:0;pointer-events:none;font-size:16px";
     document.body.append(ta);
     ta.focus({ preventScroll: true });
     ta.select();
+    ta.setSelectionRange?.(0, s.length); // iOS Safari ignores select() on a read-only field
     return document.execCommand("copy") === true;
   } catch {
     return false;

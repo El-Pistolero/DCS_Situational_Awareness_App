@@ -41,13 +41,16 @@
 .strikecard .tile { background: var(--panel); padding: 4px 7px; }
 .strikecard .tile .k { font-size: 9.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .strikecard .tile .v { font-size: 13px; }
-.strikecard .tile .v.sm { font-size: 11.5px; line-height: 19px; }
+/* Long values ("1,586 ft SHORT") wrap at a space rather than being cut off in a narrow panel. */
+.strikecard .tile .v.sm { font-size: 11.5px; line-height: 19px; white-space: normal; }
 
 /* Bomb plot + profile: stacked in the side panel, side by side when wide. */
 .strikecard .stk-plots { display: grid; grid-template-columns: 1fr; gap: 6px; }
-.strikecard .stk-plot { position: relative; min-width: 0; }
+/* The frame sits on the wrapper: a border on the canvas itself would squeeze its
+   devicePixelRatio bitmap into a box 2 px narrower and blur the text. */
+.strikecard .stk-plot { position: relative; min-width: 0; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .strikecard canvas.stk-bomb,
-.strikecard canvas.stk-prof { width: 100%; display: block; margin: 0; border-radius: 6px; border: 1px solid var(--line); }
+.strikecard canvas.stk-prof { width: 100%; display: block; margin: 0; }
 .strikecard canvas.stk-bomb { height: 250px; }
 .strikecard canvas.stk-prof { height: 180px; }
 .strikecard .stk-frame {
@@ -84,6 +87,11 @@
 .strikecard .stk-inf { font-size: 10px; color: var(--faint); }
 .strikecard .stk-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 
+/* Narrow panel: the timing drops under the unit's name instead of squeezing it to "Ural-3…". */
+@container (max-width: 359px) {
+  .strikecard .stk-bda-row { grid-template-columns: minmax(0, 1fr) auto; row-gap: 0; }
+  .strikecard .stk-bda-meta { grid-column: 1 / -1; grid-row: 2; }
+}
 @container (min-width: 540px) {
   .strikecard .stk-plots { grid-template-columns: 1fr 1fr; }
   .strikecard canvas.stk-prof { height: 250px; }
@@ -93,4 +101,5 @@
 }
 
 /* ---------- Strike thumbnail (per-target table) ---------- */
-.strikethumb { display: block; flex: none; border-radius: 4px; border: 1px solid var(--line); }
+/* content-box: the border goes outside the size x size bitmap instead of squeezing it. */
+.strikethumb { display: block; flex: none; box-sizing: content-box; border-radius: 4px; border: 1px solid var(--line); }
