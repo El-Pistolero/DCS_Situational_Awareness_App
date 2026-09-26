@@ -7,10 +7,11 @@ This guide assumes you have never used GitHub or installed an app from it. Follo
 **What you need:**
 - A Windows 10 or Windows 11 PC (the one you play DCS on).
 - DCS World.
+- **Tacview** (the free version), which puts the flight recorder into DCS. Step 4 shows how. You never have to open the Tacview program itself, and you don't need its paid editions.
 - A free GitHub account, only to download the app (Step 1 shows how to make one).
 - An internet connection for the map pictures. Without one the app still works, but the map is dark with only grid lines.
 
-You do **not** need to install Python, a web browser, a paid Tacview or anything else. It is one app.
+You do **not** need to install Python, a web browser, or any paid Tacview edition.
 
 ---
 
@@ -61,14 +62,33 @@ To go back to the list, click **Recordings** (top left). To read this guide insi
 
 ## Step 4: Record your own flights
 
-DCS already includes the Tacview recorder; you only need to switch it on, once.
+The recordings are made by **Tacview's recorder**, a small add-on that sits inside DCS. DCS SA reads what it writes. You install it once, switch it on once, then forget about it.
 
-1. Start **DCS World**.
-2. In the DCS main menu click **OPTIONS**, then the **SPECIAL** tab along the top. In the list on the left, scroll down and click **Tacview**.
-3. Tick **Tacview Module Enabled** and **Flight Data Recording Enabled**, then click **OK** at the bottom right. (The exact wording can differ between DCS versions. Switch on whatever turns on Tacview and flight recording, and leave everything else as it is. If there are separate settings for single-player and multiplayer flights, switch on the ones you fly.)
-   - If Tacview isn't in the list, install the free Tacview from **tacview.net** and look again.
-4. Fly a mission as normal. When you leave the mission (back to the DCS menu), the recording is saved in your **Documents\Tacview** folder, with a name starting **Tacview-** followed by the date.
-5. Open **DCS SA** and click that name in the list. If DCS SA was already open, within about half a minute a bar appears at the top, **New recording: '…'**, with an **Open debrief** button. Click it.
+### 4a: Get the recorder into DCS
+
+Tacview's own program puts the recorder into DCS for you. The free version is enough, and you never have to open the Tacview program again afterwards.
+
+1. **Close DCS completely** (back to the Windows desktop). Tacview can't install into DCS while DCS is running.
+2. Install Tacview if you haven't: the free download from **https://www.tacview.net**, or the Tacview app on Steam. Either is fine.
+3. **Start Tacview once** and let it finish loading. That is when it copies its recorder into DCS. Then close it.
+   - On Steam it must be launched **from Steam** at least once, so its install script runs.
+4. Start **DCS World**, click **OPTIONS**, then the **SPECIAL** tab along the top, and look down the list on the left for **Tacview**.
+
+**Still no Tacview in that list?** Then the recorder didn't reach your DCS folder, and you can copy it across yourself:
+
+1. Find Tacview's own folder. On Steam: right-click **Tacview** in your library, then **Manage** and **Browse local files**. Otherwise it is usually `C:\Program Files (x86)\Tacview`.
+2. Inside it, open the **DCS** folder. It holds a **Mods** folder and a **Scripts** folder. Copy both.
+3. Hold the **Windows key** and press **R**, type `%USERPROFILE%\Saved Games` and press **Enter**. Open your DCS folder there. It is usually called **DCS**, but may be **DCS.openbeta**. If both exist, do this in both.
+4. Paste the two folders in. If Windows asks about merging or replacing files, say yes.
+5. Start DCS and look under **OPTIONS → SPECIAL** again.
+
+DCS SA tells you which of these you are missing: if it can see your DCS folder but no recorder, the Flight debrief page and the live view's **Connect…** box say so.
+
+### 4b: Switch recording on and fly
+
+1. In **OPTIONS → SPECIAL → Tacview**, tick **Tacview Module Enabled** and **Flight Data Recording Enabled**, then click **OK** at the bottom right. (The exact wording can differ between versions. Switch on whatever turns on Tacview and flight recording, and leave everything else as it is. If there are separate settings for single-player and multiplayer flights, switch on the ones you fly.)
+2. Fly a mission as normal. When you leave the mission (back to the DCS menu), the recording is saved in your **Documents\Tacview** folder, with a name starting **Tacview-** followed by the date.
+3. Open **DCS SA** and click that name in the list. If DCS SA was already open, within about half a minute a bar appears at the top, **New recording: '…'**, with an **Open debrief** button. Click it.
 
 Got an `.acmi` file from somewhere else (a squadron mate, a USB stick)? Drag it onto the DCS SA window, or click **Recordings**, then **choose a file**.
 
@@ -134,10 +154,11 @@ Your recordings, settings and the DCS bridge stay. If you installed the bridge, 
 | **Windows protected your PC** when starting the installer | Click **More info**, then **Run anyway** (Step 2). |
 | **Smart App Control blocked an app** (Windows 11) | Smart App Control only lets code-signed apps run and DCS SA isn't signed, so there is no Run anyway. The only way round it is to turn it off in **Windows Security → App & browser control → Smart App Control settings**. Windows may not let you turn it back on without resetting the PC, so decide for yourself. |
 | Double-clicking the icon does nothing | Wait 10 seconds: every start takes a few seconds. Still nothing? Check **Windows Security → Protection history** in case the antivirus removed DCS SA (see above), then restart the PC and try again. |
-| My flights are not in the list | Check that recording is switched on (Step 4) and that a file starting **Tacview-** is in `Documents\Tacview`. The bottom of the Flight debrief page lists the folders DCS SA searched (*Searched: …*). You can always open a file with **Recordings → choose a file**. |
+| My flights are not in the list | Check that Tacview's recorder is installed and switched on (Step 4) and that a file starting **Tacview-** is in `Documents\Tacview`. The bottom of the Flight debrief page lists the folders DCS SA searched (*Searched: …*). You can always open a file with **Recordings → choose a file**. |
 | The map is dark with only thin grid lines | No internet connection, or map pictures are blocked. Everything else still works. |
 | The live view keeps saying **Waiting for telemetry** | Did you install the bridge and restart DCS completely (Step 5)? DCS SA must be open while you fly. On some multiplayer servers exporting is switched off. |
 | **No DCS Saved Games folder found** | Start DCS once so it creates the folder, quit it, then install the bridge again. |
+| There is no **Tacview** in DCS under **OPTIONS → SPECIAL** | Tacview's recorder isn't in your DCS yet. See Step 4a, including the copy-it-yourself steps. |
 
 ## For the curious
 

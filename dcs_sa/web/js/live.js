@@ -516,7 +516,13 @@ async function openSetup() {
     $("bridgeInfo").innerHTML = "";
     $("bridgeInfo").append(
       el("div", {}, `DCS bridge: ${b.listening ? `listening on UDP ${b.port}` : "not listening"} · ${b.packets ? `${b.packets} packets received` : "no data yet"}`),
-      el("div", {}, p.found ? `DCS profile: ${p.player || "(no logbook pilot found)"} · bridge ${p.bridgeInstalled ? "installed" : "NOT installed in Export.lua"}` : "DCS Saved Games folder not found on this PC."));
+      el("div", {}, p.found ? `DCS profile: ${p.player || "(no logbook pilot found)"} · bridge ${p.bridgeInstalled ? "installed" : "NOT installed in Export.lua"}` : "DCS Saved Games folder not found on this PC."),
+      // Without Tacview's own exporter DCS records nothing, and its page is missing from Options -> Special.
+      p.found && !p.tacviewInstalled
+        ? el("div", { class: "warn" }, "Tacview's recorder is NOT installed in DCS, so DCS writes no recordings and has no ",
+            el("b", {}, "Options → Special → Tacview"), " page. ",
+            el("a", { href: "/guide?from=live#step-4-record-your-own-flights" }, "How to install it"))
+        : null);
   } catch { /* offline */ }
   if (!dlg.open) dlg.showModal();
 }

@@ -714,10 +714,16 @@ async function showLibrary() {
         el("span", { class: "muted num" }, `${(r.size / 1048576).toFixed(1)} MB`),
         el("span", { class: "muted" }, new Date(r.modified * 1000).toLocaleString())));
     }
+    const prof = S.status?.profile || {};
     box.append(el("div", { class: "hint", html:
       `Searched: ${body.dirs.map((d) => `<code>${d.replace(/</g, "&lt;")}</code>`).join(" ")}<br>` +
-      "Tacview saves to <code>Documents\\Tacview</code> by default. Enable the recorder in DCS under " +
-      "<code>Options → Special → Tacview</code>." }));
+      (prof.found && !prof.tacviewInstalled
+        // Nothing to find until Tacview's recorder is in DCS: its Options page is missing too.
+        ? "<b>Tacview's recorder is not installed in DCS</b>, so DCS writes no recordings and has no " +
+          "<code>Options → Special → Tacview</code> page. " +
+          '<a href="/guide#step-4-record-your-own-flights">How to install it</a>.'
+        : "Tacview saves to <code>Documents\\Tacview</code> by default. Enable the recorder in DCS under " +
+          "<code>Options → Special → Tacview</code>.") }));
   } catch (err) {
     lib.innerHTML = "";
     lib.append(el("div", { class: "empty" }, `Could not list recordings: ${err.message}`));

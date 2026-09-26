@@ -40,6 +40,7 @@ body.live { overflow: hidden; }
 .lv-empty h2 { margin: 0 0 6px; }
 .lv-empty p { color: var(--muted); max-width: 440px; }
 .lv-empty a, .lv-guide { color: var(--blue); }
+.lv-dialog .warn { margin-top: 6px; color: var(--orange); }
 .lv-guide { font-size: 13px; font-weight: normal; margin-left: 10px; }
 
 .threats { display: grid; gap: 6px; }
