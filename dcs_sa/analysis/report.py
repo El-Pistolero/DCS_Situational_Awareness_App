@@ -15,7 +15,7 @@ from .ir import analyze_ir
 from .kinematics import derive, flight_stats
 from .landing import analyze_landings
 from .radar import analyze_radar
-from .strike import analyze_strikes, credit_kills, target_summary
+from .strike import analyze_strikes, credit_kills, sync_targets, target_summary
 from .timeline import build_timeline
 from .weapons import analyze_weapons, apply_dcs_events, find_destructions
 
@@ -90,6 +90,7 @@ def analyze(rec: Recording, player_names: Iterable[str] = (), dcs: Optional[Dict
     strikes = analyze_strikes(rec, weapons)
     credit_kills(rec, weapons, strikes)
     dcs_stats = apply_dcs_events(weapons, rec, dcs["events"], dcs.get("coverage")) if dcs else None
+    sync_targets(rec, weapons, strikes)
     # After DCS's events: they can change which shot killed what.
     ir = analyze_ir(rec, weapons)
     owners = ir.pop("_owners")

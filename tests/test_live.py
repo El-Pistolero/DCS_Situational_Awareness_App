@@ -168,6 +168,21 @@ class ServerTests(unittest.TestCase):
             # No key: a second launch asking the running copy to show its window.
             self.assertEqual(post("/api/open-debrief", {"key": ""}), {"ok": True})
             self.assertEqual(opened, [key, None])
+            # Another website open in the browser must not drive the app.
+            for headers in ({"Origin": "https://evil.example"}, {"Origin": "null"},
+                            {"Sec-Fetch-Site": "cross-site"}, {"Host": "rebind.evil.example"}):
+                req = urllib.request.Request(url.rstrip("/") + "/api/player", data=b'{"names": ["x"]}',
+                                             headers=headers, method="POST")
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    urllib.request.urlopen(req, timeout=5)
+                self.assertEqual(ctx.exception.code, 403, headers)
+            port = url.rstrip("/").rsplit(":", 1)[1]
+            for origin in (f"http://127.0.0.1:{port}", f"http://localhost:{port}"):
+                host = origin.split("//")[1]
+                req = urllib.request.Request(f"http://127.0.0.1:{port}/api/open-live", data=b"{}",
+                                             headers={"Origin": origin, "Host": host, "Sec-Fetch-Site": "same-origin"},
+                                             method="POST")
+                self.assertEqual(json.loads(urllib.request.urlopen(req, timeout=5).read()), {"ok": False})
             html = urllib.request.urlopen(url, timeout=5).read()
             self.assertIn(b"review.js", html)
             with self.assertRaises(urllib.error.HTTPError):

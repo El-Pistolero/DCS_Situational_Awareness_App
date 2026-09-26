@@ -14,9 +14,10 @@ UTF-16LE bytes, as unpadded lowercase hex.  An empty password therefore
 hashes to ``0``.  Tacview itself retries with CRC-32 if CRC-64 is refused,
 and so do we.
 
-Note: streaming real-time telemetry *out of DCS* requires the Tacview
-exporter to have real-time telemetry enabled (Tacview Advanced or higher
-on the machine running DCS).
+Note: the stream comes from the Tacview exporter built into DCS, with
+real-time telemetry switched on in DCS's Tacview options.  Tacview's own
+viewer needs its Advanced edition to show that stream; this client does
+not use the viewer.  (Not yet tried against a real DCS.)
 """
 
 from __future__ import annotations

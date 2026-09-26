@@ -89,6 +89,15 @@ class StrikeSample(unittest.TestCase):
         self.assertTrue(a["envelope"]["inRange"])
         self.assertLess(a["envelope"]["rangeFraction"], 1.0)
 
+    def test_shot_list_and_strike_name_the_same_target(self):
+        shots = {s["weaponId"]: s for s in self.report["weapons"]["shots"]}
+        for st in self.report["strikes"]:
+            self.assertEqual(shots[st["weaponId"]]["targetName"], st.get("targetName"), st["weaponName"])
+        # The first JSOW-A's pattern landed on the Shilka; it only flew over the BTR when it opened.
+        first = min(self.by_name("AGM_154A"), key=lambda s: s["releaseTime"])
+        self.assertEqual(first["targetName"], "ZSU-23-4 Shilka")
+        self.assertEqual(shots[first["weaponId"]]["targetSource"], "nearest")
+
     def test_timeline_and_targets(self):
         kinds = [i["kind"] for i in self.report["timeline"]]
         self.assertEqual(kinds.count("release"), 5)

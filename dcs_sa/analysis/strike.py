@@ -456,6 +456,43 @@ def credit_kills(rec: Recording, weapons: WeaponReport, strikes: List[Strike]) -
     return n
 
 
+def sync_targets(rec: Recording, weapons: WeaponReport, strikes: List[Strike]) -> int:
+    """One target per weapon: make the shot list and the strike agree.
+
+    A known target (the launcher's lock, or DCS's own) wins on both sides;
+    otherwise the strike's choice (the unit nearest where a cluster weapon's
+    pattern landed) replaces the shot's closest-approach guess, which for a
+    dispenser is just whatever it passed over when it opened.
+    """
+    from .weapons import _launch_geometry
+
+    known = ("lock", "dcs")
+    shots = {s.weapon_id: s for s in weapons.shots}
+    n = 0
+    for st in strikes:
+        s = shots.get(st.weapon_id)
+        if s is None or not st.impact or s.target_id == st.target_id:
+            continue
+        tgt = rec.tracks.get(s.target_id or "")
+        if s.target_source in known and tgt is not None and tgt.category in ("ground", "sea"):
+            st.target_id, st.target_name, st.target_source = tgt.id, tgt.name, s.target_source
+            tp = tgt.position_interp(min(st.impact_time, tgt.ends_at))
+            st.miss_distance = (geo.ground_distance(st.impact["longitude"], st.impact["latitude"], tp[0], tp[1])
+                                if tp is not None else None)
+        elif st.target_id and s.target_source not in known:
+            new = rec.tracks.get(st.target_id)
+            if new is None:
+                continue
+            s.target_id, s.target_name, s.target_pilot, s.target_source = new.id, new.name, new.pilot, st.target_source
+            launcher = rec.tracks.get(s.launcher_id or "")
+            s.geometry = _launch_geometry(launcher, new, s.launch_time) if launcher is not None else {}
+            s.closest_approach, s.closest_time = st.miss_distance, st.impact_time
+        else:
+            continue
+        n += 1
+    return n
+
+
 def target_summary(rec: Recording, strikes: List[Strike]) -> List[Dict[str, object]]:
     """Per ground target: every weapon aimed at or landing on it, and its fate."""
     by: Dict[str, Dict[str, object]] = {}

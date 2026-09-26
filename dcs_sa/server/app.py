@@ -6,11 +6,13 @@ app on the DCS machine needs nothing beyond Python itself.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import mimetypes
 import os
 import re
+import socket
 import threading
 import time
 import webbrowser
@@ -251,9 +253,36 @@ def make_handler(app: App):
                 except OSError:
                     return
 
+        def _foreign_request(self) -> bool:
+            """A POST that didn't come from this app's own pages.
+
+            Any website open in the browser can send POSTs to localhost; the
+            browser then names that site in Origin.  A Host that isn't this PC
+            (an IP, localhost or its own name) means a DNS-rebinding trick.
+            """
+            host = (self.headers.get("Host") or "").strip().lower()
+            origin = (self.headers.get("Origin") or "").strip().lower()
+            if origin and urlparse(origin).netloc != host:
+                return True
+            if (self.headers.get("Sec-Fetch-Site") or "").lower() == "cross-site":
+                return True
+            name = urlparse("//" + host).hostname or ""
+            if not name or name == "localhost" or name.endswith(".localhost"):
+                return False
+            try:
+                ipaddress.ip_address(name)
+                return False
+            except ValueError:
+                pass
+            own = socket.gethostname().lower()
+            return name.split(".")[0] != own.split(".")[0]
+
         def do_POST(self) -> None:
             url = urlparse(self.path)
             path = url.path
+            if self._foreign_request():
+                log.warning("Refused POST %s from %s (Host %s)", path, self.headers.get("Origin"), self.headers.get("Host"))
+                return self._error(403, "request from another website refused")
             try:
                 if path == "/api/upload":
                     return self._upload()
